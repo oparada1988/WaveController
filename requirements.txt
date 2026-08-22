@@ -1,0 +1,2 @@
+PyGObject>=3.44.0
+Pillow>=9.0.0

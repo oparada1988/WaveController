@@ -1,0 +1,8 @@
+[Desktop Entry]
+Name=WaveController
+Comment=Elgato Wave Link & Advanced Multi-Track Virtual Mixer for Linux
+Exec=/usr/bin/python3 "/home/oscar/Github Projects/WaveController/main.py"
+Icon=audio-card-symbolic
+Terminal=false
+Type=Application
+Categories=AudioVideo;Audio;Mixer;GTK;
