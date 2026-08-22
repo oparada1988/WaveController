@@ -19,8 +19,10 @@ class ChannelCard(Gtk.Box):
         self.set_valign(Gtk.Align.CENTER)
         self.set_size_request(200, -1)
 
-        # Channel icon
-        icon_name = channel_info.get("icon", "audio-x-generic-symbolic")
+        # Channel icon (Auto-resolve from assigned apps or channel name)
+        assigned = self.pipewire_mgr.get_assigned_apps(channel_info["id"])
+        primary_app = assigned[0] if assigned else channel_info.get("name", "")
+        icon_name = channel_info.get("icon") or self.pipewire_mgr.resolve_icon_for_app(primary_app)
         self.icon_img = Gtk.Image.new_from_icon_name(icon_name)
         self.icon_img.set_pixel_size(20)
         self.append(self.icon_img)
@@ -118,9 +120,12 @@ class ChannelCard(Gtk.Box):
                 assigned.remove(app_name)
                 self.pipewire_mgr.assigned_apps[ch_id] = assigned
         
-        # Update subtitle
+        # Update subtitle and icon
         assigned_list = self.pipewire_mgr.get_assigned_apps(ch_id)
         self.sub_lbl.set_text(", ".join(assigned_list[:2]) if assigned_list else "No apps assigned")
+        if assigned_list:
+            new_icon = self.pipewire_mgr.resolve_icon_for_app(assigned_list[0])
+            self.icon_img.set_from_icon_name(new_icon)
 
     def _on_mute_clicked(self, btn):
         ch_id = self.channel_info["id"]

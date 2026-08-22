@@ -268,13 +268,60 @@ class PipeWireManager:
         with self._lock:
             return dict(self.channel_states.get(channel_id, {}).get(mix_id, {"volume": 80, "muted": False, "linked": True}))
 
-    def add_channel(self, name: str, icon: str = "audio-x-generic-symbolic") -> dict:
+    def add_channel(self, name: str, icon: str = None) -> dict:
         with self._lock:
             ch_id = name.lower().replace(" ", "_")
-            new_ch = {"id": ch_id, "name": name, "type": "sink", "icon": icon, "default_vol": 80}
+            existing_ids = [c["id"] for c in self.channels]
+            if ch_id in existing_ids:
+                ch_id = f"{ch_id}_{len(self.channels)}"
+
+            resolved_icon = icon or self.resolve_icon_for_app(name)
+            new_ch = {"id": ch_id, "name": name, "type": "sink", "icon": resolved_icon, "default_vol": 80}
             self.channels.append(new_ch)
             self.channel_states[ch_id] = {}
-            self.assigned_apps[ch_id] = []
+            self.assigned_apps[ch_id] = [name]
             for mx in self.mixes:
                 self.channel_states[ch_id][mx["id"]] = {"volume": 80, "muted": False, "linked": True}
             return new_ch
+
+    def add_mix(self, name: str, subtitle: str = "Custom Mix", icon: str = "audio-speakers-symbolic", color: str = "#3584e4") -> dict:
+        with self._lock:
+            mix_id = name.lower().replace(" ", "_")
+            existing_ids = [m["id"] for m in self.mixes]
+            if mix_id in existing_ids:
+                mix_id = f"{mix_id}_{len(self.mixes)}"
+            new_mix = {
+                "id": mix_id,
+                "name": name,
+                "subtitle": subtitle,
+                "icon": icon,
+                "color": color
+            }
+            self.mixes.append(new_mix)
+            for ch in self.channels:
+                ch_id = ch["id"]
+                if ch_id not in self.channel_states:
+                    self.channel_states[ch_id] = {}
+                self.channel_states[ch_id][mix_id] = {"volume": 80, "muted": False, "linked": True}
+            return new_mix
+
+    @staticmethod
+    def resolve_icon_for_app(app_name: str) -> str:
+        app_low = app_name.lower()
+        if "spotify" in app_low:
+            return "spotify"
+        elif "discord" in app_low:
+            return "discord"
+        elif "steam" in app_low or "game" in app_low:
+            return "steam"
+        elif "firefox" in app_low:
+            return "firefox"
+        elif "chrome" in app_low or "chromium" in app_low:
+            return "chromium"
+        elif "vlc" in app_low:
+            return "vlc"
+        elif "stream" in app_low:
+            return "view-grid-symbolic"
+        elif "mic" in app_low:
+            return "audio-input-microphone-symbolic"
+        return "audio-x-generic-symbolic"

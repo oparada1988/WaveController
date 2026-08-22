@@ -1,14 +1,17 @@
 import gi
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
-from gi.repository import Gtk, Adw, GLib
+from gi.repository import Gtk, Adw
+
+from .stereo_slider import StereoSlider
 
 class MatrixCell(Gtk.Box):
     """
-    An individual sub-mix fader cell containing a mute button, level slider, and VU meter.
+    An individual sub-mix fader cell containing a mute button and a dual-track
+    stereo volume slider with real-time bouncing green level meters.
     """
     def __init__(self, channel_id: str, mix_id: str, pipewire_mgr, on_change_callback=None):
-        super().__init__(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        super().__init__(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         self.channel_id = channel_id
         self.mix_id = mix_id
         self.pipewire_mgr = pipewire_mgr
@@ -26,22 +29,14 @@ class MatrixCell(Gtk.Box):
         self.mute_btn.connect("clicked", self._on_mute_clicked)
         self.append(self.mute_btn)
 
-        # Slider + Meter container
-        slider_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
-        slider_box.set_hexpand(True)
-        slider_box.set_valign(Gtk.Align.CENTER)
-
-        # Level slider
+        # Stereo Split Volume Slider & VU Meter
         state = self.pipewire_mgr.get_channel_state(self.channel_id, self.mix_id)
-        self.adj = Gtk.Adjustment(value=state.get("volume", 80), lower=0, upper=100, step_increment=1, page_increment=5)
-        self.slider = Gtk.Scale(orientation=Gtk.Orientation.HORIZONTAL, adjustment=self.adj)
-        self.slider.add_css_class("wave-slider")
-        self.slider.set_hexpand(True)
-        self.slider.set_draw_value(False)
-        self.slider.connect("value-changed", self._on_slider_changed)
-        slider_box.append(self.slider)
-
-        self.append(slider_box)
+        self.slider = StereoSlider(
+            volume=state.get("volume", 80),
+            is_muted=state.get("muted", False),
+            on_volume_changed=self._on_slider_volume_changed
+        )
+        self.append(self.slider)
 
         self.update_ui_state()
 
@@ -51,19 +46,20 @@ class MatrixCell(Gtk.Box):
         if self.on_change_callback:
             self.on_change_callback(self.channel_id, self.mix_id)
 
-    def _on_slider_changed(self, scale):
-        vol = int(self.adj.get_value())
+    def _on_slider_volume_changed(self, vol: int):
         self.pipewire_mgr.set_channel_volume(self.channel_id, self.mix_id, vol)
         if self.on_change_callback:
             self.on_change_callback(self.channel_id, self.mix_id)
+
+    def update_peaks(self, peak_l: float, peak_r: float):
+        self.slider.set_peaks(peak_l, peak_r)
 
     def update_ui_state(self):
         state = self.pipewire_mgr.get_channel_state(self.channel_id, self.mix_id)
         vol = state.get("volume", 80)
         muted = state.get("muted", False)
         
-        if abs(self.adj.get_value() - vol) > 0.5:
-            self.adj.set_value(vol)
+        self.slider.set_volume(vol, muted)
             
         if muted:
             self.mute_btn.set_icon_name("audio-volume-muted-symbolic")

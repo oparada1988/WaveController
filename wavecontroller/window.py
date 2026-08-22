@@ -19,7 +19,7 @@ class WaveMainWindow(Adw.ApplicationWindow):
         self.peak_monitor = peak_monitor
         self.hardware_mgr = hardware_mgr
 
-        self.set_default_size(1080, 700)
+        self.set_default_size(1220, 760)
         self.add_css_class("wave-window")
 
         # Load Custom CSS
