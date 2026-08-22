@@ -61,18 +61,22 @@ class MultiChannelPeakMonitor:
             out = subprocess.check_output(['pw-link', '-o'], text=True, stderr=subprocess.DEVNULL)
             mon_fl = None
             mon_fr = None
+            
+            # Prioritize active PCI analog output and filter out silent IEC958 digital mic ports
             for line in out.splitlines():
                 l = line.strip()
-                if 'monitor_FL' in l and ('analog' in l or 'pci' in l or 'usb' in l):
+                if 'iec958' in l.lower():
+                    continue
+                if 'monitor_FL' in l and ('analog' in l or 'pci' in l or 'output' in l):
                     mon_fl = l
-                elif 'monitor_FR' in l and ('analog' in l or 'pci' in l or 'usb' in l):
+                elif 'monitor_FR' in l and ('analog' in l or 'pci' in l or 'output' in l):
                     mon_fr = l
 
             if mon_fl and mon_fr:
                 # Unlink default mic capture from sink monitor
                 subprocess.run(['pw-link', '-d', 'alsa_input.usb-3142_fifine_Microphone-00.analog-stereo:capture_FL', 'wave_sink_monitor:input_FL'], stderr=subprocess.DEVNULL)
                 subprocess.run(['pw-link', '-d', 'alsa_input.usb-3142_fifine_Microphone-00.analog-stereo:capture_FR', 'wave_sink_monitor:input_FR'], stderr=subprocess.DEVNULL)
-                # Link to sink monitor
+                # Link to active sound card sink monitor
                 subprocess.run(['pw-link', mon_fl, 'wave_sink_monitor:input_FL'], stderr=subprocess.DEVNULL)
                 subprocess.run(['pw-link', mon_fr, 'wave_sink_monitor:input_FR'], stderr=subprocess.DEVNULL)
         except Exception:
@@ -105,7 +109,7 @@ class MultiChannelPeakMonitor:
         # 1. Open mic capture with unique node name
         self.mic_proc = self._open_pw_record('wave_mic_monitor')
         
-        # 2. Open playback capture with unique node name and link to sink monitor
+        # 2. Open playback capture with unique node name and link to active sink monitor
         time.sleep(0.1)
         self.sink_proc = self._open_pw_record('wave_sink_monitor')
         time.sleep(0.15)
