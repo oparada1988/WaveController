@@ -92,32 +92,91 @@ class PipeWireManager:
         self.running = False
         self._volume_event.set()
 
+    def get_application_volume_status(self, app_name: str) -> tuple:
+        """Queries volume and mute status of an application from its PipeWire node."""
+        if not app_name:
+            return None, None
+        app_low = app_name.lower().strip()
+        nodes = []
+        with self._lock:
+            for k, ids in self._node_cache.items():
+                if app_low in k or k in app_low:
+                    nodes.extend(ids)
+        if not nodes:
+            self._refresh_node_cache()
+            with self._lock:
+                for k, ids in self._node_cache.items():
+                    if app_low in k or k in app_low:
+                        nodes.extend(ids)
+                        
+        for node_id in nodes:
+            try:
+                out = subprocess.check_output(["wpctl", "get-volume", str(node_id)], text=True, stderr=subprocess.DEVNULL).strip()
+                import re
+                m = re.search(r'Volume:\s*([\d\.]+)', out)
+                if m:
+                    vol = int(round(float(m.group(1)) * 100))
+                    muted = "[MUTED]" in out
+                    return vol, muted
+            except Exception:
+                pass
+        return None, None
+
     def _external_sync_loop(self):
-        """Monitors system volume changes from Volume Controller Plus / Stream Deck."""
+        """Monitors system and application volume changes in real-time (1:1 sync with Volume Controller Plus)."""
         while self.running:
             try:
-                curr_vol, curr_muted = self._query_system_source_status()
-                if curr_vol is not None:
-                    changed = False
+                changed = False
+                
+                # 1. Sync Microphone (Source) Channel
+                curr_mic_vol, curr_mic_muted = self._query_system_source_status()
+                if curr_mic_vol is not None:
                     with self._lock:
                         if "mic" in self.channel_states and "personal" in self.channel_states["mic"]:
                             st = self.channel_states["mic"]["personal"]
-                            if abs(st["volume"] - curr_vol) >= 1 or st["muted"] != curr_muted:
-                                diff = curr_vol - st["volume"]
-                                st["volume"] = curr_vol
-                                st["muted"] = curr_muted
+                            if abs(st["volume"] - curr_mic_vol) >= 1 or st["muted"] != curr_mic_muted:
+                                diff = curr_mic_vol - st["volume"]
+                                st["volume"] = curr_mic_vol
+                                st["muted"] = curr_mic_muted
                                 if st.get("linked", True):
                                     for m_id, o_st in self.channel_states["mic"].items():
                                         if m_id != "personal":
                                             o_st["volume"] = max(0, min(100, o_st["volume"] + diff))
-                                            o_st["muted"] = curr_muted
+                                            o_st["muted"] = curr_mic_muted
                                 changed = True
 
-                    if changed and self.on_external_change_callback:
-                        GLib.idle_add(self.on_external_change_callback)
+                # 2. Sync Application Channels (e.g. Spotify, Games, Discord)
+                channels_to_check = []
+                with self._lock:
+                    for ch in self.channels:
+                        if ch["id"] != "mic":
+                            assigned = self.assigned_apps.get(ch["id"], [ch["name"]])
+                            channels_to_check.append((ch["id"], assigned))
+
+                for ch_id, assigned_list in channels_to_check:
+                    for app_name in assigned_list:
+                        app_vol, app_muted = self.get_application_volume_status(app_name)
+                        if app_vol is not None:
+                            with self._lock:
+                                if ch_id in self.channel_states and "personal" in self.channel_states[ch_id]:
+                                    st = self.channel_states[ch_id]["personal"]
+                                    if abs(st["volume"] - app_vol) >= 1 or st["muted"] != app_muted:
+                                        diff = app_vol - st["volume"]
+                                        st["volume"] = app_vol
+                                        st["muted"] = app_muted
+                                        if st.get("linked", True):
+                                            for m_id, o_st in self.channel_states[ch_id].items():
+                                                if m_id != "personal":
+                                                    o_st["volume"] = max(0, min(100, o_st["volume"] + diff))
+                                                    o_st["muted"] = app_muted
+                                        changed = True
+                            break
+
+                if changed and self.on_external_change_callback:
+                    GLib.idle_add(self.on_external_change_callback)
             except Exception:
                 pass
-            time.sleep(0.15) # 6.6 Hz lightweight check
+            time.sleep(0.04) # 25 Hz fast poller (40ms)
 
     def refresh_devices(self):
         """Discovers available physical output sinks and input sources from PipeWire."""
@@ -173,12 +232,14 @@ class PipeWireManager:
             pass
 
     def _refresh_node_cache(self):
-        """Scans PipeWire graph and caches active playback stream IDs."""
+        """Scans PipeWire graph and caches active playback stream Node IDs."""
         cache = {}
         try:
             out = subprocess.check_output(["pw-dump"], text=True, stderr=subprocess.DEVNULL)
             data = json.loads(out)
             for obj in data:
+                if obj.get("type") != "PipeWire:Interface:Node":
+                    continue
                 props = obj.get("info", {}).get("props", {})
                 media_class = props.get("media.class", "")
                 if "Stream/Output/Audio" in media_class:

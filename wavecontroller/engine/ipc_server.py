@@ -61,6 +61,27 @@ class IPCServer:
             except Exception:
                 break
 
+    def _match_channel_id(self, target: str) -> str:
+        if not target:
+            return "mic"
+        target_low = str(target).lower().strip()
+        with self.pipewire_mgr._lock:
+            # 1. Exact ID match
+            for c in self.pipewire_mgr.channels:
+                if c["id"].lower() == target_low or c["name"].lower() == target_low:
+                    return c["id"]
+            # 2. Assigned apps match
+            for c in self.pipewire_mgr.channels:
+                assigned = self.pipewire_mgr.assigned_apps.get(c["id"], [])
+                for a in assigned:
+                    if target_low in a.lower() or a.lower() in target_low:
+                        return c["id"]
+            # 3. Fuzzy name match
+            for c in self.pipewire_mgr.channels:
+                if target_low in c["name"].lower() or c["name"].lower() in target_low:
+                    return c["id"]
+        return target_low
+
     def _handle_client(self, conn):
         try:
             conn.settimeout(2.0)
@@ -77,19 +98,35 @@ class IPCServer:
                 res["mixes"] = self.pipewire_mgr.mixes
                 res["states"] = self.pipewire_mgr.channel_states
             elif cmd == "get_volume":
-                ch = req.get("channel_id", "mic")
+                raw_target = req.get("channel_id") or req.get("target") or "mic"
+                ch = self._match_channel_id(raw_target)
                 mx = req.get("mix_id", "personal")
                 res["state"] = self.pipewire_mgr.get_channel_state(ch, mx)
-            elif cmd == "set_volume":
-                ch = req.get("channel_id", "mic")
+            elif cmd in ["set_volume", "sync_volume"]:
+                raw_target = req.get("channel_id") or req.get("target") or req.get("app_name") or "mic"
+                ch = self._match_channel_id(raw_target)
                 mx = req.get("mix_id", "personal")
-                vol = req.get("volume", 80)
-                self.pipewire_mgr.set_channel_volume(ch, mx, vol)
+                vol = req.get("volume")
+                muted = req.get("muted")
+                
+                if vol is not None:
+                    self.pipewire_mgr.set_channel_volume(ch, mx, int(vol))
+                if muted is not None:
+                    self.pipewire_mgr.set_channel_mute(ch, mx, bool(muted))
+                
+                if self.pipewire_mgr.on_external_change_callback:
+                    from gi.repository import GLib
+                    GLib.idle_add(self.pipewire_mgr.on_external_change_callback)
+                    
                 res["state"] = self.pipewire_mgr.get_channel_state(ch, mx)
             elif cmd == "toggle_mute":
-                ch = req.get("channel_id", "mic")
+                raw_target = req.get("channel_id") or req.get("target") or "mic"
+                ch = self._match_channel_id(raw_target)
                 mx = req.get("mix_id", "personal")
                 is_muted = self.pipewire_mgr.toggle_channel_mute(ch, mx)
+                if self.pipewire_mgr.on_external_change_callback:
+                    from gi.repository import GLib
+                    GLib.idle_add(self.pipewire_mgr.on_external_change_callback)
                 res["muted"] = is_muted
             elif cmd == "get_peaks":
                 res["peaks"] = self.peak_monitor.get_all_peaks()
