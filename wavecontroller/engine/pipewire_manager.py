@@ -30,7 +30,7 @@ class PipeWireManager:
         self.output_devices = []
         self.selected_monitor_device = None
         self.running = False
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         
         # High-Performance Node Cache & Volume Dispatch Queue
         self._node_cache = {} # {app_name_lower: [node_id, ...]}

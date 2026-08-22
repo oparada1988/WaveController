@@ -98,11 +98,12 @@ class MixerMatrixView(Gtk.Box):
         create_mix_card.set_size_request(52, 48)
         create_mix_card.set_valign(Gtk.Align.CENTER)
         
-        plus_btn = Gtk.Button.new_from_icon_name("list-add-symbolic")
+        plus_btn = Gtk.MenuButton()
+        plus_btn.set_icon_name("list-add-symbolic")
         plus_btn.add_css_class("flat")
         plus_btn.add_css_class("wave-icon-btn")
-        plus_btn.set_tooltip_text("Add Custom Mix")
-        plus_btn.connect("clicked", self._on_create_mix_clicked)
+        plus_btn.set_tooltip_text("Add Custom Mix Output")
+        self._setup_create_mix_popover(plus_btn)
         create_mix_card.append(plus_btn)
         self.grid.attach(create_mix_card, create_mix_col, 0, 1, 1)
 
@@ -119,140 +120,171 @@ class MixerMatrixView(Gtk.Box):
                 self.matrix_cells[(ch["id"], mix["id"])] = cell
                 self.grid.attach(cell, col_idx, row_idx, 1, 1)
 
-        # Bottom "+ Create channel" button
+        # Bottom "+ Create channel" button with dark Popover
         bottom_row = len(self.pipewire_mgr.channels) + 1
-        create_btn = Gtk.Button(label="+ Create channel")
+        create_btn = Gtk.MenuButton()
+        create_btn.set_label("+ Create channel")
         create_btn.add_css_class("create-channel-btn")
-        create_btn.connect("clicked", self._on_create_channel_clicked)
+        self._setup_create_channel_popover(create_btn)
         self.grid.attach(create_btn, 0, bottom_row, 1, 1)
 
+    def _setup_create_mix_popover(self, menu_btn: Gtk.MenuButton):
+        popover = Gtk.Popover()
+        popover.add_css_class("wave-popover")
+
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        box.set_margin_top(12)
+        box.set_margin_bottom(12)
+        box.set_margin_start(12)
+        box.set_margin_end(12)
+        box.set_size_request(240, -1)
+
+        head_lbl = Gtk.Label(label="Add Custom Output Mix")
+        head_lbl.add_css_class("mix-header-title")
+        head_lbl.set_halign(Gtk.Align.START)
+        box.append(head_lbl)
+
+        name_entry = Gtk.Entry(placeholder_text="Mix Name (e.g. Stream Mix, VOD Mix)")
+        box.append(name_entry)
+
+        sub_entry = Gtk.Entry(placeholder_text="Subtitle (e.g. OBS Studio / Headphones)")
+        box.append(sub_entry)
+
+        color_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        color_lbl = Gtk.Label(label="Color:")
+        color_lbl.add_css_class("mix-header-subtitle")
+        color_row.append(color_lbl)
+
+        color_combo = Gtk.DropDown.new_from_strings(["Blue", "Green", "Red", "Purple", "Orange"])
+        color_row.append(color_combo)
+        box.append(color_row)
+
+        add_btn = Gtk.Button(label="Create Mix")
+        add_btn.add_css_class("suggested-action")
+        
+        def on_add(b):
+            name = name_entry.get_text().strip()
+            sub = sub_entry.get_text().strip() or "Custom Mix"
+            if name:
+                colors = ["#3584e4", "#3db356", "#e05252", "#9146ff", "#ff7800"]
+                c_idx = color_combo.get_selected()
+                c = colors[c_idx] if c_idx < len(colors) else "#3584e4"
+                self.pipewire_mgr.add_mix(name, subtitle=sub, color=c)
+                popover.popdown()
+                GLib.idle_add(self._rebuild_grid)
+
+        add_btn.connect("clicked", on_add)
+        box.append(add_btn)
+
+        popover.set_child(box)
+        menu_btn.set_popover(popover)
+
+    def _setup_create_channel_popover(self, menu_btn: Gtk.MenuButton):
+        popover = Gtk.Popover()
+        popover.add_css_class("wave-popover")
+
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        box.set_margin_top(12)
+        box.set_margin_bottom(12)
+        box.set_margin_start(12)
+        box.set_margin_end(12)
+        box.set_size_request(260, -1)
+
+        head_lbl = Gtk.Label(label="Add Audio Channel")
+        head_lbl.add_css_class("mix-header-title")
+        head_lbl.set_halign(Gtk.Align.START)
+        box.append(head_lbl)
+
+        sub_lbl = Gtk.Label(label="Click to add running application:")
+        sub_lbl.add_css_class("mix-header-subtitle")
+        sub_lbl.set_halign(Gtk.Align.START)
+        box.append(sub_lbl)
+
+        # Running applications quick add buttons
+        active_apps = self.pipewire_mgr.get_active_application_streams()
+        common_apps = ["Spotify", "Discord", "Steam", "Chromium", "Firefox", "VLC"]
+        
+        shown_apps = []
+        for a in active_apps:
+            if a["name"] not in shown_apps:
+                shown_apps.append(a["name"])
+        for ca in common_apps:
+            if ca not in shown_apps:
+                shown_apps.append(ca)
+
+        app_list_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        for app_name in shown_apps[:6]:
+            app_btn = Gtk.Button()
+            app_btn.add_css_class("flat")
+            app_btn.add_css_class("wave-sidebar-row")
+
+            row_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+            icon_name = self.pipewire_mgr.resolve_icon_for_app(app_name)
+            img = Gtk.Image.new_from_icon_name(icon_name)
+            img.set_pixel_size(18)
+            lbl = Gtk.Label(label=app_name)
+            lbl.set_hexpand(True)
+            lbl.set_halign(Gtk.Align.START)
+
+            add_icon = Gtk.Image.new_from_icon_name("list-add-symbolic")
+            add_icon.set_pixel_size(14)
+
+            row_box.append(img)
+            row_box.append(lbl)
+            row_box.append(add_icon)
+            app_btn.set_child(row_box)
+
+            def make_click_handler(name):
+                def handler(b):
+                    self.pipewire_mgr.add_channel(name)
+                    popover.popdown()
+                    GLib.idle_add(self._rebuild_grid)
+                return handler
+
+            app_btn.connect("clicked", make_click_handler(app_name))
+            app_list_box.append(app_btn)
+
+        box.append(app_list_box)
+
+        # Custom Channel Entry
+        cust_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        entry = Gtk.Entry(placeholder_text="Custom channel name...")
+        entry.set_hexpand(True)
+        cust_box.append(entry)
+
+        cust_btn = Gtk.Button.new_from_icon_name("list-add-symbolic")
+        cust_btn.add_css_class("suggested-action")
+        
+        def on_cust_add(b):
+            name = entry.get_text().strip()
+            if name:
+                self.pipewire_mgr.add_channel(name)
+                popover.popdown()
+                GLib.idle_add(self._rebuild_grid)
+
+        cust_btn.connect("clicked", on_cust_add)
+        cust_box.append(cust_btn)
+        box.append(cust_box)
+
+        popover.set_child(box)
+        menu_btn.set_popover(popover)
+
     def _on_cell_changed(self, channel_id: str, mix_id: str):
-        # Update all cells in this channel if linked
         state = self.pipewire_mgr.get_channel_state(channel_id, mix_id)
         if state.get("linked", True):
             for m in self.pipewire_mgr.mixes:
                 cell = self.matrix_cells.get((channel_id, m["id"]))
                 if cell:
                     cell.update_ui_state()
+            card = self.channel_cards.get(channel_id)
+            if card:
+                card.update_ui_state()
 
     def _on_link_toggled(self, channel_id: str, is_linked: bool):
-        pass
-
-    def _on_create_mix_clicked(self, btn):
-        dialog = Adw.MessageDialog(
-            heading="Create Custom Mix",
-            body="Add a new independent sub-mix bus:"
-        )
-        dialog.add_response("cancel", "Cancel")
-        dialog.add_response("create", "Create Mix")
-        dialog.set_response_appearance("create", Adw.ResponseAppearance.SUGGESTED)
-
-        content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
-        content.set_margin_top(12)
-        content.set_margin_bottom(12)
-
-        name_entry = Gtk.Entry(placeholder_text="Mix Name (e.g. Stream Mix, VOD Mix, Aux Mix)")
-        content.append(name_entry)
-
-        sub_entry = Gtk.Entry(placeholder_text="Subtitle (e.g. OBS Studio / Headphones)")
-        content.append(sub_entry)
-
-        color_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        color_lbl = Gtk.Label(label="Accent Color:")
-        color_lbl.add_css_class("mix-header-subtitle")
-        color_row.append(color_lbl)
-
-        color_combo = Gtk.DropDown.new_from_strings([
-            "Blue (#3584e4)",
-            "Green (#3db356)",
-            "Red (#e05252)",
-            "Purple (#9146ff)",
-            "Orange (#ff7800)"
-        ])
-        color_row.append(color_combo)
-        content.append(color_row)
-
-        dialog.set_extra_child(content)
-
-        def on_response(dlg, resp):
-            if resp == "create":
-                name = name_entry.get_text().strip()
-                subtitle = sub_entry.get_text().strip() or "Custom Mix"
-                if name:
-                    colors = ["#3584e4", "#3db356", "#e05252", "#9146ff", "#ff7800"]
-                    c_idx = color_combo.get_selected()
-                    color = colors[c_idx] if c_idx < len(colors) else "#3584e4"
-                    self.pipewire_mgr.add_mix(name, subtitle=subtitle, color=color)
-                    self._rebuild_grid()
-
-        dialog.connect("response", on_response)
-        parent = self.get_root() or self.get_ancestor(Gtk.Window)
-        if parent:
-            dialog.set_transient_for(parent)
-        dialog.present()
-
-    def _on_create_channel_clicked(self, btn):
-        dialog = Adw.MessageDialog(
-            heading="Create Channel / Add Input",
-            body="Select a running application or create a custom virtual channel:"
-        )
-        dialog.add_response("cancel", "Cancel")
-        dialog.add_response("create", "Add Channel")
-        dialog.set_response_appearance("create", Adw.ResponseAppearance.SUGGESTED)
-
-        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
-        box.set_margin_top(12)
-        box.set_margin_bottom(12)
-
-        # Quick Pick List of Running Applications
-        active_apps = self.pipewire_mgr.get_active_application_streams()
-        common_apps = ["Spotify", "Discord", "Steam", "Chromium", "Firefox", "VLC", "OBS Studio", "Games"]
-        
-        all_app_names = []
-        for a in active_apps:
-            if a["name"] not in all_app_names:
-                all_app_names.append(a["name"])
-        for ca in common_apps:
-            if ca not in all_app_names:
-                all_app_names.append(ca)
-
-        app_lbl = Gtk.Label(label="Quick Add Running Application:")
-        app_lbl.add_css_class("mix-header-subtitle")
-        app_lbl.set_halign(Gtk.Align.START)
-        box.append(app_lbl)
-
-        app_combo = Gtk.DropDown.new_from_strings(["(Custom Name Below)"] + all_app_names)
-        box.append(app_combo)
-
-        # Custom entry
-        cust_lbl = Gtk.Label(label="Or Enter Custom Channel Name:")
-        cust_lbl.add_css_class("mix-header-subtitle")
-        cust_lbl.set_halign(Gtk.Align.START)
-        box.append(cust_lbl)
-
-        entry = Gtk.Entry(placeholder_text="e.g. Browser, SFX, Aux")
-        box.append(entry)
-
-        dialog.set_extra_child(box)
-
-        def on_response(dlg, resp):
-            if resp == "create":
-                sel_idx = app_combo.get_selected()
-                name = ""
-                if sel_idx > 0:
-                    name = all_app_names[sel_idx - 1]
-                else:
-                    name = entry.get_text().strip()
-                    
-                if name:
-                    self.pipewire_mgr.add_channel(name)
-                    self._rebuild_grid()
-
-        dialog.connect("response", on_response)
-        parent = self.get_root() or self.get_ancestor(Gtk.Window)
-        if parent:
-            dialog.set_transient_for(parent)
-        dialog.present()
+        for m in self.pipewire_mgr.mixes:
+            cell = self.matrix_cells.get((channel_id, m["id"]))
+            if cell:
+                cell.update_ui_state()
 
     def _rebuild_grid(self):
         while self.grid.get_first_child():

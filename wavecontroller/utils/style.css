@@ -209,3 +209,24 @@ window.wave-window {
     border-color: #4a4a58;
     color: #ffffff;
 }
+
+/* Dark Wave Popover Styling */
+popover.wave-popover contents {
+    background-color: #1a1a20;
+    border: 1px solid #2e2e38;
+    border-radius: 12px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.6);
+    color: #e6e6ee;
+    padding: 6px;
+}
+
+popover.wave-popover entry {
+    background-color: #24242c;
+    border: 1px solid #363644;
+    border-radius: 8px;
+    color: #ffffff;
+}
+
+popover.wave-popover entry:focus {
+    border-color: #3584e4;
+}

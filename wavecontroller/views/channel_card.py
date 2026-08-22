@@ -141,8 +141,7 @@ class ChannelCard(Gtk.Box):
 
     def _on_slider_volume_changed(self, vol: int):
         ch_id = self.channel_info["id"]
-        for mx in self.pipewire_mgr.mixes:
-            self.pipewire_mgr.set_channel_volume(ch_id, mx["id"], vol)
+        self.pipewire_mgr.set_channel_volume(ch_id, "personal", vol)
         if self.on_link_toggle_callback:
             self.on_link_toggle_callback(ch_id, True)
 
