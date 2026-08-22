@@ -16,6 +16,8 @@ class StereoSlider(Gtk.DrawingArea):
         self.peak_r = 0.0
         self.on_volume_changed = on_volume_changed
         self.is_dragging = False
+        self._drag_start_x = 0.0
+        self._drag_start_vol = self.volume
 
         self.set_content_width(120)
         self.set_content_height(20)
@@ -44,27 +46,33 @@ class StereoSlider(Gtk.DrawingArea):
             self.peak_r = max(0.0, min(1.0, peak_r))
             self.queue_draw()
 
-    def _set_pos_from_x(self, x: float):
+    def _calc_vol_from_x(self, x: float) -> int:
         width = float(self.get_width())
         margin = 6.0
         track_w = width - (2.0 * margin)
         if track_w <= 0:
-            return
+            return self.volume
         pct = max(0.0, min(1.0, (x - margin) / track_w))
-        new_vol = int(pct * 100)
+        return int(round(pct * 100))
+
+    def _on_drag_begin(self, gesture, start_x, start_y):
+        self.is_dragging = True
+        self._drag_start_x = start_x
+        new_vol = self._calc_vol_from_x(start_x)
         if new_vol != self.volume:
             self.volume = new_vol
             self.queue_draw()
             if self.on_volume_changed:
                 self.on_volume_changed(self.volume)
 
-    def _on_drag_begin(self, gesture, start_x, start_y):
-        self.is_dragging = True
-        self._set_pos_from_x(start_x)
-
     def _on_drag_update(self, gesture, offset_x, offset_y):
-        start_x, _ = gesture.get_start_point()
-        self._set_pos_from_x(start_x + offset_x)
+        curr_x = self._drag_start_x + offset_x
+        new_vol = self._calc_vol_from_x(curr_x)
+        if new_vol != self.volume:
+            self.volume = new_vol
+            self.queue_draw()
+            if self.on_volume_changed:
+                self.on_volume_changed(self.volume)
 
     def _on_drag_end(self, gesture, offset_x, offset_y):
         self.is_dragging = False

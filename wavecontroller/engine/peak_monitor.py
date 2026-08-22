@@ -9,12 +9,13 @@ import select
 class MultiChannelPeakMonitor:
     """
     Captures real-time stereo (Left and Right) audio peaks using pw-record
-    across physical microphones and system playback audio streams.
+    across both physical microphones and system playback audio streams.
     """
     def __init__(self):
         self.peaks = {} # {channel_id: {"left": float, "right": float}}
         self.running = False
         self.mic_proc = None
+        self.sink_proc = None
         self.thread = None
         self._lock = threading.Lock()
 
@@ -25,23 +26,28 @@ class MultiChannelPeakMonitor:
 
     def stop(self):
         self.running = False
-        if self.mic_proc:
-            try:
-                self.mic_proc.kill()
-            except Exception:
-                pass
-            self.mic_proc = None
+        for p in [self.mic_proc, self.sink_proc]:
+            if p:
+                try:
+                    p.kill()
+                except Exception:
+                    pass
+        self.mic_proc = None
+        self.sink_proc = None
 
-    def _open_pw_record(self):
+    def _open_pw_record(self, target: str = None):
         cmd = [
             'pw-record',
             '--raw',
             '--format=s16',
             '--rate=48000',
             '--channels=2',
-            '--latency=20ms',
-            '-'
+            '--latency=20ms'
         ]
+        if target:
+            cmd.append(f'--target={target}')
+        cmd.append('-')
+
         try:
             proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
             fd = proc.stdout.fileno()
@@ -51,59 +57,78 @@ class MultiChannelPeakMonitor:
         except Exception:
             return None
 
+    def _read_peaks_from_proc(self, proc):
+        peak_l = 0.0
+        peak_r = 0.0
+        if proc and proc.poll() is None:
+            try:
+                ready, _, _ = select.select([proc.stdout.fileno()], [], [], 0.015)
+                if ready:
+                    data = proc.stdout.read(4096)
+                    if data and len(data) >= 4:
+                        if len(data) % 2 != 0:
+                            data = data[:-1]
+                        samples = array.array('h', data)
+                        if len(samples) >= 2:
+                            lefts = samples[0::2]
+                            rights = samples[1::2]
+                            max_l = max(max(lefts), -min(lefts)) / 32768.0 if lefts else 0.0
+                            max_r = max(max(rights), -min(rights)) / 32768.0 if rights else 0.0
+                            peak_l = min(1.0, max_l * 2.2)
+                            peak_r = min(1.0, max_r * 2.2)
+            except Exception:
+                pass
+        return peak_l, peak_r
+
     def _run_capture_loop(self):
-        self.mic_proc = self._open_pw_record()
+        # Open mic capture and sink playback capture
+        self.mic_proc = self._open_pw_record('alsa_input.usb-3142_fifine_Microphone-00.analog-stereo')
+        self.sink_proc = self._open_pw_record('alsa_output.pci-0000_14_00.4.analog-stereo')
 
         mic_l, mic_r = 0.0, 0.0
-        decay = 0.82
+        sink_l, sink_r = 0.0, 0.0
+        decay = 0.80
 
         while self.running:
-            raw_l = 0.0
-            raw_r = 0.0
+            raw_ml, raw_mr = self._read_peaks_from_proc(self.mic_proc)
+            raw_sl, raw_sr = self._read_peaks_from_proc(self.sink_proc)
 
-            if self.mic_proc and self.mic_proc.poll() is None:
-                try:
-                    ready, _, _ = select.select([self.mic_proc.stdout.fileno()], [], [], 0.02)
-                    if ready:
-                        data = self.mic_proc.stdout.read(4096)
-                        if data and len(data) >= 4:
-                            if len(data) % 2 != 0:
-                                data = data[:-1]
-                            samples = array.array('h', data)
-                            if len(samples) >= 2:
-                                lefts = samples[0::2]
-                                rights = samples[1::2]
-                                max_l = max(max(lefts), -min(lefts)) / 32768.0 if lefts else 0.0
-                                max_r = max(max(rights), -min(rights)) / 32768.0 if rights else 0.0
-                                raw_l = min(1.0, max_l * 1.6)
-                                raw_r = min(1.0, max_r * 1.6)
-                except Exception:
-                    pass
-            elif self.running:
-                # Reopen if terminated
-                self.mic_proc = self._open_pw_record()
+            # Re-spawn if exited
+            if (not self.mic_proc or self.mic_proc.poll() is not None) and self.running:
+                self.mic_proc = self._open_pw_record('alsa_input.usb-3142_fifine_Microphone-00.analog-stereo')
+            if (not self.sink_proc or self.sink_proc.poll() is not None) and self.running:
+                self.sink_proc = self._open_pw_record('alsa_output.pci-0000_14_00.4.analog-stereo')
 
-            mic_l = max(raw_l, mic_l * decay)
-            mic_r = max(raw_r, mic_r * decay)
+            mic_l = max(raw_ml, mic_l * decay)
+            mic_r = max(raw_mr, mic_r * decay)
+            sink_l = max(raw_sl, sink_l * decay)
+            sink_r = max(raw_sr, sink_r * decay)
 
             with self._lock:
-                # Assign mic level to "mic" channel
+                # 1. Microphone levels
                 self.peaks["mic"] = {"left": mic_l, "right": mic_r}
-                # Assign to any music/app channels
-                for ch in ["spotify", "music", "game", "chat", "sfx", "browser", "system"]:
-                    self.peaks[ch] = {"left": 0.0, "right": 0.0}
+                
+                # 2. Application & System Playback levels (Spotify, Discord, Games, etc.)
+                for ch in ["spotify", "music", "game", "chat", "browser", "system", "sfx"]:
+                    self.peaks[ch] = {"left": sink_l, "right": sink_r}
 
-            time.sleep(0.025) # 40 FPS refresh rate
+            time.sleep(0.025) # 40 FPS
 
     def get_channel_stereo_peaks(self, channel_id: str) -> tuple:
         with self._lock:
-            p = self.peaks.get(channel_id, {"left": 0.0, "right": 0.0})
-            return p.get("left", 0.0), p.get("right", 0.0)
+            # Match directly or by prefix/substring
+            ch_low = channel_id.lower()
+            if ch_low in self.peaks:
+                p = self.peaks[ch_low]
+                return p.get("left", 0.0), p.get("right", 0.0)
+            for k, p in self.peaks.items():
+                if k in ch_low or ch_low in k:
+                    return p.get("left", 0.0), p.get("right", 0.0)
+            return (0.0, 0.0)
 
     def get_channel_peak(self, channel_id: str) -> float:
-        with self._lock:
-            p = self.peaks.get(channel_id, {"left": 0.0, "right": 0.0})
-            return max(p.get("left", 0.0), p.get("right", 0.0))
+        l, r = self.get_channel_stereo_peaks(channel_id)
+        return max(l, r)
 
     def get_all_peaks(self) -> dict:
         with self._lock:

@@ -20,6 +20,7 @@ class MixerMatrixView(Gtk.Box):
         
         self.channel_cards = {}
         self.matrix_cells = {} # {(channel_id, mix_id): MatrixCell}
+        self.pipewire_mgr.on_external_change_callback = self._on_external_sync
         
         self.set_margin_top(16)
         self.set_margin_bottom(16)
@@ -279,6 +280,12 @@ class MixerMatrixView(Gtk.Box):
             card = self.channel_cards.get(channel_id)
             if card:
                 card.update_ui_state()
+
+    def _on_external_sync(self):
+        for ch_id, card in self.channel_cards.items():
+            card.update_ui_state()
+        for (channel_id, mix_id), cell in self.matrix_cells.items():
+            cell.update_ui_state()
 
     def _on_link_toggled(self, channel_id: str, is_linked: bool):
         for m in self.pipewire_mgr.mixes:

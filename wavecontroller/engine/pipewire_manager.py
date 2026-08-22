@@ -3,11 +3,12 @@ import json
 import subprocess
 import threading
 import time
+from gi.repository import GLib
 
 class PipeWireManager:
     """
-    High-performance PipeWire manager with stream node caching and debounced
-    asynchronous volume dispatch for silky-smooth 60 FPS slider dragging.
+    High-performance PipeWire manager with stream node caching, debounced
+    asynchronous volume dispatch, and bidirectional sync with Volume Controller Plus.
     """
     
     DEFAULT_CHANNELS = [
@@ -38,10 +39,17 @@ class PipeWireManager:
         self._volume_queue = {} # {channel_id: (volume_pct, is_muted)}
         self._volume_event = threading.Event()
         self._worker_thread = None
+        self._sync_thread = None
+        self.on_external_change_callback = None
 
         self._init_default_states()
         
     def _init_default_states(self):
+        # Query real initial mic volume
+        init_mic_vol, init_mic_muted = self._query_system_source_status()
+        mic_vol = init_mic_vol if init_mic_vol is not None else 80
+        mic_muted = init_mic_muted if init_mic_muted is not None else False
+
         for ch in self.channels:
             ch_id = ch["id"]
             self.channel_states[ch_id] = {}
@@ -50,21 +58,66 @@ class PipeWireManager:
             for mx in self.mixes:
                 mx_id = mx["id"]
                 self.channel_states[ch_id][mx_id] = {
-                    "volume": ch.get("default_vol", 80),
-                    "muted": False,
+                    "volume": mic_vol if ch_id == "mic" else ch.get("default_vol", 80),
+                    "muted": mic_muted if ch_id == "mic" else False,
                     "linked": True
                 }
+
+    def _query_system_source_status(self):
+        try:
+            out = subprocess.check_output(["wpctl", "get-volume", "@DEFAULT_AUDIO_SOURCE@"], text=True, stderr=subprocess.DEVNULL).strip()
+            parts = out.split()
+            if len(parts) >= 2:
+                vol = int(round(float(parts[1]) * 100))
+                muted = "[MUTED]" in out
+                return vol, muted
+        except Exception:
+            pass
+        return None, None
 
     def start(self):
         self.running = True
         self.refresh_devices()
         self._refresh_node_cache()
+        
+        # 1. Volume dispatch worker
         self._worker_thread = threading.Thread(target=self._volume_worker_loop, daemon=True)
         self._worker_thread.start()
+
+        # 2. External volume sync poller (Syncs Volume Controller Plus on Stream Deck +)
+        self._sync_thread = threading.Thread(target=self._external_sync_loop, daemon=True)
+        self._sync_thread.start()
 
     def stop(self):
         self.running = False
         self._volume_event.set()
+
+    def _external_sync_loop(self):
+        """Monitors system volume changes from Volume Controller Plus / Stream Deck."""
+        while self.running:
+            try:
+                curr_vol, curr_muted = self._query_system_source_status()
+                if curr_vol is not None:
+                    changed = False
+                    with self._lock:
+                        if "mic" in self.channel_states and "personal" in self.channel_states["mic"]:
+                            st = self.channel_states["mic"]["personal"]
+                            if abs(st["volume"] - curr_vol) >= 1 or st["muted"] != curr_muted:
+                                diff = curr_vol - st["volume"]
+                                st["volume"] = curr_vol
+                                st["muted"] = curr_muted
+                                if st.get("linked", True):
+                                    for m_id, o_st in self.channel_states["mic"].items():
+                                        if m_id != "personal":
+                                            o_st["volume"] = max(0, min(100, o_st["volume"] + diff))
+                                            o_st["muted"] = curr_muted
+                                changed = True
+
+                    if changed and self.on_external_change_callback:
+                        GLib.idle_add(self.on_external_change_callback)
+            except Exception:
+                pass
+            time.sleep(0.15) # 6.6 Hz lightweight check
 
     def refresh_devices(self):
         """Discovers available physical output sinks and input sources from PipeWire."""
@@ -233,7 +286,6 @@ class PipeWireManager:
             self._volume_event.wait(timeout=0.5)
             self._volume_event.clear()
 
-            # Refresh cache periodically if needed
             if time.time() - self._last_cache_time > 5.0:
                 self._refresh_node_cache()
 
@@ -262,7 +314,6 @@ class PipeWireManager:
                             if app_low in cached_name or cached_name in app_low:
                                 target_node_ids.update(node_ids)
 
-                # If cache missed, do a quick refresh
                 if not target_node_ids and assigned_app_names:
                     self._refresh_node_cache()
                     with self._lock:
