@@ -27,7 +27,7 @@ class DeviceSettingsView(Gtk.Box):
         pref_page = Adw.PreferencesPage()
 
         # Group 1: Hardware Preamp & DSP
-        grp_dsp = Adw.PreferencesGroup(title="Hardware Audio & DSP")
+        grp_dsp = Adw.PreferencesGroup(title="Hardware Audio &amp; DSP")
 
         # Preamp Gain
         self.gain_row = Adw.ActionRow(title="Preamp Gain", subtitle=f"{self.hardware_mgr.hardware_gain_db} dB")

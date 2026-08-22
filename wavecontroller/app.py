@@ -24,7 +24,7 @@ class WaveControllerApp(Adw.Application):
         self.ipc_server = IPCServer(self.pipewire_mgr, self.peak_monitor, self.hardware_mgr)
 
     def do_startup(self):
-        super().do_startup()
+        Adw.Application.do_startup(self)
         self.pipewire_mgr.start()
         self.peak_monitor.start()
         self.ipc_server.start()
@@ -44,4 +44,4 @@ class WaveControllerApp(Adw.Application):
         self.ipc_server.stop()
         self.peak_monitor.stop()
         self.pipewire_mgr.stop()
-        super().do_shutdown()
+        Adw.Application.do_shutdown(self)

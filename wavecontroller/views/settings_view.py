@@ -39,7 +39,7 @@ class SettingsView(Gtk.Box):
         pref_page.add(grp_gen)
 
         # Group 2: Stream Deck & Integration
-        grp_sd = Adw.PreferencesGroup(title="Stream Deck & Volume Controller Plus Integration")
+        grp_sd = Adw.PreferencesGroup(title="Stream Deck &amp; Volume Controller Plus Integration")
 
         ipc_row = Adw.ActionRow(title="Volume Controller Plus IPC Server", subtitle="Unix Socket active at /tmp/wavecontroller.sock")
         ipc_status = Gtk.Label(label="Connected")
