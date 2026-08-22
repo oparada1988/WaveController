@@ -6,8 +6,8 @@ import time
 
 class PipeWireManager:
     """
-    Manages PipeWire virtual sinks, sub-mix routing buses, active application routing,
-    and real-time system/application volume levels.
+    High-performance PipeWire manager with stream node caching and debounced
+    asynchronous volume dispatch for silky-smooth 60 FPS slider dragging.
     """
     
     DEFAULT_CHANNELS = [
@@ -26,12 +26,19 @@ class PipeWireManager:
         self.channels = list(self.DEFAULT_CHANNELS)
         self.mixes = list(self.DEFAULT_MIXES)
         self.channel_states = {} # {channel_id: {mix_id: {"volume": int, "muted": bool, "linked": bool}}}
-        self.assigned_apps = dict(self.DEFAULT_APP_MAPPINGS) # {channel_id: list of app names}
+        self.assigned_apps = dict(self.DEFAULT_APP_MAPPINGS)
         self.output_devices = []
         self.selected_monitor_device = None
         self.running = False
         self._lock = threading.Lock()
         
+        # High-Performance Node Cache & Volume Dispatch Queue
+        self._node_cache = {} # {app_name_lower: [node_id, ...]}
+        self._last_cache_time = 0.0
+        self._volume_queue = {} # {channel_id: (volume_pct, is_muted)}
+        self._volume_event = threading.Event()
+        self._worker_thread = None
+
         self._init_default_states()
         
     def _init_default_states(self):
@@ -51,9 +58,13 @@ class PipeWireManager:
     def start(self):
         self.running = True
         self.refresh_devices()
+        self._refresh_node_cache()
+        self._worker_thread = threading.Thread(target=self._volume_worker_loop, daemon=True)
+        self._worker_thread.start()
 
     def stop(self):
         self.running = False
+        self._volume_event.set()
 
     def refresh_devices(self):
         """Discovers available physical output sinks and input sources from PipeWire."""
@@ -108,6 +119,36 @@ class PipeWireManager:
         except Exception:
             pass
 
+    def _refresh_node_cache(self):
+        """Scans PipeWire graph and caches active playback stream IDs."""
+        cache = {}
+        try:
+            out = subprocess.check_output(["pw-dump"], text=True, stderr=subprocess.DEVNULL)
+            data = json.loads(out)
+            for obj in data:
+                props = obj.get("info", {}).get("props", {})
+                media_class = props.get("media.class", "")
+                if "Stream/Output/Audio" in media_class:
+                    node_id = str(obj["id"])
+                    names = [
+                        props.get("application.name", "").lower(),
+                        props.get("application.process.binary", "").lower(),
+                        props.get("node.name", "").lower(),
+                        props.get("node.description", "").lower()
+                    ]
+                    for n in names:
+                        if n:
+                            if n not in cache:
+                                cache[n] = []
+                            if node_id not in cache[n]:
+                                cache[n].append(node_id)
+        except Exception:
+            pass
+
+        with self._lock:
+            self._node_cache = cache
+            self._last_cache_time = time.time()
+
     def get_active_application_streams(self) -> list:
         """Discovers running audio playback streams currently outputting audio."""
         apps = []
@@ -137,16 +178,14 @@ class PipeWireManager:
 
     def assign_app_to_channel(self, channel_id: str, app_name: str):
         with self._lock:
-            # Remove from other channels first
             for ch, apps in self.assigned_apps.items():
                 if app_name in apps:
                     apps.remove(app_name)
             if channel_id in self.assigned_apps:
                 self.assigned_apps[channel_id].append(app_name)
                 
-            # Apply current channel volume to newly assigned app
             state = self.channel_states.get(channel_id, {}).get("personal", {"volume": 80, "muted": False})
-            self._apply_volume_to_system(channel_id, state["volume"], state.get("muted", False))
+            self.set_channel_volume(channel_id, "personal", state["volume"])
 
     def get_assigned_apps(self, channel_id: str) -> list:
         with self._lock:
@@ -159,21 +198,22 @@ class PipeWireManager:
                 diff = volume - state["volume"]
                 state["volume"] = max(0, min(100, volume))
                 
-                # If linked, propagate proportional change to other mixes
                 if state.get("linked", True):
                     for other_mix_id, other_state in self.channel_states[channel_id].items():
                         if other_mix_id != mix_id:
                             other_state["volume"] = max(0, min(100, other_state["volume"] + diff))
 
-                # Apply volume to actual PipeWire streams / apps
-                self._apply_volume_to_system(channel_id, state["volume"], state.get("muted", False))
+                # Enqueue debounced volume update
+                self._volume_queue[channel_id] = (state["volume"], state.get("muted", False))
+                self._volume_event.set()
 
     def set_channel_mute(self, channel_id: str, mix_id: str, muted: bool):
         with self._lock:
             if channel_id in self.channel_states and mix_id in self.channel_states[channel_id]:
                 self.channel_states[channel_id][mix_id]["muted"] = muted
                 state = self.channel_states[channel_id][mix_id]
-                self._apply_volume_to_system(channel_id, state["volume"], muted)
+                self._volume_queue[channel_id] = (state["volume"], muted)
+                self._volume_event.set()
 
     def toggle_channel_mute(self, channel_id: str, mix_id: str) -> bool:
         with self._lock:
@@ -182,58 +222,62 @@ class PipeWireManager:
                 new_mute = not curr
                 self.channel_states[channel_id][mix_id]["muted"] = new_mute
                 state = self.channel_states[channel_id][mix_id]
-                self._apply_volume_to_system(channel_id, state["volume"], new_mute)
+                self._volume_queue[channel_id] = (state["volume"], new_mute)
+                self._volume_event.set()
                 return new_mute
         return False
 
-    def _apply_volume_to_system(self, channel_id: str, volume_pct: int, is_muted: bool):
-        """Asynchronously applies volume and mute to PipeWire/ALSA nodes."""
-        threading.Thread(target=self._exec_apply_volume, args=(channel_id, volume_pct, is_muted), daemon=True).start()
+    def _volume_worker_loop(self):
+        """Persistent worker thread dispatching coalesced volume updates with zero drag latency."""
+        while self.running:
+            self._volume_event.wait(timeout=0.5)
+            self._volume_event.clear()
 
-    def _exec_apply_volume(self, channel_id: str, volume_pct: int, is_muted: bool):
-        vol_frac = max(0.0, min(1.5, volume_pct / 100.0))
+            # Refresh cache periodically if needed
+            if time.time() - self._last_cache_time > 5.0:
+                self._refresh_node_cache()
 
-        if channel_id == "mic":
-            try:
-                subprocess.run(["wpctl", "set-volume", "@DEFAULT_AUDIO_SOURCE@", f"{vol_frac:.2f}"], stderr=subprocess.DEVNULL)
-                subprocess.run(["wpctl", "set-mute", "@DEFAULT_AUDIO_SOURCE@", "1" if is_muted else "0"], stderr=subprocess.DEVNULL)
-            except Exception:
-                pass
-            return
+            with self._lock:
+                pending = dict(self._volume_queue)
+                self._volume_queue.clear()
 
-        assigned_app_names = self.get_assigned_apps(channel_id)
-        if not assigned_app_names and channel_id == "system":
-            try:
-                subprocess.run(["wpctl", "set-volume", "@DEFAULT_AUDIO_SINK@", f"{vol_frac:.2f}"], stderr=subprocess.DEVNULL)
-                subprocess.run(["wpctl", "set-mute", "@DEFAULT_AUDIO_SINK@", "1" if is_muted else "0"], stderr=subprocess.DEVNULL)
-            except Exception:
-                pass
-            return
+            for channel_id, (volume_pct, is_muted) in pending.items():
+                vol_frac = max(0.0, min(1.5, volume_pct / 100.0))
 
-        try:
-            out = subprocess.check_output(["pw-dump"], text=True, stderr=subprocess.DEVNULL)
-            data = json.loads(out)
-            for obj in data:
-                props = obj.get("info", {}).get("props", {})
-                media_class = props.get("media.class", "")
-                if "Stream/Output/Audio" in media_class:
-                    name = props.get("application.name", "")
-                    binary = props.get("application.process.binary", "")
-                    node_name = props.get("node.name", "")
-                    
-                    matched = False
+                if channel_id == "mic":
+                    try:
+                        subprocess.run(["wpctl", "set-volume", "@DEFAULT_AUDIO_SOURCE@", f"{vol_frac:.2f}"], stderr=subprocess.DEVNULL)
+                        subprocess.run(["wpctl", "set-mute", "@DEFAULT_AUDIO_SOURCE@", "1" if is_muted else "0"], stderr=subprocess.DEVNULL)
+                    except Exception:
+                        pass
+                    continue
+
+                assigned_app_names = self.get_assigned_apps(channel_id)
+                target_node_ids = set()
+
+                with self._lock:
                     for app in assigned_app_names:
                         app_low = app.lower()
-                        if app_low in name.lower() or app_low in binary.lower() or app_low in node_name.lower():
-                            matched = True
-                            break
-                    
-                    if matched:
-                        node_id = str(obj["id"])
-                        subprocess.run(["wpctl", "set-volume", node_id, f"{vol_frac:.2f}"], stderr=subprocess.DEVNULL)
-                        subprocess.run(["wpctl", "set-mute", node_id, "1" if is_muted else "0"], stderr=subprocess.DEVNULL)
-        except Exception:
-            pass
+                        for cached_name, node_ids in self._node_cache.items():
+                            if app_low in cached_name or cached_name in app_low:
+                                target_node_ids.update(node_ids)
+
+                # If cache missed, do a quick refresh
+                if not target_node_ids and assigned_app_names:
+                    self._refresh_node_cache()
+                    with self._lock:
+                        for app in assigned_app_names:
+                            app_low = app.lower()
+                            for cached_name, node_ids in self._node_cache.items():
+                                if app_low in cached_name or cached_name in app_low:
+                                    target_node_ids.update(node_ids)
+
+                for node_id in target_node_ids:
+                    try:
+                        subprocess.run(["wpctl", "set-volume", str(node_id), f"{vol_frac:.2f}"], stderr=subprocess.DEVNULL)
+                        subprocess.run(["wpctl", "set-mute", str(node_id), "1" if is_muted else "0"], stderr=subprocess.DEVNULL)
+                    except Exception:
+                        pass
 
     def toggle_channel_link(self, channel_id: str, mix_id: str) -> bool:
         with self._lock:
@@ -263,6 +307,8 @@ class PipeWireManager:
             self.assigned_apps[ch_id] = [name]
             for mx in self.mixes:
                 self.channel_states[ch_id][mx["id"]] = {"volume": 80, "muted": False, "linked": True}
+
+            self._refresh_node_cache()
             return new_ch
 
     def add_mix(self, name: str, subtitle: str = "Custom Mix", icon: str = "audio-speakers-symbolic", color: str = "#3584e4") -> dict:

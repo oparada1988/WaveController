@@ -186,7 +186,10 @@ class MixerMatrixView(Gtk.Box):
                     self._rebuild_grid()
 
         dialog.connect("response", on_response)
-        dialog.present(self.get_root())
+        parent = self.get_root() or self.get_ancestor(Gtk.Window)
+        if parent:
+            dialog.set_transient_for(parent)
+        dialog.present()
 
     def _on_create_channel_clicked(self, btn):
         dialog = Adw.MessageDialog(
@@ -246,7 +249,10 @@ class MixerMatrixView(Gtk.Box):
                     self._rebuild_grid()
 
         dialog.connect("response", on_response)
-        dialog.present(self.get_root())
+        parent = self.get_root() or self.get_ancestor(Gtk.Window)
+        if parent:
+            dialog.set_transient_for(parent)
+        dialog.present()
 
     def _rebuild_grid(self):
         while self.grid.get_first_child():
