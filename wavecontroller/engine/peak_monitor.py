@@ -9,7 +9,7 @@ import select
 class MultiChannelPeakMonitor:
     """
     Captures real-time stereo (Left and Right) audio peaks using pw-record
-    across both physical microphones and system playback audio streams.
+    with isolated node port names for physical microphones and playback audio.
     """
     def __init__(self):
         self.peaks = {} # {channel_id: {"left": float, "right": float}}
@@ -35,9 +35,10 @@ class MultiChannelPeakMonitor:
         self.mic_proc = None
         self.sink_proc = None
 
-    def _open_pw_record(self):
+    def _open_pw_record(self, node_name: str):
         cmd = [
             'pw-record',
+            '-P', f'node.name={node_name}',
             '--raw',
             '--format=s16',
             '--rate=48000',
@@ -55,7 +56,7 @@ class MultiChannelPeakMonitor:
             return None
 
     def _link_sink_monitor(self):
-        """Discovers active monitor output ports and links pw-record to them."""
+        """Discovers active monitor output ports and links wave_sink_monitor to them."""
         try:
             out = subprocess.check_output(['pw-link', '-o'], text=True, stderr=subprocess.DEVNULL)
             mon_fl = None
@@ -68,12 +69,12 @@ class MultiChannelPeakMonitor:
                     mon_fr = l
 
             if mon_fl and mon_fr:
-                # Unlink default mic capture
-                subprocess.run(['pw-link', '-d', 'alsa_input.usb-3142_fifine_Microphone-00.analog-stereo:capture_FL', 'pw-record:input_FL'], stderr=subprocess.DEVNULL)
-                subprocess.run(['pw-link', '-d', 'alsa_input.usb-3142_fifine_Microphone-00.analog-stereo:capture_FR', 'pw-record:input_FR'], stderr=subprocess.DEVNULL)
+                # Unlink default mic capture from sink monitor
+                subprocess.run(['pw-link', '-d', 'alsa_input.usb-3142_fifine_Microphone-00.analog-stereo:capture_FL', 'wave_sink_monitor:input_FL'], stderr=subprocess.DEVNULL)
+                subprocess.run(['pw-link', '-d', 'alsa_input.usb-3142_fifine_Microphone-00.analog-stereo:capture_FR', 'wave_sink_monitor:input_FR'], stderr=subprocess.DEVNULL)
                 # Link to sink monitor
-                subprocess.run(['pw-link', mon_fl, 'pw-record:input_FL'], stderr=subprocess.DEVNULL)
-                subprocess.run(['pw-link', mon_fr, 'pw-record:input_FR'], stderr=subprocess.DEVNULL)
+                subprocess.run(['pw-link', mon_fl, 'wave_sink_monitor:input_FL'], stderr=subprocess.DEVNULL)
+                subprocess.run(['pw-link', mon_fr, 'wave_sink_monitor:input_FR'], stderr=subprocess.DEVNULL)
         except Exception:
             pass
 
@@ -101,12 +102,12 @@ class MultiChannelPeakMonitor:
         return peak_l, peak_r
 
     def _run_capture_loop(self):
-        # 1. Open mic capture
-        self.mic_proc = self._open_pw_record()
+        # 1. Open mic capture with unique node name
+        self.mic_proc = self._open_pw_record('wave_mic_monitor')
         
-        # 2. Open playback capture and link to sink monitor
+        # 2. Open playback capture with unique node name and link to sink monitor
         time.sleep(0.1)
-        self.sink_proc = self._open_pw_record()
+        self.sink_proc = self._open_pw_record('wave_sink_monitor')
         time.sleep(0.15)
         self._link_sink_monitor()
 
@@ -120,9 +121,9 @@ class MultiChannelPeakMonitor:
 
             # Re-spawn if exited
             if (not self.mic_proc or self.mic_proc.poll() is not None) and self.running:
-                self.mic_proc = self._open_pw_record()
+                self.mic_proc = self._open_pw_record('wave_mic_monitor')
             if (not self.sink_proc or self.sink_proc.poll() is not None) and self.running:
-                self.sink_proc = self._open_pw_record()
+                self.sink_proc = self._open_pw_record('wave_sink_monitor')
                 self._link_sink_monitor()
 
             mic_l = max(raw_ml, mic_l * decay)
