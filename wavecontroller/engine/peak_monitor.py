@@ -35,19 +35,16 @@ class MultiChannelPeakMonitor:
         self.mic_proc = None
         self.sink_proc = None
 
-    def _open_pw_record(self, target: str = None):
+    def _open_pw_record(self):
         cmd = [
             'pw-record',
             '--raw',
             '--format=s16',
             '--rate=48000',
             '--channels=2',
-            '--latency=20ms'
+            '--latency=20ms',
+            '-'
         ]
-        if target:
-            cmd.append(f'--target={target}')
-        cmd.append('-')
-
         try:
             proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
             fd = proc.stdout.fileno()
@@ -56,6 +53,29 @@ class MultiChannelPeakMonitor:
             return proc
         except Exception:
             return None
+
+    def _link_sink_monitor(self):
+        """Discovers active monitor output ports and links pw-record to them."""
+        try:
+            out = subprocess.check_output(['pw-link', '-o'], text=True, stderr=subprocess.DEVNULL)
+            mon_fl = None
+            mon_fr = None
+            for line in out.splitlines():
+                l = line.strip()
+                if 'monitor_FL' in l and ('analog' in l or 'pci' in l or 'usb' in l):
+                    mon_fl = l
+                elif 'monitor_FR' in l and ('analog' in l or 'pci' in l or 'usb' in l):
+                    mon_fr = l
+
+            if mon_fl and mon_fr:
+                # Unlink default mic capture
+                subprocess.run(['pw-link', '-d', 'alsa_input.usb-3142_fifine_Microphone-00.analog-stereo:capture_FL', 'pw-record:input_FL'], stderr=subprocess.DEVNULL)
+                subprocess.run(['pw-link', '-d', 'alsa_input.usb-3142_fifine_Microphone-00.analog-stereo:capture_FR', 'pw-record:input_FR'], stderr=subprocess.DEVNULL)
+                # Link to sink monitor
+                subprocess.run(['pw-link', mon_fl, 'pw-record:input_FL'], stderr=subprocess.DEVNULL)
+                subprocess.run(['pw-link', mon_fr, 'pw-record:input_FR'], stderr=subprocess.DEVNULL)
+        except Exception:
+            pass
 
     def _read_peaks_from_proc(self, proc):
         peak_l = 0.0
@@ -81,9 +101,14 @@ class MultiChannelPeakMonitor:
         return peak_l, peak_r
 
     def _run_capture_loop(self):
-        # Open mic capture and sink playback capture
-        self.mic_proc = self._open_pw_record('alsa_input.usb-3142_fifine_Microphone-00.analog-stereo')
-        self.sink_proc = self._open_pw_record('alsa_output.pci-0000_14_00.4.analog-stereo')
+        # 1. Open mic capture
+        self.mic_proc = self._open_pw_record()
+        
+        # 2. Open playback capture and link to sink monitor
+        time.sleep(0.1)
+        self.sink_proc = self._open_pw_record()
+        time.sleep(0.15)
+        self._link_sink_monitor()
 
         mic_l, mic_r = 0.0, 0.0
         sink_l, sink_r = 0.0, 0.0
@@ -95,9 +120,10 @@ class MultiChannelPeakMonitor:
 
             # Re-spawn if exited
             if (not self.mic_proc or self.mic_proc.poll() is not None) and self.running:
-                self.mic_proc = self._open_pw_record('alsa_input.usb-3142_fifine_Microphone-00.analog-stereo')
+                self.mic_proc = self._open_pw_record()
             if (not self.sink_proc or self.sink_proc.poll() is not None) and self.running:
-                self.sink_proc = self._open_pw_record('alsa_output.pci-0000_14_00.4.analog-stereo')
+                self.sink_proc = self._open_pw_record()
+                self._link_sink_monitor()
 
             mic_l = max(raw_ml, mic_l * decay)
             mic_r = max(raw_mr, mic_r * decay)
@@ -105,10 +131,10 @@ class MultiChannelPeakMonitor:
             sink_r = max(raw_sr, sink_r * decay)
 
             with self._lock:
-                # 1. Microphone levels
+                # Microphone channel ONLY gets microphone level
                 self.peaks["mic"] = {"left": mic_l, "right": mic_r}
                 
-                # 2. Application & System Playback levels (Spotify, Discord, Games, etc.)
+                # Application & System Playback channels (Spotify, Discord, Games, etc.) get sink monitor level
                 for ch in ["spotify", "music", "game", "chat", "browser", "system", "sfx"]:
                     self.peaks[ch] = {"left": sink_l, "right": sink_r}
 
@@ -116,7 +142,6 @@ class MultiChannelPeakMonitor:
 
     def get_channel_stereo_peaks(self, channel_id: str) -> tuple:
         with self._lock:
-            # Match directly or by prefix/substring
             ch_low = channel_id.lower()
             if ch_low in self.peaks:
                 p = self.peaks[ch_low]
