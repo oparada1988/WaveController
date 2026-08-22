@@ -82,27 +82,44 @@ class MultiChannelPeakMonitor:
         except Exception:
             pass
 
-    def _read_peaks_from_proc(self, proc):
-        peak_l = 0.0
-        peak_r = 0.0
-        if proc and proc.poll() is None:
+    def _drain_and_calc_peaks(self, proc):
+        if not proc or proc.poll() is not None:
+            return 0.0, 0.0
+        fd = proc.stdout.fileno()
+        all_data = []
+        while True:
             try:
-                ready, _, _ = select.select([proc.stdout.fileno()], [], [], 0.015)
-                if ready:
-                    data = proc.stdout.read(4096)
-                    if data and len(data) >= 4:
-                        if len(data) % 2 != 0:
-                            data = data[:-1]
-                        samples = array.array('h', data)
-                        if len(samples) >= 2:
-                            lefts = samples[0::2]
-                            rights = samples[1::2]
-                            max_l = max(max(lefts), -min(lefts)) / 32768.0 if lefts else 0.0
-                            max_r = max(max(rights), -min(rights)) / 32768.0 if rights else 0.0
-                            peak_l = min(1.0, max_l * 2.2)
-                            peak_r = min(1.0, max_r * 2.2)
-            except Exception:
-                pass
+                chunk = os.read(fd, 16384)
+                if not chunk:
+                    break
+                all_data.append(chunk)
+            except (BlockingIOError, InterruptedError, OSError):
+                break
+
+        if not all_data:
+            return 0.0, 0.0
+
+        combined = b"".join(all_data)
+        if len(combined) < 4:
+            return 0.0, 0.0
+
+        if len(combined) % 2 != 0:
+            combined = combined[:-1]
+
+        # Analyze the most recent audio window (up to last 8192 bytes ≈ 42ms)
+        window = combined[-8192:] if len(combined) > 8192 else combined
+        samples = array.array('h', window)
+        if len(samples) < 2:
+            return 0.0, 0.0
+
+        lefts = samples[0::2]
+        rights = samples[1::2]
+        max_l = max(max(lefts), -min(lefts)) / 32768.0 if lefts else 0.0
+        max_r = max(max(rights), -min(rights)) / 32768.0 if rights else 0.0
+
+        # Calibrated 1.5x gain boost matching Volume Controller Plus
+        peak_l = max(0.0, min(1.0, max_l * 1.5))
+        peak_r = max(0.0, min(1.0, max_r * 1.5))
         return peak_l, peak_r
 
     def _run_capture_loop(self):
@@ -117,11 +134,10 @@ class MultiChannelPeakMonitor:
 
         mic_l, mic_r = 0.0, 0.0
         sink_l, sink_r = 0.0, 0.0
-        decay = 0.80
 
         while self.running:
-            raw_ml, raw_mr = self._read_peaks_from_proc(self.mic_proc)
-            raw_sl, raw_sr = self._read_peaks_from_proc(self.sink_proc)
+            raw_ml, raw_mr = self._drain_and_calc_peaks(self.mic_proc)
+            raw_sl, raw_sr = self._drain_and_calc_peaks(self.sink_proc)
 
             # Re-spawn if exited
             if (not self.mic_proc or self.mic_proc.poll() is not None) and self.running:
@@ -130,18 +146,25 @@ class MultiChannelPeakMonitor:
                 self.sink_proc = self._open_pw_record('wave_sink_monitor')
                 self._link_sink_monitor()
 
-            mic_l = max(raw_ml, mic_l * decay)
-            mic_r = max(raw_mr, mic_r * decay)
-            sink_l = max(raw_sl, sink_l * decay)
-            sink_r = max(raw_sr, sink_r * decay)
+            # Fast attack, slow release exponential smoothing for studio console VU ballistics
+            mic_l = raw_ml if raw_ml >= mic_l else max(raw_ml, mic_l * 0.85 - 0.002)
+            mic_r = raw_mr if raw_mr >= mic_r else max(raw_mr, mic_r * 0.85 - 0.002)
+            sink_l = raw_sl if raw_sl >= sink_l else max(raw_sl, sink_l * 0.85 - 0.002)
+            sink_r = raw_sr if raw_sr >= sink_r else max(raw_sr, sink_r * 0.85 - 0.002)
+
+            # Noise floor clamp
+            m_l = 0.0 if mic_l < 0.005 else mic_l
+            m_r = 0.0 if mic_r < 0.005 else mic_r
+            s_l = 0.0 if sink_l < 0.005 else sink_l
+            s_r = 0.0 if sink_r < 0.005 else sink_r
 
             with self._lock:
                 # Microphone channel ONLY gets microphone level
-                self.peaks["mic"] = {"left": mic_l, "right": mic_r}
+                self.peaks["mic"] = {"left": m_l, "right": m_r}
                 
                 # Application & System Playback channels (Spotify, Discord, Games, etc.) get sink monitor level
                 for ch in ["spotify", "music", "game", "chat", "browser", "system", "sfx"]:
-                    self.peaks[ch] = {"left": sink_l, "right": sink_r}
+                    self.peaks[ch] = {"left": s_l, "right": s_r}
 
             time.sleep(0.025) # 40 FPS
 

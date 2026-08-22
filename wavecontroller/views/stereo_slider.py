@@ -41,7 +41,9 @@ class StereoSlider(Gtk.DrawingArea):
             self.queue_draw()
 
     def set_peaks(self, peak_l: float, peak_r: float):
-        if abs(self.peak_l - peak_l) > 0.008 or abs(self.peak_r - peak_r) > 0.008:
+        diff_l = abs(self.peak_l - peak_l)
+        diff_r = abs(self.peak_r - peak_r)
+        if diff_l > 0.005 or diff_r > 0.005 or (peak_l == 0.0 and self.peak_l > 0.0) or (peak_r == 0.0 and self.peak_r > 0.0):
             self.peak_l = max(0.0, min(1.0, peak_l))
             self.peak_r = max(0.0, min(1.0, peak_r))
             self.queue_draw()
@@ -86,7 +88,9 @@ class StereoSlider(Gtk.DrawingArea):
         y_top = (float(height) - (2.0 * track_h + gap)) / 2.0
         y_bot = y_top + track_h + gap
 
-        thumb_x = margin + track_w * (float(self.volume) / 100.0)
+        vol_pct = float(self.volume) / 100.0
+        vol_w = track_w * vol_pct
+        thumb_x = margin + vol_w
         thumb_y = float(height) / 2.0
         thumb_r = 5.0
 
@@ -99,22 +103,22 @@ class StereoSlider(Gtk.DrawingArea):
             cr.rectangle(margin, y_pos, track_w, track_h)
             cr.fill()
 
-            # Active volume track
+            # Active volume track (dark slate guide)
             cr.set_source_rgba(0.18, 0.18, 0.22, alpha)
-            vol_w = track_w * (float(self.volume) / 100.0)
             cr.rectangle(margin, y_pos, vol_w, track_h)
             cr.fill()
 
-            # Live VU meter bar
-            if not self.is_muted and peak_val > 0.005:
-                meter_w = min(vol_w, track_w * peak_val)
-                if meter_w > 0:
-                    if peak_val > 0.85:
-                        cr.set_source_rgba(0.95, 0.30, 0.25, 1.0) # Red
-                    elif peak_val > 0.70:
-                        cr.set_source_rgba(0.95, 0.75, 0.20, 1.0) # Yellow
-                    else:
-                        cr.set_source_rgba(0.24, 0.70, 0.34, 1.0) # Emerald Green #3db356
+            # Live VU meter bar with smooth studio gradient (Emerald Green -> Yellow -> Red)
+            if not self.is_muted and peak_val > 0.005 and vol_w > 0.0:
+                meter_w = vol_w * peak_val
+                if meter_w > 0.5:
+                    pat = cairo.LinearGradient(margin, 0, margin + vol_w, 0)
+                    pat.add_color_stop_rgba(0.00, 0.24, 0.70, 0.34, 1.0)   # Vivid Emerald Green #3db356
+                    pat.add_color_stop_rgba(0.65, 0.24, 0.70, 0.34, 1.0)  # Green up to 65%
+                    pat.add_color_stop_rgba(0.85, 0.95, 0.75, 0.20, 1.0)  # Warm Yellow at 85%
+                    pat.add_color_stop_rgba(1.00, 0.95, 0.30, 0.25, 1.0)  # Studio Red at 100%
+                    
+                    cr.set_source(pat)
                     cr.rectangle(margin, y_pos, meter_w, track_h)
                     cr.fill()
 
