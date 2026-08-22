@@ -8,10 +8,11 @@ class StereoSlider(Gtk.DrawingArea):
     High-performance dual-channel stereo volume fader and live audio level meter.
     Features silky-smooth 60 FPS drag interaction and real-time Left/Right VU meter animations.
     """
-    def __init__(self, volume: int = 80, is_muted: bool = False, on_volume_changed=None):
+    def __init__(self, volume: int = 80, is_muted: bool = False, sync_peaks: bool = False, on_volume_changed=None):
         super().__init__()
         self.volume = max(0, min(100, volume))
         self.is_muted = is_muted
+        self.sync_peaks = sync_peaks
         self.peak_l = 0.0
         self.peak_r = 0.0
         self.on_volume_changed = on_volume_changed
@@ -41,11 +42,26 @@ class StereoSlider(Gtk.DrawingArea):
             self.queue_draw()
 
     def set_peaks(self, peak_l: float, peak_r: float):
-        diff_l = abs(self.peak_l - peak_l)
-        diff_r = abs(self.peak_r - peak_r)
-        if diff_l > 0.005 or diff_r > 0.005 or (peak_l == 0.0 and self.peak_l > 0.0) or (peak_r == 0.0 and self.peak_r > 0.0):
-            self.peak_l = max(0.0, min(1.0, peak_l))
-            self.peak_r = max(0.0, min(1.0, peak_r))
+        if self.sync_peaks:
+            p = max(peak_l, peak_r)
+            target_l, target_r = p, p
+        else:
+            target_l, target_r = peak_l, peak_r
+
+        diff_l = abs(self.peak_l - target_l)
+        diff_r = abs(self.peak_r - target_r)
+        if diff_l > 0.005 or diff_r > 0.005 or (target_l == 0.0 and self.peak_l > 0.0) or (target_r == 0.0 and self.peak_r > 0.0):
+            self.peak_l = max(0.0, min(1.0, target_l))
+            self.peak_r = max(0.0, min(1.0, target_r))
+            self.queue_draw()
+
+    def set_sync_peaks(self, sync: bool):
+        if self.sync_peaks != sync:
+            self.sync_peaks = sync
+            if sync:
+                p = max(self.peak_l, self.peak_r)
+                self.peak_l = p
+                self.peak_r = p
             self.queue_draw()
 
     def _calc_vol_from_x(self, x: float) -> int:

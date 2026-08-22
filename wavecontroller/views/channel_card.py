@@ -1,22 +1,25 @@
 import gi
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
-from gi.repository import Gtk, Adw
+from gi.repository import Gtk, Adw, GLib
 
 from .stereo_slider import StereoSlider
 
 class ChannelCard(Gtk.Box):
     """
     Channel identifier card displayed on the left column of the matrix.
-    Contains the channel icon, title, app routing menu, mute button,
-    a dual-track stereo volume slider with real-time VU meters, and link toggle.
+    Contains the channel icon, title, settings popover (running app routing, mono/stereo sync toggle, delete),
+    mute button, dual-track stereo volume slider with real-time VU meters, and link toggle.
     """
-    def __init__(self, channel_info: dict, pipewire_mgr, hardware_mgr=None, on_link_toggle_callback=None):
+    def __init__(self, channel_info: dict, pipewire_mgr, hardware_mgr=None, on_link_toggle_callback=None, on_sync_meter_callback=None, on_channel_removed_callback=None, on_channel_renamed_callback=None):
         super().__init__(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         self.channel_info = channel_info
         self.pipewire_mgr = pipewire_mgr
         self.hardware_mgr = hardware_mgr
         self.on_link_toggle_callback = on_link_toggle_callback
+        self.on_sync_meter_callback = on_sync_meter_callback
+        self.on_channel_removed_callback = on_channel_removed_callback
+        self.on_channel_renamed_callback = on_channel_renamed_callback
         
         self.add_css_class("channel-row-card")
         self.set_valign(Gtk.Align.CENTER)
@@ -42,7 +45,7 @@ class ChannelCard(Gtk.Box):
         self.title_lbl = Gtk.Label(label=display_name)
         self.title_lbl.add_css_class("channel-title")
         self.title_lbl.set_halign(Gtk.Align.START)
-        self.title_lbl.set_ellipsize(3) # Ellipsize end
+        self.title_lbl.set_ellipsize(3)
         title_box.append(self.title_lbl)
 
         # Assigned apps subtitle
@@ -55,15 +58,14 @@ class ChannelCard(Gtk.Box):
 
         self.append(title_box)
 
-        # App Routing / Assign Button (for playback sink channels)
-        if channel_info.get("type") != "source":
-            self.route_btn = Gtk.MenuButton()
-            self.route_btn.set_icon_name("applications-system-symbolic")
-            self.route_btn.add_css_class("flat")
-            self.route_btn.add_css_class("wave-icon-btn")
-            self.route_btn.set_tooltip_text("Assign Applications")
-            self._setup_app_popover()
-            self.append(self.route_btn)
+        # Channel Configuration / Settings Gear Button
+        self.settings_btn = Gtk.MenuButton()
+        self.settings_btn.set_icon_name("emblem-system-symbolic")
+        self.settings_btn.add_css_class("flat")
+        self.settings_btn.add_css_class("wave-icon-btn")
+        self.settings_btn.set_tooltip_text("Channel Settings")
+        self._setup_channel_popover()
+        self.append(self.settings_btn)
 
         # Master mute button
         self.mute_btn = Gtk.Button.new_from_icon_name("audio-volume-high-symbolic")
@@ -72,11 +74,13 @@ class ChannelCard(Gtk.Box):
         self.mute_btn.connect("clicked", self._on_mute_clicked)
         self.append(self.mute_btn)
 
-        # Stereo Split Volume Slider & Real-Time Level Meter inside Channel Card!
+        # Stereo Split Volume Slider & VU Meter
         state = self.pipewire_mgr.get_channel_state(self.channel_info["id"], "personal")
+        is_synced = self.pipewire_mgr.get_channel_sync_meter(self.channel_info["id"])
         self.slider = StereoSlider(
             volume=state.get("volume", 80),
             is_muted=state.get("muted", False),
+            sync_peaks=is_synced,
             on_volume_changed=self._on_slider_volume_changed
         )
         self.slider.set_size_request(80, 22)
@@ -92,36 +96,146 @@ class ChannelCard(Gtk.Box):
 
         self.update_ui_state()
 
-    def _setup_app_popover(self):
+    def _setup_channel_popover(self):
         popover = Gtk.Popover()
-        pop_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
-        pop_box.set_margin_top(8)
-        pop_box.set_margin_bottom(8)
-        pop_box.set_margin_start(8)
-        pop_box.set_margin_end(8)
+        popover.add_css_class("wave-popover")
+        
+        pop_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        pop_box.set_margin_top(12)
+        pop_box.set_margin_bottom(12)
+        pop_box.set_margin_start(12)
+        pop_box.set_margin_end(12)
+        pop_box.set_size_request(260, -1)
 
-        head_lbl = Gtk.Label(label="Route Applications to Channel")
+        # 1. Header
+        head_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        head_lbl = Gtk.Label(label="Channel Settings")
         head_lbl.add_css_class("mix-header-title")
-        pop_box.append(head_lbl)
+        head_lbl.set_halign(Gtk.Align.START)
+        head_box.append(head_lbl)
 
-        active_streams = self.pipewire_mgr.get_active_application_streams()
-        assigned = set(self.pipewire_mgr.get_assigned_apps(self.channel_info["id"]))
+        head_box.append(Gtk.Box(hexpand=True))
+        ch_type = self.channel_info.get("type", "sink")
+        type_badge = Gtk.Label(label="App" if ch_type != "source" else "Input")
+        type_badge.add_css_class("mix-header-subtitle")
+        head_box.append(type_badge)
+        pop_box.append(head_box)
 
-        all_apps = ["Spotify", "Discord", "Steam", "Chromium", "Firefox", "VLC", "Teams", "OBS Studio"]
-        for stream in active_streams:
-            if stream["name"] not in all_apps:
-                all_apps.insert(0, stream["name"])
+        # 2. Rename Row
+        rename_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        name_entry = Gtk.Entry()
+        name_entry.set_text(self.channel_info.get("name", "Channel"))
+        name_entry.set_placeholder_text("Channel name...")
+        name_entry.set_hexpand(True)
+        rename_box.append(name_entry)
 
-        for app_name in all_apps:
-            row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-            chk = Gtk.CheckButton(label=app_name)
-            chk.set_active(app_name in assigned)
-            chk.connect("toggled", self._on_app_toggled, app_name)
-            row.append(chk)
-            pop_box.append(row)
+        save_btn = Gtk.Button.new_from_icon_name("object-select-symbolic")
+        save_btn.add_css_class("flat")
+        save_btn.add_css_class("wave-icon-btn")
+        save_btn.set_tooltip_text("Rename Channel")
+
+        def on_rename(*args):
+            new_name = name_entry.get_text().strip()
+            if new_name and new_name != self.channel_info.get("name"):
+                self.channel_info["name"] = new_name
+                self.pipewire_mgr.rename_channel(self.channel_info["id"], new_name)
+                self.title_lbl.set_text(new_name)
+                if self.on_channel_renamed_callback:
+                    self.on_channel_renamed_callback(self.channel_info["id"], new_name)
+
+        save_btn.connect("clicked", on_rename)
+        name_entry.connect("activate", on_rename)
+        rename_box.append(save_btn)
+        pop_box.append(rename_box)
+
+        pop_box.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
+
+        # 3. Application Routing (for playback channels)
+        if ch_type != "source":
+            apps_title = Gtk.Label(label="Active Running Applications:")
+            apps_title.add_css_class("mix-header-subtitle")
+            apps_title.set_halign(Gtk.Align.START)
+            pop_box.append(apps_title)
+
+            # Query only currently running apps on the system
+            active_streams = self.pipewire_mgr.get_active_application_streams()
+            assigned = set(self.pipewire_mgr.get_assigned_apps(self.channel_info["id"]))
+
+            if active_streams:
+                app_list_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+                for stream in active_streams:
+                    app_name = stream["name"]
+                    row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+                    icon_name = stream.get("icon") or self.pipewire_mgr.resolve_icon_for_app(app_name)
+                    img = Gtk.Image.new_from_icon_name(icon_name)
+                    img.set_pixel_size(16)
+                    chk = Gtk.CheckButton(label=app_name)
+                    chk.set_active(app_name in assigned or app_name.lower() in [a.lower() for a in assigned])
+                    chk.connect("toggled", self._on_app_toggled, app_name)
+                    chk.set_hexpand(True)
+
+                    row.append(img)
+                    row.append(chk)
+                    app_list_box.append(row)
+                pop_box.append(app_list_box)
+            else:
+                no_apps_lbl = Gtk.Label(label="No active audio apps detected.\nStart an app (e.g. Spotify, Games) to route it.")
+                no_apps_lbl.add_css_class("mix-header-subtitle")
+                no_apps_lbl.set_halign(Gtk.Align.START)
+                pop_box.append(no_apps_lbl)
+
+            pop_box.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
+
+        # 4. VU Meter Physics: Sync L/R Channels (Mono Mode)
+        meter_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        meter_lbl_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        meter_lbl_box.set_hexpand(True)
+
+        m_title = Gtk.Label(label="Sync L/R Meter (Mono)")
+        m_title.add_css_class("channel-title")
+        m_title.set_halign(Gtk.Align.START)
+        meter_lbl_box.append(m_title)
+
+        m_sub = Gtk.Label(label="Lock Left & Right bars to max peak")
+        m_sub.add_css_class("mix-header-subtitle")
+        m_sub.set_halign(Gtk.Align.START)
+        meter_lbl_box.append(m_sub)
+        meter_box.append(meter_lbl_box)
+
+        sync_switch = Gtk.Switch()
+        is_synced = self.pipewire_mgr.get_channel_sync_meter(self.channel_info["id"])
+        sync_switch.set_active(is_synced)
+        sync_switch.set_valign(Gtk.Align.CENTER)
+
+        def on_sync_toggled(sw, *args):
+            active = sw.get_active()
+            self.channel_info["sync_meter"] = active
+            self.pipewire_mgr.set_channel_sync_meter(self.channel_info["id"], active)
+            self.slider.set_sync_peaks(active)
+            if self.on_sync_meter_callback:
+                self.on_sync_meter_callback(self.channel_info["id"], active)
+
+        sync_switch.connect("notify::active", on_sync_toggled)
+        meter_box.append(sync_switch)
+        pop_box.append(meter_box)
+
+        # 5. Delete Channel Button (Only for user-added channels)
+        if self.channel_info["id"] != "mic":
+            pop_box.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
+            del_btn = Gtk.Button(label="Delete Channel")
+            del_btn.add_css_class("destructive-action")
+            
+            def on_delete(b):
+                popover.popdown()
+                self.pipewire_mgr.remove_channel(self.channel_info["id"])
+                if self.on_channel_removed_callback:
+                    self.on_channel_removed_callback(self.channel_info["id"])
+
+            del_btn.connect("clicked", on_delete)
+            pop_box.append(del_btn)
 
         popover.set_child(pop_box)
-        self.route_btn.set_popover(popover)
+        self.settings_btn.set_popover(popover)
 
     def _on_app_toggled(self, chk, app_name):
         ch_id = self.channel_info["id"]
@@ -147,6 +261,9 @@ class ChannelCard(Gtk.Box):
 
     def update_peaks(self, peak_l: float, peak_r: float):
         self.slider.set_peaks(peak_l, peak_r)
+
+    def set_sync_peaks(self, sync: bool):
+        self.slider.set_sync_peaks(sync)
 
     def _on_mute_clicked(self, btn):
         ch_id = self.channel_info["id"]

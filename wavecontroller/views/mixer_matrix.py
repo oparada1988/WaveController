@@ -111,7 +111,15 @@ class MixerMatrixView(Gtk.Box):
         # Channel Rows (Rows 1..N)
         for row_idx, ch in enumerate(self.pipewire_mgr.channels, start=1):
             # Left Header Card
-            card = ChannelCard(ch, self.pipewire_mgr, self.hardware_mgr, on_link_toggle_callback=self._on_link_toggled)
+            card = ChannelCard(
+                ch,
+                self.pipewire_mgr,
+                self.hardware_mgr,
+                on_link_toggle_callback=self._on_link_toggled,
+                on_sync_meter_callback=self._on_sync_meter_toggled,
+                on_channel_removed_callback=lambda ch_id: GLib.idle_add(self._rebuild_grid),
+                on_channel_renamed_callback=lambda ch_id, name: GLib.idle_add(self._rebuild_grid)
+            )
             self.channel_cards[ch["id"]] = card
             self.grid.attach(card, 0, row_idx, 1, 1)
 
@@ -184,91 +192,270 @@ class MixerMatrixView(Gtk.Box):
         popover = Gtk.Popover()
         popover.add_css_class("wave-popover")
 
-        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
-        box.set_margin_top(12)
-        box.set_margin_bottom(12)
-        box.set_margin_start(12)
-        box.set_margin_end(12)
-        box.set_size_request(260, -1)
+        stack = Gtk.Stack()
+        stack.set_transition_type(Gtk.StackTransitionType.SLIDE_LEFT_RIGHT)
+        stack.set_transition_duration(150)
+
+        # ==========================================
+        # PAGE 1: Category Selector (Application / Input Device)
+        # ==========================================
+        cat_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        cat_box.set_margin_top(12)
+        cat_box.set_margin_bottom(12)
+        cat_box.set_margin_start(12)
+        cat_box.set_margin_end(12)
+        cat_box.set_size_request(270, -1)
 
         head_lbl = Gtk.Label(label="Add Audio Channel")
         head_lbl.add_css_class("mix-header-title")
         head_lbl.set_halign(Gtk.Align.START)
-        box.append(head_lbl)
+        cat_box.append(head_lbl)
 
-        sub_lbl = Gtk.Label(label="Click to add running application:")
+        sub_lbl = Gtk.Label(label="Choose channel category:")
         sub_lbl.add_css_class("mix-header-subtitle")
         sub_lbl.set_halign(Gtk.Align.START)
-        box.append(sub_lbl)
+        cat_box.append(sub_lbl)
 
-        # Running applications quick add buttons
-        active_apps = self.pipewire_mgr.get_active_application_streams()
-        common_apps = ["Spotify", "Discord", "Steam", "Chromium", "Firefox", "VLC"]
-        
-        shown_apps = []
-        for a in active_apps:
-            if a["name"] not in shown_apps:
-                shown_apps.append(a["name"])
-        for ca in common_apps:
-            if ca not in shown_apps:
-                shown_apps.append(ca)
+        # Category 1: Application
+        app_cat_btn = Gtk.Button()
+        app_cat_btn.add_css_class("flat")
+        app_cat_btn.add_css_class("wave-sidebar-row")
 
-        app_list_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
-        for app_name in shown_apps[:6]:
-            app_btn = Gtk.Button()
-            app_btn.add_css_class("flat")
-            app_btn.add_css_class("wave-sidebar-row")
+        app_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+        app_icon = Gtk.Image.new_from_icon_name("applications-multimedia-symbolic")
+        app_icon.set_pixel_size(22)
+        app_row.append(app_icon)
 
-            row_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-            icon_name = self.pipewire_mgr.resolve_icon_for_app(app_name)
-            img = Gtk.Image.new_from_icon_name(icon_name)
-            img.set_pixel_size(18)
-            lbl = Gtk.Label(label=app_name)
-            lbl.set_hexpand(True)
-            lbl.set_halign(Gtk.Align.START)
+        app_text_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=1)
+        app_text_box.set_hexpand(True)
+        app_title = Gtk.Label(label="Application")
+        app_title.add_css_class("channel-title")
+        app_title.set_halign(Gtk.Align.START)
+        app_text_box.append(app_title)
 
-            add_icon = Gtk.Image.new_from_icon_name("list-add-symbolic")
-            add_icon.set_pixel_size(14)
+        app_desc = Gtk.Label(label="Route audio from running apps")
+        app_desc.add_css_class("mix-header-subtitle")
+        app_desc.set_halign(Gtk.Align.START)
+        app_text_box.append(app_desc)
+        app_row.append(app_text_box)
 
-            row_box.append(img)
-            row_box.append(lbl)
-            row_box.append(add_icon)
-            app_btn.set_child(row_box)
+        arrow_app = Gtk.Image.new_from_icon_name("go-next-symbolic")
+        arrow_app.set_pixel_size(14)
+        app_row.append(arrow_app)
 
-            def make_click_handler(name):
-                def handler(b):
-                    self.pipewire_mgr.add_channel(name)
-                    popover.popdown()
-                    GLib.idle_add(self._rebuild_grid)
-                return handler
+        app_cat_btn.set_child(app_row)
+        app_cat_btn.connect("clicked", lambda b: stack.set_visible_child_name("app_page"))
+        cat_box.append(app_cat_btn)
 
-            app_btn.connect("clicked", make_click_handler(app_name))
-            app_list_box.append(app_btn)
+        # Category 2: Input Device
+        dev_cat_btn = Gtk.Button()
+        dev_cat_btn.add_css_class("flat")
+        dev_cat_btn.add_css_class("wave-sidebar-row")
 
-        box.append(app_list_box)
+        dev_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+        dev_icon = Gtk.Image.new_from_icon_name("audio-input-microphone-symbolic")
+        dev_icon.set_pixel_size(22)
+        dev_row.append(dev_icon)
+
+        dev_text_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=1)
+        dev_text_box.set_hexpand(True)
+        dev_title = Gtk.Label(label="Input Device")
+        dev_title.add_css_class("channel-title")
+        dev_title.set_halign(Gtk.Align.START)
+        dev_text_box.append(dev_title)
+
+        dev_desc = Gtk.Label(label="Route physical mic or line-in")
+        dev_desc.add_css_class("mix-header-subtitle")
+        dev_desc.set_halign(Gtk.Align.START)
+        dev_text_box.append(dev_desc)
+        dev_row.append(dev_text_box)
+
+        arrow_dev = Gtk.Image.new_from_icon_name("go-next-symbolic")
+        arrow_dev.set_pixel_size(14)
+        dev_row.append(arrow_dev)
+
+        dev_cat_btn.set_child(dev_row)
+        dev_cat_btn.connect("clicked", lambda b: stack.set_visible_child_name("device_page"))
+        cat_box.append(dev_cat_btn)
+
+        stack.add_named(cat_box, "cat_page")
+
+        # ==========================================
+        # PAGE 2: Application Channel Creator
+        # ==========================================
+        app_page_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        app_page_box.set_margin_top(12)
+        app_page_box.set_margin_bottom(12)
+        app_page_box.set_margin_start(12)
+        app_page_box.set_margin_end(12)
+        app_page_box.set_size_request(270, -1)
+
+        app_top_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        back_app_btn = Gtk.Button.new_from_icon_name("go-previous-symbolic")
+        back_app_btn.add_css_class("flat")
+        back_app_btn.add_css_class("wave-icon-btn")
+        back_app_btn.connect("clicked", lambda b: stack.set_visible_child_name("cat_page"))
+        app_top_box.append(back_app_btn)
+
+        app_head_lbl = Gtk.Label(label="Application Channel")
+        app_head_lbl.add_css_class("mix-header-title")
+        app_head_lbl.set_halign(Gtk.Align.START)
+        app_top_box.append(app_head_lbl)
+        app_page_box.append(app_top_box)
+
+        app_sub_lbl = Gtk.Label(label="Running applications:")
+        app_sub_lbl.add_css_class("mix-header-subtitle")
+        app_sub_lbl.set_halign(Gtk.Align.START)
+        app_page_box.append(app_sub_lbl)
+
+        # Query only running applications
+        running_apps = self.pipewire_mgr.get_active_application_streams()
+        if running_apps:
+            apps_list_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+            for app_info in running_apps:
+                app_name = app_info["name"]
+                item_btn = Gtk.Button()
+                item_btn.add_css_class("flat")
+                item_btn.add_css_class("wave-sidebar-row")
+
+                item_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+                icon_name = app_info.get("icon") or self.pipewire_mgr.resolve_icon_for_app(app_name)
+                i_img = Gtk.Image.new_from_icon_name(icon_name)
+                i_img.set_pixel_size(18)
+                i_lbl = Gtk.Label(label=app_name)
+                i_lbl.set_hexpand(True)
+                i_lbl.set_halign(Gtk.Align.START)
+
+                add_ic = Gtk.Image.new_from_icon_name("list-add-symbolic")
+                add_ic.set_pixel_size(14)
+
+                item_row.append(i_img)
+                item_row.append(i_lbl)
+                item_row.append(add_ic)
+                item_btn.set_child(item_row)
+
+                def make_app_click_handler(name):
+                    def handler(b):
+                        self.pipewire_mgr.add_channel(name, ch_type="sink", assigned_apps=[name])
+                        popover.popdown()
+                        GLib.idle_add(self._rebuild_grid)
+                    return handler
+
+                item_btn.connect("clicked", make_app_click_handler(app_name))
+                apps_list_box.append(item_btn)
+            app_page_box.append(apps_list_box)
+        else:
+            no_apps = Gtk.Label(label="No audio applications running.\nLaunch an app (Spotify, Discord, etc.) or create custom below:")
+            no_apps.add_css_class("mix-header-subtitle")
+            no_apps.set_halign(Gtk.Align.START)
+            no_apps.set_wrap(True)
+            app_page_box.append(no_apps)
 
         # Custom Channel Entry
-        cust_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-        entry = Gtk.Entry(placeholder_text="Custom channel name...")
-        entry.set_hexpand(True)
-        cust_box.append(entry)
+        app_page_box.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
+        cust_app_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        app_entry = Gtk.Entry(placeholder_text="Custom app channel name...")
+        app_entry.set_hexpand(True)
+        cust_app_box.append(app_entry)
 
-        cust_btn = Gtk.Button.new_from_icon_name("list-add-symbolic")
-        cust_btn.add_css_class("suggested-action")
+        cust_app_btn = Gtk.Button.new_from_icon_name("list-add-symbolic")
+        cust_app_btn.add_css_class("suggested-action")
         
-        def on_cust_add(b):
-            name = entry.get_text().strip()
+        def on_cust_app_add(b):
+            name = app_entry.get_text().strip()
             if name:
-                self.pipewire_mgr.add_channel(name)
+                self.pipewire_mgr.add_channel(name, ch_type="sink", assigned_apps=[name])
                 popover.popdown()
                 GLib.idle_add(self._rebuild_grid)
 
-        cust_btn.connect("clicked", on_cust_add)
-        cust_box.append(cust_btn)
-        box.append(cust_box)
+        cust_app_btn.connect("clicked", on_cust_app_add)
+        app_entry.connect("activate", on_cust_app_add)
+        cust_app_box.append(cust_app_btn)
+        app_page_box.append(cust_app_box)
 
-        popover.set_child(box)
+        stack.add_named(app_page_box, "app_page")
+
+        # ==========================================
+        # PAGE 3: Input Device Channel Creator
+        # ==========================================
+        dev_page_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        dev_page_box.set_margin_top(12)
+        dev_page_box.set_margin_bottom(12)
+        dev_page_box.set_margin_start(12)
+        dev_page_box.set_margin_end(12)
+        dev_page_box.set_size_request(270, -1)
+
+        dev_top_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        back_dev_btn = Gtk.Button.new_from_icon_name("go-previous-symbolic")
+        back_dev_btn.add_css_class("flat")
+        back_dev_btn.add_css_class("wave-icon-btn")
+        back_dev_btn.connect("clicked", lambda b: stack.set_visible_child_name("cat_page"))
+        dev_top_box.append(back_dev_btn)
+
+        dev_head_lbl = Gtk.Label(label="Input Device Channel")
+        dev_head_lbl.add_css_class("mix-header-title")
+        dev_head_lbl.set_halign(Gtk.Align.START)
+        dev_top_box.append(dev_head_lbl)
+        dev_page_box.append(dev_top_box)
+
+        dev_sub_lbl = Gtk.Label(label="Available hardware inputs:")
+        dev_sub_lbl.add_css_class("mix-header-subtitle")
+        dev_sub_lbl.set_halign(Gtk.Align.START)
+        dev_page_box.append(dev_sub_lbl)
+
+        # Hardware input devices
+        input_devs = self.hardware_mgr.input_devices if self.hardware_mgr else []
+        if input_devs:
+            dev_list_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+            for dev_info in input_devs:
+                dev_name = dev_info["name"]
+                dev_item_btn = Gtk.Button()
+                dev_item_btn.add_css_class("flat")
+                dev_item_btn.add_css_class("wave-sidebar-row")
+
+                d_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+                d_img = Gtk.Image.new_from_icon_name("audio-input-microphone-symbolic")
+                d_img.set_pixel_size(18)
+                d_lbl = Gtk.Label(label=dev_name)
+                d_lbl.set_hexpand(True)
+                d_lbl.set_halign(Gtk.Align.START)
+                d_lbl.set_ellipsize(3)
+
+                d_add_ic = Gtk.Image.new_from_icon_name("list-add-symbolic")
+                d_add_ic.set_pixel_size(14)
+
+                d_row.append(d_img)
+                d_row.append(d_lbl)
+                d_row.append(d_add_ic)
+                dev_item_btn.set_child(d_row)
+
+                def make_dev_click_handler(name):
+                    def handler(b):
+                        self.pipewire_mgr.add_channel(name, icon="audio-input-microphone-symbolic", ch_type="source")
+                        popover.popdown()
+                        GLib.idle_add(self._rebuild_grid)
+                    return handler
+
+                dev_item_btn.connect("clicked", make_dev_click_handler(dev_name))
+                dev_list_box.append(dev_item_btn)
+            dev_page_box.append(dev_list_box)
+        else:
+            no_devs = Gtk.Label(label="No hardware input devices found.")
+            no_devs.add_css_class("mix-header-subtitle")
+            no_devs.set_halign(Gtk.Align.START)
+            dev_page_box.append(no_devs)
+
+        stack.add_named(dev_page_box, "device_page")
+
+        stack.set_visible_child_name("cat_page")
+        popover.set_child(stack)
         menu_btn.set_popover(popover)
+
+    def _on_sync_meter_toggled(self, channel_id: str, is_synced: bool):
+        for m in self.pipewire_mgr.mixes:
+            cell = self.matrix_cells.get((channel_id, m["id"]))
+            if cell:
+                cell.set_sync_peaks(is_synced)
 
     def _on_cell_changed(self, channel_id: str, mix_id: str):
         state = self.pipewire_mgr.get_channel_state(channel_id, mix_id)

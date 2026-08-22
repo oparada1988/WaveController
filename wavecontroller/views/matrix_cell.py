@@ -31,14 +31,19 @@ class MatrixCell(Gtk.Box):
 
         # Stereo Split Volume Slider & VU Meter
         state = self.pipewire_mgr.get_channel_state(self.channel_id, self.mix_id)
+        is_synced = self.pipewire_mgr.get_channel_sync_meter(self.channel_id)
         self.slider = StereoSlider(
             volume=state.get("volume", 80),
             is_muted=state.get("muted", False),
+            sync_peaks=is_synced,
             on_volume_changed=self._on_slider_volume_changed
         )
         self.append(self.slider)
 
         self.update_ui_state()
+
+    def set_sync_peaks(self, sync: bool):
+        self.slider.set_sync_peaks(sync)
 
     def _on_mute_clicked(self, btn):
         is_muted = self.pipewire_mgr.toggle_channel_mute(self.channel_id, self.mix_id)

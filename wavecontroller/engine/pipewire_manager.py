@@ -12,7 +12,7 @@ class PipeWireManager:
     """
     
     DEFAULT_CHANNELS = [
-        {"id": "mic", "name": "Microphone", "type": "source", "icon": "audio-input-microphone-symbolic", "default_vol": 80}
+        {"id": "mic", "name": "Microphone", "type": "source", "icon": "audio-input-microphone-symbolic", "default_vol": 80, "sync_meter": False}
     ]
 
     DEFAULT_MIXES = [
@@ -217,7 +217,14 @@ class PipeWireManager:
                     binary = props.get("application.process.binary")
                     icon = props.get("application.icon-name") or props.get("application.icon_name")
                     node_id = obj.get("id")
-                    if name and name not in seen:
+                    
+                    if not name:
+                        continue
+                    name_low = name.lower()
+                    if any(x in name_low for x in ["wave_sink", "wave_mic", "vcp_monitor", "pw-record", "parecord", "pipewire", "wireplumber", "easyeffects"]):
+                        continue
+                        
+                    if name not in seen:
                         seen.add(name)
                         apps.append({
                             "id": node_id,
@@ -344,23 +351,64 @@ class PipeWireManager:
         with self._lock:
             return dict(self.channel_states.get(channel_id, {}).get(mix_id, {"volume": 80, "muted": False, "linked": True}))
 
-    def add_channel(self, name: str, icon: str = None) -> dict:
+    def add_channel(self, name: str, icon: str = None, ch_type: str = "sink", assigned_apps: list = None, sync_meter: bool = False) -> dict:
         with self._lock:
-            ch_id = name.lower().replace(" ", "_")
+            ch_id = name.lower().replace(" ", "_").replace("/", "_").replace(".", "_")
             existing_ids = [c["id"] for c in self.channels]
             if ch_id in existing_ids:
                 ch_id = f"{ch_id}_{len(self.channels)}"
 
             resolved_icon = icon or self.resolve_icon_for_app(name)
-            new_ch = {"id": ch_id, "name": name, "type": "sink", "icon": resolved_icon, "default_vol": 80}
+            new_ch = {
+                "id": ch_id,
+                "name": name,
+                "type": ch_type,
+                "icon": resolved_icon,
+                "default_vol": 80,
+                "sync_meter": sync_meter
+            }
             self.channels.append(new_ch)
             self.channel_states[ch_id] = {}
-            self.assigned_apps[ch_id] = [name]
+            self.assigned_apps[ch_id] = assigned_apps if assigned_apps is not None else ([name] if ch_type == "sink" else [])
             for mx in self.mixes:
                 self.channel_states[ch_id][mx["id"]] = {"volume": 80, "muted": False, "linked": True}
 
             self._refresh_node_cache()
             return new_ch
+
+    def remove_channel(self, channel_id: str) -> bool:
+        with self._lock:
+            if channel_id == "mic":
+                return False
+            self.channels = [c for c in self.channels if c["id"] != channel_id]
+            if channel_id in self.channel_states:
+                del self.channel_states[channel_id]
+            if channel_id in self.assigned_apps:
+                del self.assigned_apps[channel_id]
+            self._refresh_node_cache()
+            return True
+
+    def rename_channel(self, channel_id: str, new_name: str) -> bool:
+        with self._lock:
+            for ch in self.channels:
+                if ch["id"] == channel_id:
+                    ch["name"] = new_name
+                    return True
+            return False
+
+    def set_channel_sync_meter(self, channel_id: str, sync: bool):
+        with self._lock:
+            for ch in self.channels:
+                if ch["id"] == channel_id:
+                    ch["sync_meter"] = sync
+                    break
+
+    def get_channel_sync_meter(self, channel_id: str) -> bool:
+        with self._lock:
+            for ch in self.channels:
+                if ch["id"] == channel_id:
+                    return ch.get("sync_meter", False)
+            return False
 
     def add_mix(self, name: str, subtitle: str = "Custom Mix", icon: str = "audio-speakers-symbolic", color: str = "#3584e4") -> dict:
         with self._lock:
