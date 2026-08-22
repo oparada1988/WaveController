@@ -11,27 +11,15 @@ class PipeWireManager:
     """
     
     DEFAULT_CHANNELS = [
-        {"id": "mic", "name": "Microphone", "type": "source", "icon": "audio-input-microphone-symbolic", "default_vol": 80},
-        {"id": "game", "name": "Games", "type": "sink", "icon": "applications-games-symbolic", "default_vol": 85},
-        {"id": "music", "name": "Music", "type": "sink", "icon": "audio-x-generic-symbolic", "default_vol": 75},
-        {"id": "chat", "name": "Voice Chat", "type": "sink", "icon": "user-available-symbolic", "default_vol": 90},
-        {"id": "sfx", "name": "Stream Deck / SFX", "type": "sink", "icon": "view-grid-symbolic", "default_vol": 70},
-        {"id": "browser", "name": "Browser", "type": "sink", "icon": "web-browser-symbolic", "default_vol": 80},
-        {"id": "system", "name": "System Audio", "type": "sink", "icon": "audio-speakers-symbolic", "default_vol": 80}
+        {"id": "mic", "name": "Microphone", "type": "source", "icon": "audio-input-microphone-symbolic", "default_vol": 80}
     ]
 
     DEFAULT_MIXES = [
-        {"id": "personal", "name": "Personal Mix", "subtitle": "1 output", "icon": "audio-headphones-symbolic", "color": "#3db356"},
-        {"id": "chat_mix", "name": "Chat Mix", "subtitle": "Discord / In-Game", "icon": "system-users-symbolic", "color": "#3584e4"},
-        {"id": "record_mix", "name": "Record Mix", "subtitle": "OBS / Stream", "icon": "media-record-symbolic", "color": "#e05252"}
+        {"id": "personal", "name": "Personal Mix", "subtitle": "1 output", "icon": "audio-headphones-symbolic", "color": "#3db356"}
     ]
 
     DEFAULT_APP_MAPPINGS = {
-        "music": ["Spotify", "Rhythmbox", "Apple Music", "Cider", "VLC"],
-        "chat": ["Discord", "Teams", "Zoom", "Mumble", "Skype", "WEBRTC VoiceEngine"],
-        "game": ["Steam", "Proton", "Wine", "Games"],
-        "browser": ["Chromium", "Chrome", "Firefox", "Brave", "Edge"],
-        "sfx": ["StreamController", "Stream Deck"]
+        "mic": ["System capture"]
     }
 
     def __init__(self):
@@ -63,7 +51,6 @@ class PipeWireManager:
     def start(self):
         self.running = True
         self.refresh_devices()
-        threading.Thread(target=self._setup_pipewire_buses, daemon=True).start()
 
     def stop(self):
         self.running = False
@@ -142,7 +129,7 @@ class PipeWireManager:
                             "id": node_id,
                             "name": name,
                             "binary": binary or name.lower(),
-                            "icon": icon or "audio-x-generic-symbolic"
+                            "icon": icon or self.resolve_icon_for_app(name)
                         })
         except Exception:
             pass
@@ -164,10 +151,6 @@ class PipeWireManager:
     def get_assigned_apps(self, channel_id: str) -> list:
         with self._lock:
             return list(self.assigned_apps.get(channel_id, []))
-
-    def _setup_pipewire_buses(self):
-        """Ensures the WaveController virtual audio node graph exists in PipeWire."""
-        pass
 
     def set_channel_volume(self, channel_id: str, mix_id: str, volume: int):
         with self._lock:
@@ -218,10 +201,8 @@ class PipeWireManager:
                 pass
             return
 
-        # For playback channels, find all stream nodes of assigned applications
         assigned_app_names = self.get_assigned_apps(channel_id)
         if not assigned_app_names and channel_id == "system":
-            # Apply to default audio sink if system
             try:
                 subprocess.run(["wpctl", "set-volume", "@DEFAULT_AUDIO_SINK@", f"{vol_frac:.2f}"], stderr=subprocess.DEVNULL)
                 subprocess.run(["wpctl", "set-mute", "@DEFAULT_AUDIO_SINK@", "1" if is_muted else "0"], stderr=subprocess.DEVNULL)

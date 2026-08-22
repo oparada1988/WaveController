@@ -3,13 +3,16 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import Gtk, Adw
 
+from .stereo_slider import StereoSlider
+
 class ChannelCard(Gtk.Box):
     """
-    Channel identifier card displayed on the left column of the matrix,
-    including app routing popovers and multi-mix link controls.
+    Channel identifier card displayed on the left column of the matrix.
+    Contains the channel icon, title, app routing menu, mute button,
+    a dual-track stereo volume slider with real-time VU meters, and link toggle.
     """
     def __init__(self, channel_info: dict, pipewire_mgr, hardware_mgr=None, on_link_toggle_callback=None):
-        super().__init__(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        super().__init__(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         self.channel_info = channel_info
         self.pipewire_mgr = pipewire_mgr
         self.hardware_mgr = hardware_mgr
@@ -17,7 +20,7 @@ class ChannelCard(Gtk.Box):
         
         self.add_css_class("channel-row-card")
         self.set_valign(Gtk.Align.CENTER)
-        self.set_size_request(200, -1)
+        self.set_size_request(280, -1)
 
         # Channel icon (Auto-resolve from assigned apps or channel name)
         assigned = self.pipewire_mgr.get_assigned_apps(channel_info["id"])
@@ -27,9 +30,10 @@ class ChannelCard(Gtk.Box):
         self.icon_img.set_pixel_size(20)
         self.append(self.icon_img)
 
-        # Channel Title + Subtitle (Assigned Apps) Box
+        # Channel Title + Subtitle Box
         title_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=1)
-        title_box.set_hexpand(True)
+        title_box.set_hexpand(False)
+        title_box.set_size_request(100, -1)
 
         display_name = channel_info.get("name", "Channel")
         if channel_info["id"] == "mic" and self.hardware_mgr:
@@ -38,14 +42,15 @@ class ChannelCard(Gtk.Box):
         self.title_lbl = Gtk.Label(label=display_name)
         self.title_lbl.add_css_class("channel-title")
         self.title_lbl.set_halign(Gtk.Align.START)
+        self.title_lbl.set_ellipsize(3) # Ellipsize end
         title_box.append(self.title_lbl)
 
         # Assigned apps subtitle
-        assigned = self.pipewire_mgr.get_assigned_apps(channel_info["id"])
         sub_text = ", ".join(assigned[:2]) if assigned else ("System capture" if channel_info["id"] == "mic" else "No apps assigned")
         self.sub_lbl = Gtk.Label(label=sub_text)
         self.sub_lbl.add_css_class("mix-header-subtitle")
         self.sub_lbl.set_halign(Gtk.Align.START)
+        self.sub_lbl.set_ellipsize(3)
         title_box.append(self.sub_lbl)
 
         self.append(title_box)
@@ -66,6 +71,16 @@ class ChannelCard(Gtk.Box):
         self.mute_btn.add_css_class("wave-icon-btn")
         self.mute_btn.connect("clicked", self._on_mute_clicked)
         self.append(self.mute_btn)
+
+        # Stereo Split Volume Slider & Real-Time Level Meter inside Channel Card!
+        state = self.pipewire_mgr.get_channel_state(self.channel_info["id"], "personal")
+        self.slider = StereoSlider(
+            volume=state.get("volume", 80),
+            is_muted=state.get("muted", False),
+            on_volume_changed=self._on_slider_volume_changed
+        )
+        self.slider.set_size_request(80, 22)
+        self.append(self.slider)
 
         # Link/Unlink multi-mix toggle button
         self.link_btn = Gtk.Button.new_from_icon_name("insert-link-symbolic")
@@ -89,11 +104,9 @@ class ChannelCard(Gtk.Box):
         head_lbl.add_css_class("mix-header-title")
         pop_box.append(head_lbl)
 
-        # List active streams and known apps
         active_streams = self.pipewire_mgr.get_active_application_streams()
         assigned = set(self.pipewire_mgr.get_assigned_apps(self.channel_info["id"]))
 
-        # Known common apps for quick toggle
         all_apps = ["Spotify", "Discord", "Steam", "Chromium", "Firefox", "VLC", "Teams", "OBS Studio"]
         for stream in active_streams:
             if stream["name"] not in all_apps:
@@ -120,12 +133,21 @@ class ChannelCard(Gtk.Box):
                 assigned.remove(app_name)
                 self.pipewire_mgr.assigned_apps[ch_id] = assigned
         
-        # Update subtitle and icon
         assigned_list = self.pipewire_mgr.get_assigned_apps(ch_id)
         self.sub_lbl.set_text(", ".join(assigned_list[:2]) if assigned_list else "No apps assigned")
         if assigned_list:
             new_icon = self.pipewire_mgr.resolve_icon_for_app(assigned_list[0])
             self.icon_img.set_from_icon_name(new_icon)
+
+    def _on_slider_volume_changed(self, vol: int):
+        ch_id = self.channel_info["id"]
+        for mx in self.pipewire_mgr.mixes:
+            self.pipewire_mgr.set_channel_volume(ch_id, mx["id"], vol)
+        if self.on_link_toggle_callback:
+            self.on_link_toggle_callback(ch_id, True)
+
+    def update_peaks(self, peak_l: float, peak_r: float):
+        self.slider.set_peaks(peak_l, peak_r)
 
     def _on_mute_clicked(self, btn):
         ch_id = self.channel_info["id"]
@@ -146,6 +168,9 @@ class ChannelCard(Gtk.Box):
         state = self.pipewire_mgr.get_channel_state(ch_id, "personal")
         muted = state.get("muted", False)
         linked = state.get("linked", True)
+        vol = state.get("volume", 80)
+
+        self.slider.set_volume(vol, muted)
 
         if muted:
             self.mute_btn.set_icon_name("audio-volume-muted-symbolic")

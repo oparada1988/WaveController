@@ -83,7 +83,7 @@ class MixerMatrixView(Gtk.Box):
     def _build_grid(self):
         # Top-left empty header cell
         spacer = Gtk.Box()
-        spacer.set_size_request(200, 48)
+        spacer.set_size_request(280, 48)
         self.grid.attach(spacer, 0, 0, 1, 1)
 
         # Mix Column Headers (Row 0, Columns 1..N)
@@ -262,7 +262,12 @@ class MixerMatrixView(Gtk.Box):
             self.hardware_mgr.set_active_output_device(dev["id"])
 
     def _on_ui_tick(self) -> bool:
-        # Push real-time stereo peaks to each cell
+        # Push real-time stereo peaks to channel cards (left column)
+        for ch_id, card in self.channel_cards.items():
+            peak_l, peak_r = self.peak_monitor.get_channel_stereo_peaks(ch_id)
+            card.update_peaks(peak_l, peak_r)
+
+        # Push real-time stereo peaks to each sub-mix cell
         for (channel_id, mix_id), cell in self.matrix_cells.items():
             peak_l, peak_r = self.peak_monitor.get_channel_stereo_peaks(channel_id)
             cell.update_peaks(peak_l, peak_r)
