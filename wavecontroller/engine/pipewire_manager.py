@@ -6,8 +6,8 @@ import time
 
 class PipeWireManager:
     """
-    Manages PipeWire virtual sinks, sub-mix routing buses, and channel volume levels.
-    Creates the Wave Link dual-mix matrix architecture on Linux.
+    Manages PipeWire virtual sinks, sub-mix routing buses, active application routing,
+    and channel volume levels.
     """
     
     DEFAULT_CHANNELS = [
@@ -26,10 +26,19 @@ class PipeWireManager:
         {"id": "record_mix", "name": "Record Mix", "subtitle": "OBS / Stream", "icon": "media-record-symbolic", "color": "#e05252"}
     ]
 
+    DEFAULT_APP_MAPPINGS = {
+        "music": ["Spotify", "Rhythmbox", "Apple Music", "Cider", "VLC"],
+        "chat": ["Discord", "Teams", "Zoom", "Mumble", "Skype", "WEBRTC VoiceEngine"],
+        "game": ["Steam", "Proton", "Wine", "Games"],
+        "browser": ["Chromium", "Chrome", "Firefox", "Brave", "Edge"],
+        "sfx": ["StreamController", "Stream Deck"]
+    }
+
     def __init__(self):
         self.channels = list(self.DEFAULT_CHANNELS)
         self.mixes = list(self.DEFAULT_MIXES)
         self.channel_states = {} # {channel_id: {mix_id: {"volume": int, "muted": bool, "linked": bool}}}
+        self.assigned_apps = dict(self.DEFAULT_APP_MAPPINGS) # {channel_id: list of app names}
         self.output_devices = []
         self.selected_monitor_device = None
         self.running = False
@@ -41,6 +50,8 @@ class PipeWireManager:
         for ch in self.channels:
             ch_id = ch["id"]
             self.channel_states[ch_id] = {}
+            if ch_id not in self.assigned_apps:
+                self.assigned_apps[ch_id] = []
             for mx in self.mixes:
                 mx_id = mx["id"]
                 self.channel_states[ch_id][mx_id] = {
@@ -83,7 +94,6 @@ class PipeWireManager:
                 
                 line_str = line.strip()
                 if not line_str or line_str.startswith("├") or line_str.startswith("└") or line_str.startswith("│"):
-                    # Parse node lines like: "59. Starship/Matisse HD Audio Controller Analog Stereo [vol: 0.65]"
                     parts = line_str.replace("├─", "").replace("└─", "").replace("│", "").replace("*", "").strip()
                     if parts and parts[0].isdigit():
                         tokens = parts.split(".", 1)
@@ -102,9 +112,48 @@ class PipeWireManager:
         except Exception:
             pass
 
+    def get_active_application_streams(self) -> list:
+        """Discovers running audio playback streams currently outputting audio."""
+        apps = []
+        seen = set()
+        try:
+            out = subprocess.check_output(["pw-dump"], text=True, stderr=subprocess.DEVNULL)
+            data = json.loads(out)
+            for obj in data:
+                props = obj.get("info", {}) .get("props", {})
+                media_class = props.get("media.class", "")
+                if "Stream/Output/Audio" in media_class:
+                    name = props.get("application.name") or props.get("node.description") or props.get("node.name")
+                    binary = props.get("application.process.binary")
+                    icon = props.get("application.icon-name") or props.get("application.icon_name")
+                    node_id = obj.get("id")
+                    if name and name not in seen:
+                        seen.add(name)
+                        apps.append({
+                            "id": node_id,
+                            "name": name,
+                            "binary": binary or name.lower(),
+                            "icon": icon or "audio-x-generic-symbolic"
+                        })
+        except Exception:
+            pass
+        return apps
+
+    def assign_app_to_channel(self, channel_id: str, app_name: str):
+        with self._lock:
+            # Remove from other channels first
+            for ch, apps in self.assigned_apps.items():
+                if app_name in apps:
+                    apps.remove(app_name)
+            if channel_id in self.assigned_apps:
+                self.assigned_apps[channel_id].append(app_name)
+
+    def get_assigned_apps(self, channel_id: str) -> list:
+        with self._lock:
+            return list(self.assigned_apps.get(channel_id, []))
+
     def _setup_pipewire_buses(self):
         """Ensures the WaveController virtual audio node graph exists in PipeWire."""
-        # Virtual sinks are created via pw-cli or PipeWire module-null-sink / loopbacks
         pass
 
     def set_channel_volume(self, channel_id: str, mix_id: str, volume: int):
@@ -153,6 +202,7 @@ class PipeWireManager:
             new_ch = {"id": ch_id, "name": name, "type": "sink", "icon": icon, "default_vol": 80}
             self.channels.append(new_ch)
             self.channel_states[ch_id] = {}
+            self.assigned_apps[ch_id] = []
             for mx in self.mixes:
                 self.channel_states[ch_id][mx["id"]] = {"volume": 80, "muted": False, "linked": True}
             return new_ch

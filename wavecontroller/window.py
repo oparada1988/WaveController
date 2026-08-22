@@ -11,7 +11,7 @@ from .views.settings_view import SettingsView
 
 class WaveMainWindow(Adw.ApplicationWindow):
     """
-    Main WaveController Desktop Window with modern Libadwaita layout matching Wave Link.
+    Main WaveController Desktop Window with unified Adw.HeaderBar and Wave Link layout.
     """
     def __init__(self, app, pipewire_mgr, peak_monitor, hardware_mgr, **kwargs):
         super().__init__(application=app, title="WaveController", **kwargs)
@@ -19,7 +19,7 @@ class WaveMainWindow(Adw.ApplicationWindow):
         self.peak_monitor = peak_monitor
         self.hardware_mgr = hardware_mgr
 
-        self.set_default_size(1050, 680)
+        self.set_default_size(1080, 700)
         self.add_css_class("wave-window")
 
         # Load Custom CSS
@@ -28,6 +28,24 @@ class WaveMainWindow(Adw.ApplicationWindow):
             provider = Gtk.CssProvider()
             provider.load_from_path(css_path)
             Gtk.StyleContext.add_provider_for_display(Gdk.Display.get_default(), provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+
+        # ToolbarView providing standard title bar + window controls (Minimize, Maximize, Close)
+        toolbar_view = Adw.ToolbarView()
+
+        # Top HeaderBar
+        header_bar = Adw.HeaderBar()
+        header_bar.set_show_title(True)
+        
+        # Window Title Widget
+        title_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        app_icon = Gtk.Image.new_from_icon_name("audio-card-symbolic")
+        app_lbl = Gtk.Label(label="WaveController")
+        app_lbl.add_css_class("wave-sidebar-title")
+        title_box.append(app_icon)
+        title_box.append(app_lbl)
+        header_bar.set_title_widget(title_box)
+
+        toolbar_view.add_top_bar(header_bar)
 
         # Main Split Box (Sidebar + Content View)
         main_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
@@ -56,25 +74,13 @@ class WaveMainWindow(Adw.ApplicationWindow):
 
         main_box.append(self.stack)
 
-        self.set_content(main_box)
+        toolbar_view.set_content(main_box)
+        self.set_content(toolbar_view)
 
     def _build_sidebar(self) -> Gtk.Box:
         sidebar = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
         sidebar.add_css_class("wave-sidebar")
-        sidebar.set_size_request(220, -1)
-
-        # App Brand Header
-        header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
-        header.add_css_class("wave-sidebar-header")
-        
-        logo_icon = Gtk.Image.new_from_icon_name("audio-card-symbolic")
-        logo_icon.set_pixel_size(22)
-        header.append(logo_icon)
-
-        title = Gtk.Label(label="WaveController")
-        title.add_css_class("wave-sidebar-title")
-        header.append(title)
-        sidebar.append(header)
+        sidebar.set_size_request(230, -1)
 
         # Section 1: Connected Devices
         sec1_lbl = Gtk.Label(label="Devices")
@@ -82,18 +88,21 @@ class WaveMainWindow(Adw.ApplicationWindow):
         sec1_lbl.set_halign(Gtk.Align.START)
         sidebar.append(sec1_lbl)
 
-        self.dev_btn = Gtk.Button()
-        self.dev_btn.add_css_class("flat")
-        self.dev_btn.add_css_class("wave-sidebar-row")
-        
-        dev_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        dev_icon = Gtk.Image.new_from_icon_name("audio-input-microphone-symbolic")
-        dev_lbl = Gtk.Label(label=self.hardware_mgr.device_name)
-        dev_box.append(dev_icon)
-        dev_box.append(dev_lbl)
-        self.dev_btn.set_child(dev_box)
-        self.dev_btn.connect("clicked", lambda b: self._switch_view("device"))
-        sidebar.append(self.dev_btn)
+        self.dev_buttons = []
+        for dev in self.hardware_mgr.connected_devices:
+            dev_btn = Gtk.Button()
+            dev_btn.add_css_class("flat")
+            dev_btn.add_css_class("wave-sidebar-row")
+            
+            dev_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+            dev_icon = Gtk.Image.new_from_icon_name(dev.get("icon", "audio-input-microphone-symbolic"))
+            dev_lbl = Gtk.Label(label=dev.get("name", "Audio Device"))
+            dev_box.append(dev_icon)
+            dev_box.append(dev_lbl)
+            dev_btn.set_child(dev_box)
+            dev_btn.connect("clicked", lambda b, d=dev: self._switch_view("device"))
+            sidebar.append(dev_btn)
+            self.dev_buttons.append(dev_btn)
 
         # Section 2: Mixes & Effects
         sec2_lbl = Gtk.Label(label="Mixes & Effects")
@@ -151,14 +160,16 @@ class WaveMainWindow(Adw.ApplicationWindow):
         self.stack.set_visible_child_name(name)
         # Update selected styling
         self.mixes_btn.remove_css_class("selected")
-        self.dev_btn.remove_css_class("selected")
+        for btn in self.dev_buttons:
+            btn.remove_css_class("selected")
         self.fx_btn.remove_css_class("selected")
         self.settings_btn.remove_css_class("selected")
 
         if name == "mixes":
             self.mixes_btn.add_css_class("selected")
         elif name == "device":
-            self.dev_btn.add_css_class("selected")
+            if self.dev_buttons:
+                self.dev_buttons[0].add_css_class("selected")
         elif name == "effects":
             self.fx_btn.add_css_class("selected")
         elif name == "settings":

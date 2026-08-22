@@ -11,6 +11,7 @@ class USBHardwareManager:
     def __init__(self):
         self.device_name = "fifine Microphone"
         self.device_type = "generic" # 'elgato' or 'generic'
+        self.connected_devices = []
         self.hardware_gain_db = 45 # 0 to 75 dB
         self.phantom_power_48v = False
         self.clipguard_enabled = True
@@ -23,38 +24,41 @@ class USBHardwareManager:
         self.detect_connected_hardware()
 
     def detect_connected_hardware(self):
-        """Scans USB and PipeWire devices to detect active microphone hardware."""
+        """Scans USB and PipeWire devices to detect active microphone and audio hardware."""
+        devs = []
         try:
             lsusb_out = subprocess.check_output(["lsusb"], text=True, stderr=subprocess.DEVNULL)
-            if "0fd9:" in lsusb_out: # Elgato Systems
-                if "0fd9:0088" in lsusb_out:
-                    self.device_name = "Elgato Wave:3"
-                    self.device_type = "elgato"
-                elif "0fd9:0083" in lsusb_out:
-                    self.device_name = "Elgato Wave XLR MK.2"
-                    self.device_type = "elgato"
-                else:
-                    self.device_name = "Elgato Wave Device"
-                    self.device_type = "elgato"
-                return
-            
-            # Check for fifine microphone
-            if "3142:a010" in lsusb_out or "fifine" in lsusb_out.lower():
-                self.device_name = "fifine Microphone"
-                self.device_type = "generic"
-                return
+            for line in lsusb_out.splitlines():
+                line_str = line.strip()
+                if "fifine" in line_str.lower():
+                    devs.append({"name": "fifine Microphone", "type": "generic", "icon": "audio-input-microphone-symbolic"})
+                elif "wave:3" in line_str.lower() or "0fd9:0088" in line_str:
+                    devs.append({"name": "Elgato Wave:3", "type": "elgato", "icon": "audio-input-microphone-symbolic"})
+                elif "wave xlr" in line_str.lower() or "0fd9:0083" in line_str:
+                    devs.append({"name": "Elgato Wave XLR MK.2", "type": "elgato", "icon": "audio-input-microphone-symbolic"})
+                elif "stream deck plus" in line_str.lower() or "0fd9:0084" in line_str:
+                    devs.append({"name": "Stream Deck +", "type": "controller", "icon": "view-grid-symbolic"})
+                elif "facecam" in line_str.lower() or "0fd9:0078" in line_str:
+                    devs.append({"name": "Elgato Facecam", "type": "video", "icon": "camera-web-symbolic"})
         except Exception:
             pass
 
-        self.device_name = "fifine Microphone"
-        self.device_type = "generic"
+        if not devs:
+            devs.append({"name": "fifine Microphone", "type": "generic", "icon": "audio-input-microphone-symbolic"})
+
+        self.connected_devices = devs
+        # Set primary mic
+        for d in devs:
+            if d.get("icon") == "audio-input-microphone-symbolic":
+                self.device_name = d["name"]
+                self.device_type = d["type"]
+                break
 
     def set_gain(self, gain_db: int):
         self.hardware_gain_db = max(0, min(75, gain_db))
         if self.device_type == "elgato":
             self._send_elgato_control(cmd=0x01, val=self.hardware_gain_db)
         else:
-            # Scale to ALSA input volume
             vol_pct = self.hardware_gain_db / 75.0
             try:
                 subprocess.run(["wpctl", "set-volume", "@DEFAULT_AUDIO_SOURCE@", f"{vol_pct:.2f}"], stderr=subprocess.DEVNULL)

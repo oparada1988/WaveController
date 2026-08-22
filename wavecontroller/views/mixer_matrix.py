@@ -85,7 +85,7 @@ class MixerMatrixView(Gtk.Box):
         # Channel Rows (Rows 1..N)
         for row_idx, ch in enumerate(self.pipewire_mgr.channels, start=1):
             # Left Header Card
-            card = ChannelCard(ch, self.pipewire_mgr, on_link_toggle_callback=self._on_link_toggled)
+            card = ChannelCard(ch, self.pipewire_mgr, self.hardware_mgr, on_link_toggle_callback=self._on_link_toggled)
             self.channel_cards[ch["id"]] = card
             self.grid.attach(card, 0, row_idx, 1, 1)
 
