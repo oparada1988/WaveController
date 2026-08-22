@@ -37,13 +37,22 @@ class MixerMatrixView(Gtk.Box):
 
         # Output Target Selector Dropdown
         out_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        self.out_dropdown = Gtk.DropDown.new_from_strings([
-            "Headphones (Starship/Matisse HD Audio)",
-            "fifine Microphone Digital Stereo (IEC958)",
-            "Navi 31 HDMI/DP Audio"
-        ])
+        out_names = [d["name"] for d in self.hardware_mgr.output_devices] or ["Default Output"]
+        self.out_dropdown = Gtk.DropDown.new_from_strings(out_names)
         self.out_dropdown.add_css_class("wave-output-dropdown")
+        for idx, d in enumerate(self.hardware_mgr.output_devices):
+            if d.get("is_default"):
+                self.out_dropdown.set_selected(idx)
+                break
+        self.out_dropdown.connect("notify::selected", self._on_output_dropdown_changed)
         out_box.append(self.out_dropdown)
+
+        test_btn = Gtk.Button.new_from_icon_name("audio-volume-high-symbolic")
+        test_btn.add_css_class("flat")
+        test_btn.add_css_class("wave-icon-btn")
+        test_btn.set_tooltip_text("Test Output (Play Chime)")
+        test_btn.connect("clicked", lambda b: self.hardware_mgr.test_output_chime())
+        out_box.append(test_btn)
 
         popout_btn = Gtk.Button.new_from_icon_name("external-link-symbolic")
         popout_btn.add_css_class("flat")
@@ -142,6 +151,12 @@ class MixerMatrixView(Gtk.Box):
 
         dialog.connect("response", on_response)
         dialog.present(self.get_root())
+
+    def _on_output_dropdown_changed(self, dropdown, *args):
+        idx = dropdown.get_selected()
+        if idx < len(self.hardware_mgr.output_devices):
+            dev = self.hardware_mgr.output_devices[idx]
+            self.hardware_mgr.set_active_output_device(dev["id"])
 
     def _on_ui_tick(self) -> bool:
         # Update UI states if needed

@@ -63,7 +63,7 @@ class WaveMainWindow(Adw.ApplicationWindow):
         self.mixer_view = MixerMatrixView(self.pipewire_mgr, self.peak_monitor, self.hardware_mgr)
         self.stack.add_named(self.mixer_view, "mixes")
 
-        self.device_view = DeviceSettingsView(self.hardware_mgr)
+        self.device_view = DeviceSettingsView(self.hardware_mgr, self.peak_monitor)
         self.stack.add_named(self.device_view, "device")
 
         self.effects_view = EffectsView()
@@ -82,14 +82,14 @@ class WaveMainWindow(Adw.ApplicationWindow):
         sidebar.add_css_class("wave-sidebar")
         sidebar.set_size_request(230, -1)
 
-        # Section 1: Connected Devices
-        sec1_lbl = Gtk.Label(label="Devices")
+        # Section 1: Connected Devices (Audio Only)
+        sec1_lbl = Gtk.Label(label="Audio Devices")
         sec1_lbl.add_css_class("wave-sidebar-section-title")
         sec1_lbl.set_halign(Gtk.Align.START)
         sidebar.append(sec1_lbl)
 
         self.dev_buttons = []
-        for dev in self.hardware_mgr.connected_devices:
+        for dev in self.hardware_mgr.connected_audio_devices:
             dev_btn = Gtk.Button()
             dev_btn.add_css_class("flat")
             dev_btn.add_css_class("wave-sidebar-row")
@@ -97,6 +97,8 @@ class WaveMainWindow(Adw.ApplicationWindow):
             dev_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
             dev_icon = Gtk.Image.new_from_icon_name(dev.get("icon", "audio-input-microphone-symbolic"))
             dev_lbl = Gtk.Label(label=dev.get("name", "Audio Device"))
+            dev_lbl.set_hexpand(True)
+            dev_lbl.set_halign(Gtk.Align.START)
             dev_box.append(dev_icon)
             dev_box.append(dev_lbl)
             dev_btn.set_child(dev_box)

@@ -1,45 +1,118 @@
 import gi
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
-from gi.repository import Gtk, Adw
+from gi.repository import Gtk, Adw, GLib
 
 class DeviceSettingsView(Gtk.Box):
     """
-    Hardware DSP and Device Settings view for Wave XLR, Wave:3, and generic USB microphones.
+    Hardware DSP, Device Assignment, and Real-Time Audio Feedback view.
     """
-    def __init__(self, hardware_mgr):
+    def __init__(self, hardware_mgr, peak_monitor):
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=16)
         self.hardware_mgr = hardware_mgr
+        self.peak_monitor = peak_monitor
 
-        self.set_margin_top(20)
-        self.set_margin_bottom(20)
+        self.set_margin_top(16)
+        self.set_margin_bottom(16)
         self.set_margin_start(24)
         self.set_margin_end(24)
 
         # Title
         title_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
-        title_lbl = Gtk.Label(label=f"Device Settings — {self.hardware_mgr.device_name}")
+        title_lbl = Gtk.Label(label=f"Hardware & Audio Diagnostics")
         title_lbl.add_css_class("wave-main-title")
         title_box.append(title_lbl)
         self.append(title_box)
 
-        # Preferences Groups Container
         pref_page = Adw.PreferencesPage()
 
-        # Group 1: Hardware Preamp & DSP
-        grp_dsp = Adw.PreferencesGroup(title="Hardware Audio &amp; DSP")
+        # Group 1: Device Assignment & Diagnostics
+        grp_assign = Adw.PreferencesGroup(title="Active Audio Device Assignment")
+
+        # Input Device Selector
+        self.input_row = Adw.ComboRow(title="Active Microphone / Audio Input", subtitle="Select hardware input for WaveController")
+        input_names = [d["name"] for d in self.hardware_mgr.input_devices]
+        self.input_model = Gtk.StringList.new(input_names)
+        self.input_row.set_model(self.input_model)
+        
+        # Select current default
+        for idx, d in enumerate(self.hardware_mgr.input_devices):
+            if d.get("is_default"):
+                self.input_row.set_selected(idx)
+                break
+        self.input_row.connect("notify::selected", self._on_input_device_changed)
+        grp_assign.add(self.input_row)
+
+        # Output Device Selector
+        self.output_row = Adw.ComboRow(title="Monitor Output / Headphones", subtitle="Destination for Personal Mix monitoring")
+        output_names = [d["name"] for d in self.hardware_mgr.output_devices]
+        self.output_model = Gtk.StringList.new(output_names)
+        self.output_row.set_model(self.output_model)
+        for idx, d in enumerate(self.hardware_mgr.output_devices):
+            if d.get("is_default"):
+                self.output_row.set_selected(idx)
+                break
+        self.output_row.connect("notify::selected", self._on_output_device_changed)
+
+        # Test Sound Button
+        test_sound_btn = Gtk.Button(label="Test Output")
+        test_sound_btn.set_icon_name("audio-volume-high-symbolic")
+        test_sound_btn.set_valign(Gtk.Align.CENTER)
+        test_sound_btn.connect("clicked", lambda b: self.hardware_mgr.test_output_chime())
+        self.output_row.add_suffix(test_sound_btn)
+        grp_assign.add(self.output_row)
+
+        pref_page.add(grp_assign)
+
+        # Group 2: Real-Time Input Level & Live Voice Feedback
+        grp_meter = Adw.PreferencesGroup(title="Live Microphone Signal &amp; Diagnostics")
+
+        # Live VU Meter Level Bar
+        meter_row = Adw.ActionRow(title="Vocal Input Signal", subtitle="Real-time audio activity")
+        
+        meter_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+        meter_box.set_size_request(240, -1)
+        meter_box.set_valign(Gtk.Align.CENTER)
+
+        self.meter_bar = Gtk.ProgressBar()
+        self.meter_bar.set_fraction(0.0)
+        self.meter_bar.set_size_request(160, 10)
+        self.meter_bar.add_css_class("wave-slider")
+        meter_box.append(self.meter_bar)
+
+        self.db_label = Gtk.Label(label="-∞ dB")
+        self.db_label.set_size_request(60, -1)
+        self.db_label.add_css_class("mix-header-subtitle")
+        meter_box.append(self.db_label)
+
+        meter_row.add_suffix(meter_box)
+        grp_meter.add(meter_row)
+
+        # Live Mic Listen / Monitoring Toggle
+        listen_row = Adw.ActionRow(title="Mic Test (Direct Loopback)", subtitle="Hear your live voice in headphones to verify levels")
+        self.listen_btn = Gtk.Button(label="Listen to Mic")
+        self.listen_btn.set_icon_name("audio-headset-symbolic")
+        self.listen_btn.set_valign(Gtk.Align.CENTER)
+        self.listen_btn.connect("clicked", self._on_toggle_mic_listen)
+        listen_row.add_suffix(self.listen_btn)
+        grp_meter.add(listen_row)
+
+        pref_page.add(grp_meter)
+
+        # Group 3: Hardware Preamp & DSP
+        grp_dsp = Adw.PreferencesGroup(title="Hardware Audio &amp; DSP Controls")
 
         # Preamp Gain
         self.gain_row = Adw.ActionRow(title="Preamp Gain", subtitle=f"{self.hardware_mgr.hardware_gain_db} dB")
         self.gain_adj = Gtk.Adjustment(value=self.hardware_mgr.hardware_gain_db, lower=0, upper=75, step_increment=1, page_increment=5)
         self.gain_slider = Gtk.Scale(orientation=Gtk.Orientation.HORIZONTAL, adjustment=self.gain_adj)
-        self.gain_slider.set_size_request(200, -1)
+        self.gain_slider.set_size_request(180, -1)
         self.gain_slider.set_valign(Gtk.Align.CENTER)
         self.gain_slider.connect("value-changed", self._on_gain_changed)
         self.gain_row.add_suffix(self.gain_slider)
         grp_dsp.add(self.gain_row)
 
-        # 48V Phantom Power (Wave XLR)
+        # 48V Phantom Power
         self.phantom_row = Adw.SwitchRow(title="48V Phantom Power", subtitle="Requires condenser XLR microphone")
         self.phantom_row.set_active(self.hardware_mgr.phantom_power_48v)
         self.phantom_row.connect("notify::active", self._on_phantom_toggled)
@@ -49,7 +122,7 @@ class DeviceSettingsView(Gtk.Box):
         grp_dsp.add(self.phantom_row)
 
         # Clipguard Anti-Clipping Limiter
-        self.clipguard_row = Adw.SwitchRow(title="Clipguard", subtitle="Dual-stage limiter to prevent vocal distortion")
+        self.clipguard_row = Adw.SwitchRow(title="Clipguard Protection", subtitle="Dual-stage analog/software limiter to prevent vocal clipping")
         self.clipguard_row.set_active(self.hardware_mgr.clipguard_enabled)
         self.clipguard_row.connect("notify::active", self._on_clipguard_toggled)
         grp_dsp.add(self.clipguard_row)
@@ -63,32 +136,43 @@ class DeviceSettingsView(Gtk.Box):
         grp_dsp.add(self.low_cut_row)
 
         pref_page.add(grp_dsp)
-
-        # Group 2: Headphone & Monitoring
-        grp_mon = Adw.PreferencesGroup(title="Headphone Monitoring")
-
-        # Headphone Volume
-        self.hp_row = Adw.ActionRow(title="Headphone Output Level", subtitle=f"{self.hardware_mgr.headphone_volume}%")
-        self.hp_adj = Gtk.Adjustment(value=self.hardware_mgr.headphone_volume, lower=0, upper=100, step_increment=1, page_increment=5)
-        self.hp_slider = Gtk.Scale(orientation=Gtk.Orientation.HORIZONTAL, adjustment=self.hp_adj)
-        self.hp_slider.set_size_request(200, -1)
-        self.hp_slider.set_valign(Gtk.Align.CENTER)
-        self.hp_slider.connect("value-changed", self._on_hp_changed)
-        self.hp_row.add_suffix(self.hp_slider)
-        grp_mon.add(self.hp_row)
-
-        # Mic / PC Crossfade
-        self.fade_row = Adw.ActionRow(title="Mic / PC Crossfade", subtitle=f"{self.hardware_mgr.mic_pc_crossfade}%")
-        self.fade_adj = Gtk.Adjustment(value=self.hardware_mgr.mic_pc_crossfade, lower=0, upper=100, step_increment=1, page_increment=5)
-        self.fade_slider = Gtk.Scale(orientation=Gtk.Orientation.HORIZONTAL, adjustment=self.fade_adj)
-        self.fade_slider.set_size_request(200, -1)
-        self.fade_slider.set_valign(Gtk.Align.CENTER)
-        self.fade_slider.connect("value-changed", self._on_fade_changed)
-        self.fade_row.add_suffix(self.fade_slider)
-        grp_mon.add(self.fade_row)
-
-        pref_page.add(grp_mon)
         self.append(pref_page)
+
+        # 40 FPS Timer to animate live meter bar
+        GLib.timeout_add(25, self._on_meter_tick)
+
+    def _on_input_device_changed(self, row, *args):
+        idx = row.get_selected()
+        if idx < len(self.hardware_mgr.input_devices):
+            dev = self.hardware_mgr.input_devices[idx]
+            self.hardware_mgr.set_active_input_device(dev["id"])
+
+    def _on_output_device_changed(self, row, *args):
+        idx = row.get_selected()
+        if idx < len(self.hardware_mgr.output_devices):
+            dev = self.hardware_mgr.output_devices[idx]
+            self.hardware_mgr.set_active_output_device(dev["id"])
+
+    def _on_toggle_mic_listen(self, btn):
+        active = self.hardware_mgr.toggle_mic_monitoring()
+        if active:
+            self.listen_btn.set_label("Stop Listening")
+            self.listen_btn.add_css_class("suggested-action")
+        else:
+            self.listen_btn.set_label("Listen to Mic")
+            self.listen_btn.remove_css_class("suggested-action")
+
+    def _on_meter_tick(self) -> bool:
+        peak = self.peak_monitor.get_channel_peak("mic")
+        self.meter_bar.set_fraction(peak)
+        
+        if peak > 0.01:
+            import math
+            db = 20 * math.log10(peak)
+            self.db_label.set_text(f"{db:.1f} dB")
+        else:
+            self.db_label.set_text("-∞ dB")
+        return True
 
     def _on_gain_changed(self, scale):
         val = int(self.gain_adj.get_value())
@@ -96,24 +180,12 @@ class DeviceSettingsView(Gtk.Box):
         self.gain_row.set_subtitle(f"{val} dB")
 
     def _on_phantom_toggled(self, row, *args):
-        active = row.get_active()
-        self.hardware_mgr.phantom_power_48v = active
+        self.hardware_mgr.phantom_power_48v = row.get_active()
 
     def _on_clipguard_toggled(self, row, *args):
-        active = row.get_active()
-        self.hardware_mgr.clipguard_enabled = active
+        self.hardware_mgr.clipguard_enabled = row.get_active()
 
     def _on_low_cut_changed(self, row, *args):
         idx = row.get_selected()
         mode = "Off" if idx == 0 else ("80Hz" if idx == 1 else "120Hz")
         self.hardware_mgr.set_low_cut(mode)
-
-    def _on_hp_changed(self, scale):
-        val = int(self.hp_adj.get_value())
-        self.hardware_mgr.headphone_volume = val
-        self.hp_row.set_subtitle(f"{val}%")
-
-    def _on_fade_changed(self, scale):
-        val = int(self.fade_adj.get_value())
-        self.hardware_mgr.mic_pc_crossfade = val
-        self.fade_row.set_subtitle(f"{val}%")

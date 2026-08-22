@@ -4,55 +4,168 @@ import time
 
 class USBHardwareManager:
     """
-    Hardware integration layer supporting Tier 1 (Elgato Wave:3 & Wave XLR via USB Control Transfers)
-    and Tier 2 (Universal USB Microphones like fifine, Blue Yeti, Rode via ALSA/PipeWire).
+    Hardware integration layer strictly managing Audio Input & Output devices.
+    Filters out webcams, stream decks, video capture, and non-audio USB peripherals.
     """
 
     def __init__(self):
         self.device_name = "fifine Microphone"
         self.device_type = "generic" # 'elgato' or 'generic'
-        self.connected_devices = []
+        self.input_devices = [] # [{"id": "...", "name": "...", "is_default": bool}]
+        self.output_devices = [] # [{"id": "...", "name": "...", "is_default": bool}]
+        self.connected_audio_devices = [] # Sidebar list
+        
         self.hardware_gain_db = 45 # 0 to 75 dB
         self.phantom_power_48v = False
         self.clipguard_enabled = True
         self.low_cut_filter = "80Hz" # 'Off', '80Hz', '120Hz'
         self.hardware_mute = False
-        self.led_ring_color = "#00a8ff"
         self.headphone_volume = 70
         self.mic_pc_crossfade = 50
         
+        self.is_monitoring_mic = False
+        self._loopback_proc = None
+
         self.detect_connected_hardware()
 
     def detect_connected_hardware(self):
-        """Scans USB and PipeWire devices to detect active microphone and audio hardware."""
-        devs = []
+        """Discovers valid audio input and output devices using PipeWire wpctl."""
+        inputs = []
+        outputs = []
+        sidebar_devs = []
+
         try:
-            lsusb_out = subprocess.check_output(["lsusb"], text=True, stderr=subprocess.DEVNULL)
-            for line in lsusb_out.splitlines():
-                line_str = line.strip()
-                if "fifine" in line_str.lower():
-                    devs.append({"name": "fifine Microphone", "type": "generic", "icon": "audio-input-microphone-symbolic"})
-                elif "wave:3" in line_str.lower() or "0fd9:0088" in line_str:
-                    devs.append({"name": "Elgato Wave:3", "type": "elgato", "icon": "audio-input-microphone-symbolic"})
-                elif "wave xlr" in line_str.lower() or "0fd9:0083" in line_str:
-                    devs.append({"name": "Elgato Wave XLR MK.2", "type": "elgato", "icon": "audio-input-microphone-symbolic"})
-                elif "stream deck plus" in line_str.lower() or "0fd9:0084" in line_str:
-                    devs.append({"name": "Stream Deck +", "type": "controller", "icon": "view-grid-symbolic"})
-                elif "facecam" in line_str.lower() or "0fd9:0078" in line_str:
-                    devs.append({"name": "Elgato Facecam", "type": "video", "icon": "camera-web-symbolic"})
+            out = subprocess.check_output(["wpctl", "status"], text=True, stderr=subprocess.DEVNULL)
+            in_sinks = False
+            in_sources = False
+
+            for line in out.splitlines():
+                line_raw = line.strip()
+                if "Sinks:" in line_raw:
+                    in_sinks = True
+                    in_sources = False
+                    continue
+                elif "Sources:" in line_raw:
+                    in_sinks = False
+                    in_sources = True
+                    continue
+                elif "Filters:" in line_raw or "Streams:" in line_raw or "Video" in line_raw or "Settings" in line_raw:
+                    in_sinks = False
+                    in_sources = False
+                    continue
+
+                if not line_raw or line_raw.startswith("├") or line_raw.startswith("└") or line_raw.startswith("│"):
+                    is_def = "*" in line_raw
+                    clean = line_raw.replace("├─", "").replace("└─", "").replace("│", "").replace("*", "").strip()
+                    if clean and clean[0].isdigit():
+                        tokens = clean.split(".", 1)
+                        if len(tokens) == 2:
+                            node_id = tokens[0].strip()
+                            name = tokens[1].split("[")[0].strip()
+                            
+                            # Filter out non-audio and internal monitors
+                            name_lower = name.lower()
+                            if any(x in name_lower for x in ["facecam", "cam", "video", "virtual", "null"]):
+                                continue
+
+                            dev_info = {
+                                "id": node_id,
+                                "name": name,
+                                "is_default": is_def
+                            }
+
+                            if in_sources:
+                                dev_info["type"] = "source"
+                                dev_info["icon"] = "audio-input-microphone-symbolic"
+                                inputs.append(dev_info)
+                                sidebar_devs.append(dev_info)
+                            elif in_sinks:
+                                dev_info["type"] = "sink"
+                                dev_info["icon"] = "audio-headphones-symbolic"
+                                outputs.append(dev_info)
+
         except Exception:
             pass
 
-        if not devs:
-            devs.append({"name": "fifine Microphone", "type": "generic", "icon": "audio-input-microphone-symbolic"})
+        # Fallback if wpctl empty
+        if not inputs:
+            inputs.append({"id": "69", "name": "fifine Microphone", "type": "source", "icon": "audio-input-microphone-symbolic", "is_default": True})
+            sidebar_devs.append(inputs[0])
+        if not outputs:
+            outputs.append({"id": "59", "name": "Analog Stereo Output", "type": "sink", "icon": "audio-headphones-symbolic", "is_default": True})
 
-        self.connected_devices = devs
-        # Set primary mic
-        for d in devs:
-            if d.get("icon") == "audio-input-microphone-symbolic":
+        self.input_devices = inputs
+        self.output_devices = outputs
+        self.connected_audio_devices = sidebar_devs
+
+        # Determine primary mic
+        for d in inputs:
+            if d.get("is_default") or "fifine" in d["name"].lower() or "wave" in d["name"].lower():
                 self.device_name = d["name"]
-                self.device_type = d["type"]
+                self.device_type = "elgato" if "wave" in d["name"].lower() else "generic"
                 break
+
+    def set_active_input_device(self, device_id: str):
+        """Sets the selected audio input device as default in PipeWire."""
+        try:
+            subprocess.run(["wpctl", "set-default", str(device_id)], stderr=subprocess.DEVNULL)
+            for d in self.input_devices:
+                if d["id"] == device_id:
+                    self.device_name = d["name"]
+                    self.device_type = "elgato" if "wave" in d["name"].lower() else "generic"
+                    d["is_default"] = True
+                else:
+                    d["is_default"] = False
+        except Exception:
+            pass
+
+    def set_active_output_device(self, device_id: str):
+        """Sets the selected audio output device as default in PipeWire."""
+        try:
+            subprocess.run(["wpctl", "set-default", str(device_id)], stderr=subprocess.DEVNULL)
+            for d in self.output_devices:
+                d["is_default"] = (d["id"] == device_id)
+        except Exception:
+            pass
+
+    def test_output_chime(self):
+        """Plays a clean test sound to verify headphones/speakers."""
+        threading.Thread(target=self._play_test_chime, daemon=True).start()
+
+    def _play_test_chime(self):
+        for sound_file in [
+            "/usr/share/sounds/freedesktop/stereo/bell.oga",
+            "/usr/share/sounds/freedesktop/stereo/complete.oga",
+            "/usr/share/sounds/gnome/default/alerts/glass.ogg"
+        ]:
+            if subprocess.run(["which", "paplay"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0:
+                try:
+                    subprocess.run(["paplay", sound_file], stderr=subprocess.DEVNULL)
+                    return
+                except Exception:
+                    pass
+
+    def toggle_mic_monitoring(self) -> bool:
+        """Toggles live microphone loopback to headphones for instant testing."""
+        if self.is_monitoring_mic:
+            if self._loopback_proc:
+                try:
+                    self._loopback_proc.terminate()
+                except Exception:
+                    pass
+                self._loopback_proc = None
+            self.is_monitoring_mic = False
+        else:
+            try:
+                self._loopback_proc = subprocess.Popen(
+                    ["pw-loopback", "--latency=20ms", "--capture-props=media.class=Stream/Input/Audio", "--playback-props=media.class=Stream/Output/Audio"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL
+                )
+                self.is_monitoring_mic = True
+            except Exception:
+                self.is_monitoring_mic = False
+        return self.is_monitoring_mic
 
     def set_gain(self, gain_db: int):
         self.hardware_gain_db = max(0, min(75, gain_db))
@@ -92,5 +205,4 @@ class USBHardwareManager:
         return self.hardware_mute
 
     def _send_elgato_control(self, cmd: int, val: int):
-        """Sends USB Control Transfer packet via wIndex=0x3303."""
         pass
