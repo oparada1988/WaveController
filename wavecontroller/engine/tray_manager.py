@@ -236,15 +236,11 @@ class TrayManager:
         return None
 
     def _build_menu_items(self) -> list:
-        mic_muted = self.get_mic_muted() if self.get_mic_muted else False
-        all_muted = self.get_all_muted() if self.get_all_muted else False
-
         items = [
             {
                 "id": 1,
                 "props": {
                     "label": GLib.Variant("s", "Open WaveController"),
-                    "icon-name": GLib.Variant("s", "com.oparada.WaveController"),
                     "enabled": GLib.Variant("b", True),
                     "visible": GLib.Variant("b", True)
                 }
@@ -260,10 +256,7 @@ class TrayManager:
             {
                 "id": 3,
                 "props": {
-                    "label": GLib.Variant("s", "Mute Microphone" if not mic_muted else "Unmute Microphone"),
-                    "toggle-type": GLib.Variant("s", "checkmark"),
-                    "toggle-state": GLib.Variant("i", 1 if mic_muted else 0),
-                    "icon-name": GLib.Variant("s", "audio-input-microphone-symbolic"),
+                    "label": GLib.Variant("s", "Settings..."),
                     "enabled": GLib.Variant("b", True),
                     "visible": GLib.Variant("b", True)
                 }
@@ -271,10 +264,7 @@ class TrayManager:
             {
                 "id": 4,
                 "props": {
-                    "label": GLib.Variant("s", "Mute All Channels" if not all_muted else "Unmute All Channels"),
-                    "toggle-type": GLib.Variant("s", "checkmark"),
-                    "toggle-state": GLib.Variant("i", 1 if all_muted else 0),
-                    "icon-name": GLib.Variant("s", "audio-volume-muted-symbolic"),
+                    "type": GLib.Variant("s", "separator"),
                     "enabled": GLib.Variant("b", True),
                     "visible": GLib.Variant("b", True)
                 }
@@ -282,33 +272,7 @@ class TrayManager:
             {
                 "id": 5,
                 "props": {
-                    "type": GLib.Variant("s", "separator"),
-                    "enabled": GLib.Variant("b", True),
-                    "visible": GLib.Variant("b", True)
-                }
-            },
-            {
-                "id": 6,
-                "props": {
-                    "label": GLib.Variant("s", "Settings..."),
-                    "icon-name": GLib.Variant("s", "emblem-system-symbolic"),
-                    "enabled": GLib.Variant("b", True),
-                    "visible": GLib.Variant("b", True)
-                }
-            },
-            {
-                "id": 7,
-                "props": {
-                    "type": GLib.Variant("s", "separator"),
-                    "enabled": GLib.Variant("b", True),
-                    "visible": GLib.Variant("b", True)
-                }
-            },
-            {
-                "id": 8,
-                "props": {
                     "label": GLib.Variant("s", "Quit WaveController"),
-                    "icon-name": GLib.Variant("s", "application-exit-symbolic"),
                     "enabled": GLib.Variant("b", True),
                     "visible": GLib.Variant("b", True)
                 }
@@ -361,15 +325,9 @@ class TrayManager:
                     if self.on_activate:
                         GLib.idle_add(self.on_activate)
                 elif item_id == 3:
-                    if self.on_toggle_mic_mute:
-                        GLib.idle_add(self.on_toggle_mic_mute)
-                elif item_id == 4:
-                    if self.on_toggle_all_mute:
-                        GLib.idle_add(self.on_toggle_all_mute)
-                elif item_id == 6:
                     if self.on_open_settings:
                         GLib.idle_add(self.on_open_settings)
-                elif item_id == 8:
+                elif item_id == 5:
                     if self.on_quit:
                         GLib.idle_add(self.on_quit)
             invocation.return_value(None)
