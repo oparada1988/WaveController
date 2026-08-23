@@ -176,6 +176,35 @@ class SettingsView(Gtk.Box):
 
         self.append(pref_page)
 
+        # Center-Aligned About Footer (Zero emojis, clean typography & links)
+        about_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        about_box.set_halign(Gtk.Align.CENTER)
+        about_box.set_margin_top(12)
+        about_box.set_margin_bottom(24)
+
+        app_title_lbl = Gtk.Label(label="WaveController v0.0.1")
+        app_title_lbl.add_css_class("heading")
+        app_title_lbl.set_halign(Gtk.Align.CENTER)
+        about_box.append(app_title_lbl)
+
+        github_link = Gtk.LinkButton(
+            uri="https://github.com/oparada1988/WaveController",
+            label="GitHub Page"
+        )
+        github_link.add_css_class("flat")
+        github_link.set_halign(Gtk.Align.CENTER)
+        about_box.append(github_link)
+
+        issues_link = Gtk.LinkButton(
+            uri="https://github.com/oparada1988/WaveController/issues",
+            label="Submit Issue"
+        )
+        issues_link.add_css_class("flat")
+        issues_link.set_halign(Gtk.Align.CENTER)
+        about_box.append(issues_link)
+
+        self.append(about_box)
+
     def _update_log_info(self):
         self.log_info_row.set_subtitle(f"{get_log_file_path()} ({get_log_size_str()})")
 
