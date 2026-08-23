@@ -15,11 +15,13 @@ class WaveControllerApp(Adw.Application):
     """
     WaveController Main Adw.Application.
     """
-    def __init__(self):
+    def __init__(self, is_daemon: bool = False):
         super().__init__(
             application_id="com.oparada.WaveController",
             flags=Gio.ApplicationFlags.FLAGS_NONE
         )
+        self.is_daemon = is_daemon
+        self._daemon_started = False
         self.pipewire_mgr = PipeWireManager()
         self.peak_monitor = MultiChannelPeakMonitor()
         self.hardware_mgr = USBHardwareManager()
@@ -36,6 +38,7 @@ class WaveControllerApp(Adw.Application):
 
     def do_startup(self):
         Adw.Application.do_startup(self)
+        self.hold() # Keep application process & PipeWire routing alive in background
         display = Gdk.Display.get_default()
         if display:
             theme = Gtk.IconTheme.get_for_display(display)
@@ -48,6 +51,10 @@ class WaveControllerApp(Adw.Application):
         self.tray_mgr.start()
 
     def do_activate(self):
+        if self.is_daemon and not self._daemon_started:
+            self._daemon_started = True
+            return
+
         win = self.props.active_window
         if not win:
             win = WaveMainWindow(
@@ -124,6 +131,10 @@ class WaveControllerApp(Adw.Application):
             if hasattr(win, "save_window_state"):
                 win.save_window_state()
             win.destroy()
+        try:
+            self.release()
+        except Exception:
+            pass
         self.quit()
 
     def do_shutdown(self):

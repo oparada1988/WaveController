@@ -1,0 +1,17 @@
+[Unit]
+Description=WaveController Audio Routing Daemon
+Documentation=https://github.com/oparada1988/WaveController
+After=pipewire.service wireplumber.service
+Wants=pipewire.service wireplumber.service
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 "/home/oscar/Github Projects/WaveController/main.py" --daemon
+Restart=on-failure
+RestartSec=3
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

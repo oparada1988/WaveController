@@ -20,9 +20,22 @@ from wavecontroller.app import WaveControllerApp
 def main():
     setup_logging()
     logger = get_logger("Main")
-    logger.info("Starting WaveController Application...")
-    app = WaveControllerApp()
-    return app.run(sys.argv)
+    
+    is_daemon = False
+    clean_argv = [sys.argv[0]]
+    for arg in sys.argv[1:]:
+        if arg in ("--daemon", "--service", "-d"):
+            is_daemon = True
+        else:
+            clean_argv.append(arg)
+
+    if is_daemon:
+        logger.info("Starting WaveController Background Daemon...")
+    else:
+        logger.info("Starting WaveController Application...")
+
+    app = WaveControllerApp(is_daemon=is_daemon)
+    return app.run(clean_argv)
 
 if __name__ == "__main__":
     sys.exit(main())
