@@ -140,6 +140,49 @@ window.wave-window {
     opacity: 0.6;
 }
 
+/* Matrix Mix Cell (Unrouted / Empty Slot matching Wave Link) */
+.matrix-cell-empty {
+    background-color: alpha(@card_bg_color, 0.4);
+    border: 1px dashed alpha(@borders, 0.6);
+    border-radius: 8px;
+    padding: 6px 10px;
+    min-height: 48px;
+    transition: all 150ms ease;
+}
+
+.matrix-cell-empty:hover {
+    background-color: alpha(@accent_bg_color, 0.12);
+    border: 1px solid alpha(@accent_bg_color, 0.5);
+}
+
+.matrix-cell-add-btn {
+    opacity: 0.4;
+    border-radius: 6px;
+    padding: 4px;
+    transition: all 120ms ease;
+}
+
+.matrix-cell-empty:hover .matrix-cell-add-btn,
+.matrix-cell-add-btn:hover {
+    opacity: 1.0;
+    color: @accent_bg_color;
+}
+
+.matrix-cell-eject-btn {
+    opacity: 0.35;
+    padding: 2px 4px;
+    transition: opacity 120ms ease;
+}
+
+.matrix-cell-card:hover .matrix-cell-eject-btn {
+    opacity: 0.75;
+}
+
+.matrix-cell-eject-btn:hover {
+    opacity: 1.0;
+    color: @error_color;
+}
+
 /* Custom Level Slider with Integrated VU Meter Track */
 .wave-slider scale {
     padding: 0;

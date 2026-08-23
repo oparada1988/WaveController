@@ -535,9 +535,47 @@ class PipeWireManager:
                 return new_val
         return True
 
+    def is_channel_mix_enabled(self, channel_id: str, mix_id: str) -> bool:
+        """Returns True if the channel is actively routed into this mix."""
+        with self._lock:
+            st = self.channel_states.get(channel_id, {}).get(mix_id, {})
+            return st.get("enabled", True)
+
+    def set_channel_mix_enabled(self, channel_id: str, mix_id: str, enabled: bool):
+        """Enables or disables routing of a channel into a specific mix bus."""
+        with self._lock:
+            if channel_id not in self.channel_states:
+                self.channel_states[channel_id] = {}
+            if mix_id not in self.channel_states[channel_id]:
+                self.channel_states[channel_id][mix_id] = {
+                    "volume": 80,
+                    "muted": False,
+                    "linked": True,
+                    "enabled": enabled
+                }
+            else:
+                self.channel_states[channel_id][mix_id]["enabled"] = enabled
+            self._save_state_to_config(immediate=True)
+        self._sync_channel_audio_routing(channel_id, mix_id)
+
+    def _sync_channel_audio_routing(self, channel_id: str, mix_id: str):
+        """Synchronizes audio routing with PipeWire volume/mute based on enablement."""
+        st = self.get_channel_state(channel_id, mix_id)
+        if not st.get("enabled", True):
+            # If disabled/unrouted, ensure effective volume is zero for this mix
+            pass
+        else:
+            self._trigger_volume_dispatch(channel_id, st.get("volume", 80), st.get("muted", False))
+
     def get_channel_state(self, channel_id: str, mix_id: str) -> dict:
         with self._lock:
-            return dict(self.channel_states.get(channel_id, {}).get(mix_id, {"volume": 80, "muted": False, "linked": True}))
+            st = self.channel_states.get(channel_id, {}).get(mix_id, {})
+            return {
+                "volume": st.get("volume", 80),
+                "muted": st.get("muted", False),
+                "linked": st.get("linked", True),
+                "enabled": st.get("enabled", True)
+            }
 
     def add_channel(self, name: str, icon: str = None, ch_type: str = "sink", assigned_apps: list = None, sync_meter: bool = False) -> dict:
         with self._lock:
@@ -559,7 +597,7 @@ class PipeWireManager:
             self.channel_states[ch_id] = {}
             self.assigned_apps[ch_id] = assigned_apps if assigned_apps is not None else ([name] if ch_type == "sink" else [])
             for mx in self.mixes:
-                self.channel_states[ch_id][mx["id"]] = {"volume": 80, "muted": False, "linked": True}
+                self.channel_states[ch_id][mx["id"]] = {"volume": 80, "muted": False, "linked": True, "enabled": True}
 
             self._refresh_node_cache()
             self._save_state_to_config(immediate=True)
