@@ -49,6 +49,7 @@ class PipeWireManager:
         self._node_cache = {} # {app_name_lower: [node_id, ...]}
         self._last_cache_time = 0.0
         self._volume_queue = {} # {channel_id: (volume_pct, is_muted)}
+        self._submix_volume_queue = {} # {(channel_id, mix_id): (volume_pct, is_muted)}
         self._volume_event = threading.Event()
         self._worker_thread = None
         self._sync_thread = None
@@ -183,6 +184,47 @@ class PipeWireManager:
     def stop(self):
         self.running = False
         self._volume_event.set()
+
+        # 1. Gracefully reconnect all active app streams back to physical default audio sink
+        try:
+            out_ports_raw = subprocess.check_output(["pw-link", "-o"], text=True, stderr=subprocess.DEVNULL)
+            in_ports_raw = subprocess.check_output(["pw-link", "-i"], text=True, stderr=subprocess.DEVNULL)
+            out_ports = [l.strip() for l in out_ports_raw.splitlines() if l.strip()]
+            in_ports = [l.strip() for l in in_ports_raw.splitlines() if l.strip()]
+
+            # Determine default physical playback ports
+            default_phys_in = []
+            target_device = self.selected_monitor_device or ""
+            clean_target = target_device.replace("alsa_card.", "").replace("alsa_output.", "").strip().lower()
+
+            if clean_target and clean_target != "none":
+                for p in in_ports:
+                    if p.startswith("alsa_output.") and ":playback_" in p and clean_target in p.lower():
+                        default_phys_in.append(p)
+
+            if not default_phys_in:
+                # Fallback to any active alsa_output sink ports
+                default_phys_in = [p for p in in_ports if p.startswith("alsa_output.") and ":playback_" in p][:2]
+
+            if default_phys_in:
+                for ch in self.channels:
+                    if ch["id"] != "mic":
+                        ch_out = []
+                        assigned = self.get_assigned_apps(ch["id"])
+                        for app in assigned:
+                            app_low = app.lower()
+                            for p in out_ports:
+                                if p.startswith("output.WaveController_") or p.startswith("WaveController_"):
+                                    continue
+                                p_low = p.lower()
+                                if (app_low in p_low or p_low.startswith(app_low)) and ":output_" in p:
+                                    ch_out.append(p)
+                        if ch_out:
+                            self._link_stereo_ports(ch_out, default_phys_in, unlink=False)
+        except Exception:
+            pass
+
+        # 2. Cleanly terminate all submix loopback processes
         with self._lock:
             for p in list(self._submix_procs.values()):
                 try:
@@ -191,6 +233,7 @@ class PipeWireManager:
                     pass
             self._submix_procs.clear()
             self._submix_node_ids.clear()
+            self._submix_volume_queue.clear()
 
     def get_application_volume_status(self, app_name: str) -> tuple:
         """Queries volume and mute status of an application from its PipeWire node."""
@@ -729,8 +772,9 @@ class PipeWireManager:
             self.set_channel_master_volume(channel_id, vol)
         else:
             is_muted = self.channel_states.get(channel_id, {}).get(mix_id, {}).get("muted", False)
-            self._apply_submix_gain(channel_id, mix_id, vol, is_muted)
-        self._sync_channel_audio_routing(channel_id, mix_id)
+            with self._lock:
+                self._submix_volume_queue[(channel_id, mix_id)] = (vol, is_muted)
+                self._volume_event.set()
 
     def set_channel_mute(self, channel_id: str, mix_id: str, muted: bool):
         """Mutes or unmutes a channel within a specific virtual mix bus."""
@@ -751,8 +795,9 @@ class PipeWireManager:
             self.set_channel_master_mute(channel_id, muted)
         else:
             vol = self.channel_states.get(channel_id, {}).get(mix_id, {}).get("volume", 80)
-            self._apply_submix_gain(channel_id, mix_id, vol, muted)
-        self._sync_channel_audio_routing(channel_id, mix_id)
+            with self._lock:
+                self._submix_volume_queue[(channel_id, mix_id)] = (vol, muted)
+                self._volume_event.set()
 
     def toggle_channel_mute(self, channel_id: str, mix_id: str) -> bool:
         """Toggles mute state within a specific virtual mix bus."""
@@ -771,10 +816,13 @@ class PipeWireManager:
                 self._refresh_node_cache()
 
             with self._lock:
-                pending = dict(self._volume_queue)
+                pending_master = dict(self._volume_queue)
                 self._volume_queue.clear()
+                pending_submix = dict(self._submix_volume_queue)
+                self._submix_volume_queue.clear()
 
-            for channel_id, (volume_pct, is_muted) in pending.items():
+            # 1. Process Master Channel Volume Dispatches
+            for channel_id, (volume_pct, is_muted) in pending_master.items():
                 vol_frac = max(0.0, min(1.5, volume_pct / 100.0))
 
                 if channel_id == "mic":
@@ -829,6 +877,10 @@ class PipeWireManager:
                         subprocess.run(["wpctl", "set-mute", str(node_id), "1" if is_muted else "0"], stderr=subprocess.DEVNULL)
                     except Exception:
                         pass
+
+            # 2. Process Independent Sub-Mix Gain Dispatches
+            for (ch_id, m_id), (volume_pct, is_muted) in pending_submix.items():
+                self._apply_submix_gain(ch_id, m_id, volume_pct, is_muted)
 
     def toggle_channel_link(self, channel_id: str, mix_id: str) -> bool:
         with self._lock:
