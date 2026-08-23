@@ -3,13 +3,16 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import Gtk, Adw
 
+from ..engine.config_manager import config_manager
+
 class SettingsView(Gtk.Box):
     """
     Application & Audio Engine Preferences.
     """
-    def __init__(self, hardware_mgr):
+    def __init__(self, hardware_mgr, on_theme_changed=None):
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=16)
         self.hardware_mgr = hardware_mgr
+        self.on_theme_changed = on_theme_changed
 
         self.set_margin_top(20)
         self.set_margin_bottom(20)
@@ -25,7 +28,21 @@ class SettingsView(Gtk.Box):
 
         pref_page = Adw.PreferencesPage()
 
-        # Group 1: General
+        # Group 1: Appearance & Theme
+        grp_theme = Adw.PreferencesGroup(title="Appearance &amp; Theme")
+
+        self.theme_row = Adw.SwitchRow(
+            title="Use System Theme",
+            subtitle="Follow system GTK4 / Libadwaita theme instead of Midnight Dark"
+        )
+        use_sys = config_manager.get("use_system_theme", False)
+        self.theme_row.set_active(use_sys)
+        self.theme_row.connect("notify::active", self._on_theme_toggled)
+        grp_theme.add(self.theme_row)
+
+        pref_page.add(grp_theme)
+
+        # Group 2: General
         grp_gen = Adw.PreferencesGroup(title="General")
 
         autostart_row = Adw.SwitchRow(title="Start Automatically on Login", subtitle="Launch WaveController daemon in background")
@@ -65,3 +82,9 @@ class SettingsView(Gtk.Box):
 
         pref_page.add(grp_audio)
         self.append(pref_page)
+
+    def _on_theme_toggled(self, row, *args):
+        is_sys = row.get_active()
+        config_manager.set("use_system_theme", is_sys, immediate=True)
+        if self.on_theme_changed:
+            self.on_theme_changed()

@@ -5,6 +5,58 @@ window.wave-window {
     color: @window_fg_color;
 }
 
+/* =========================================================================
+   Midnight Dark Theme (Default WaveController Aesthetic)
+   ========================================================================= */
+
+window.theme-midnight {
+    background-color: #111114;
+    color: #e4e4e7;
+}
+
+window.theme-midnight .wave-sidebar {
+    background-color: #161619;
+    border-right: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+window.theme-midnight .wave-sidebar-row {
+    color: rgba(228, 228, 231, 0.75);
+}
+
+window.theme-midnight .wave-sidebar-row:hover {
+    background-color: rgba(255, 255, 255, 0.05);
+    color: #ffffff;
+}
+
+window.theme-midnight .wave-sidebar-row.selected {
+    background-color: rgba(145, 70, 255, 0.18);
+    color: #d8b4fe;
+}
+
+window.theme-midnight .mix-header-card,
+window.theme-midnight .channel-row-card,
+window.theme-midnight .matrix-cell-card,
+window.theme-midnight .card,
+window.theme-midnight preferencesgroup > box {
+    background-color: #1a1a20;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+window.theme-midnight .wave-output-dropdown {
+    background-color: #1a1a20;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+window.theme-midnight .matrix-cell-empty {
+    background-color: rgba(26, 26, 32, 0.4);
+    border: 1px dashed rgba(255, 255, 255, 0.12);
+}
+
+window.theme-midnight .wave-create-channel-box {
+    background-color: rgba(22, 22, 26, 0.5);
+    border: 1px dashed rgba(255, 255, 255, 0.14);
+}
+
 .wave-sidebar {
     background-color: alpha(@card_bg_color, 0.45);
     border-right: 1px solid @borders;

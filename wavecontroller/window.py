@@ -31,6 +31,7 @@ class WaveMainWindow(Adw.ApplicationWindow):
             self.maximize()
 
         self.add_css_class("wave-window")
+        self._apply_theme()
         self.connect("close-request", self._on_close_request)
 
         # Load Custom CSS
@@ -75,7 +76,7 @@ class WaveMainWindow(Adw.ApplicationWindow):
         self.effects_view = EffectsView()
         self.stack.add_named(self.effects_view, "effects")
 
-        self.settings_view = SettingsView(self.hardware_mgr)
+        self.settings_view = SettingsView(self.hardware_mgr, on_theme_changed=self._apply_theme)
         self.stack.add_named(self.settings_view, "settings")
 
         main_box.append(self.stack)
@@ -88,6 +89,14 @@ class WaveMainWindow(Adw.ApplicationWindow):
 
         self.hardware_mgr.on_device_renamed_callback = lambda *a: GLib.idle_add(self._refresh_sidebar_device_names)
         self.hardware_mgr.on_devices_changed_callback = lambda *a: GLib.idle_add(self._rebuild_device_views)
+
+    def _apply_theme(self):
+        """Applies either the default Midnight Dark theme or follows standard GTK/Libadwaita system theme."""
+        use_sys = config_manager.get("use_system_theme", False)
+        if use_sys:
+            self.remove_css_class("theme-midnight")
+        else:
+            self.add_css_class("theme-midnight")
 
     def _on_close_request(self, win):
         config_manager.set("window_state", {
