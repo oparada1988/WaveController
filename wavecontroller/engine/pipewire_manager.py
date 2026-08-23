@@ -537,9 +537,29 @@ class PipeWireManager:
         target_sink = f"wavecontroller_{mix_id.lower()}_sink"
         target_src = f"wavecontroller_{mix_id.lower()}_source"
         with self._lock:
-            for name, node_ids in self._node_cache.items():
-                if target_sink in name or target_src in name:
-                    ids.extend(node_ids)
+            mix_obj = next((m for m in self.mixes if m["id"] == mix_id), None)
+            target_dev = mix_obj.get("target_device") if mix_obj else None
+            m_type = mix_obj.get("type", "source") if mix_obj else "source"
+
+        try:
+            out = subprocess.check_output(["pw-dump"], text=True, stderr=subprocess.DEVNULL)
+            data = json.loads(out)
+            for obj in data:
+                if obj.get("type") == "PipeWire:Interface:Node":
+                    props = obj.get("info", {}).get("props", {})
+                    n_name = props.get("node.name", "").lower()
+                    media_class = props.get("media.class", "")
+                    obj_id = str(obj["id"])
+                    
+                    if target_sink in n_name or target_src in n_name:
+                        ids.append(obj_id)
+                    elif (m_type == "sink" or "personal" in mix_id) and target_dev and target_dev != "none":
+                        clean_target = target_dev.replace("alsa_card.", "").replace("alsa_output.", "").replace("alsa_input.", "").strip().lower()
+                        if media_class == "Audio/Sink" and (clean_target in n_name or clean_target in props.get("node.description", "").lower()):
+                            ids.append(obj_id)
+        except Exception:
+            pass
+
         if not ids:
             self._refresh_node_cache()
             with self._lock:
@@ -603,36 +623,51 @@ class PipeWireManager:
                 pass
         return new_mute
 
-    # -------------------------------------------------------------
-    # Sub-Mix Send Levels (Virtual Mix Bus Faders in Matrix Grid)
-    # -------------------------------------------------------------
     def set_channel_volume(self, channel_id: str, mix_id: str, volume: int):
-        """Sets the sub-mix send level into a specific virtual mix bus (NEVER modifies Master Channel Volume)."""
+        """Sets the sub-mix send level into a specific virtual mix bus."""
+        vol = max(0, min(100, volume))
+        is_linked = self.is_channel_linked(channel_id)
         with self._lock:
-            if channel_id in self.channel_states and mix_id in self.channel_states[channel_id]:
-                self.channel_states[channel_id][mix_id]["volume"] = max(0, min(100, volume))
+            if channel_id in self.channel_states:
+                if is_linked:
+                    for m_id in self.channel_states[channel_id]:
+                        self.channel_states[channel_id][m_id]["volume"] = vol
+                    if channel_id in self.channel_master_states:
+                        self.channel_master_states[channel_id]["volume"] = vol
+                else:
+                    if mix_id in self.channel_states[channel_id]:
+                        self.channel_states[channel_id][mix_id]["volume"] = vol
                 self._save_state_to_config(immediate=False)
+
+        if is_linked:
+            self.set_channel_master_volume(channel_id, vol)
         self._sync_channel_audio_routing(channel_id, mix_id)
 
     def set_channel_mute(self, channel_id: str, mix_id: str, muted: bool):
         """Mutes or unmutes a channel within a specific virtual mix bus."""
+        is_linked = self.is_channel_linked(channel_id)
         with self._lock:
-            if channel_id in self.channel_states and mix_id in self.channel_states[channel_id]:
-                self.channel_states[channel_id][mix_id]["muted"] = muted
+            if channel_id in self.channel_states:
+                if is_linked:
+                    for m_id in self.channel_states[channel_id]:
+                        self.channel_states[channel_id][m_id]["muted"] = muted
+                    if channel_id in self.channel_master_states:
+                        self.channel_master_states[channel_id]["muted"] = muted
+                else:
+                    if mix_id in self.channel_states[channel_id]:
+                        self.channel_states[channel_id][mix_id]["muted"] = muted
                 self._save_state_to_config(immediate=False)
+
+        if is_linked:
+            self.set_channel_master_mute(channel_id, muted)
         self._sync_channel_audio_routing(channel_id, mix_id)
 
     def toggle_channel_mute(self, channel_id: str, mix_id: str) -> bool:
         """Toggles mute state within a specific virtual mix bus."""
-        with self._lock:
-            if channel_id in self.channel_states and mix_id in self.channel_states[channel_id]:
-                curr = self.channel_states[channel_id][mix_id]["muted"]
-                new_mute = not curr
-                self.channel_states[channel_id][mix_id]["muted"] = new_mute
-                self._save_state_to_config(immediate=False)
-                self._sync_channel_audio_routing(channel_id, mix_id)
-                return new_mute
-        return False
+        curr = self.channel_states.get(channel_id, {}).get(mix_id, {}).get("muted", False)
+        new_mute = not curr
+        self.set_channel_mute(channel_id, mix_id, new_mute)
+        return new_mute
 
     def _volume_worker_loop(self):
         """Persistent worker thread dispatching coalesced volume updates with zero drag latency."""
