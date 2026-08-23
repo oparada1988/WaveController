@@ -58,25 +58,52 @@ class MultiChannelPeakMonitor:
     def _link_sink_monitor(self):
         """Discovers active monitor output ports and links wave_sink_monitor to them."""
         try:
+            # 1. Unlink any default microphone capture ports that WirePlumber auto-linked to wave_sink_monitor
+            try:
+                links_out = subprocess.check_output(['pw-link', '-l'], text=True, stderr=subprocess.DEVNULL)
+                current_node = None
+                for line in links_out.splitlines():
+                    line_str = line.strip()
+                    if not line.startswith(' ') and ':' in line_str:
+                        current_node = line_str
+                    elif '|<-' in line_str and current_node and 'wave_sink_monitor' in current_node:
+                        src_port = line_str.replace('|<-', '').strip()
+                        if 'capture' in src_port.lower():
+                            subprocess.run(['pw-link', '-d', src_port, current_node], stderr=subprocess.DEVNULL)
+            except Exception:
+                pass
+
+            # 2. Discover active monitor output ports from sound cards and virtual mixes
             out = subprocess.check_output(['pw-link', '-o'], text=True, stderr=subprocess.DEVNULL)
             mon_fl = None
             mon_fr = None
             
-            # Prioritize active PCI analog output and filter out silent IEC958 digital mic ports
+            # Find matching monitor ports (USB IEC958, PCI analog, or virtual mix sinks)
+            candidate_fls = []
+            candidate_frs = []
             for line in out.splitlines():
                 l = line.strip()
-                if 'iec958' in l.lower():
-                    continue
-                if 'monitor_FL' in l and ('analog' in l or 'pci' in l or 'output' in l):
-                    mon_fl = l
-                elif 'monitor_FR' in l and ('analog' in l or 'pci' in l or 'output' in l):
-                    mon_fr = l
+                if l.endswith(':monitor_FL'):
+                    candidate_fls.append(l)
+                elif l.endswith(':monitor_FR'):
+                    candidate_frs.append(l)
+
+            # Prioritize: 1. Active hardware sink (iec958 / usb / pci) 2. WaveController personal mix
+            for fl in candidate_fls:
+                if 'iec958' in fl.lower() or 'usb' in fl.lower() or 'analog' in fl.lower() or 'pci' in fl.lower():
+                    mon_fl = fl
+                    break
+            if not mon_fl and candidate_fls:
+                mon_fl = candidate_fls[0]
+
+            for fr in candidate_frs:
+                if 'iec958' in fr.lower() or 'usb' in fr.lower() or 'analog' in fr.lower() or 'pci' in fr.lower():
+                    mon_fr = fr
+                    break
+            if not mon_fr and candidate_frs:
+                mon_fr = candidate_frs[0]
 
             if mon_fl and mon_fr:
-                # Unlink default mic capture from sink monitor
-                subprocess.run(['pw-link', '-d', 'alsa_input.usb-3142_fifine_Microphone-00.analog-stereo:capture_FL', 'wave_sink_monitor:input_FL'], stderr=subprocess.DEVNULL)
-                subprocess.run(['pw-link', '-d', 'alsa_input.usb-3142_fifine_Microphone-00.analog-stereo:capture_FR', 'wave_sink_monitor:input_FR'], stderr=subprocess.DEVNULL)
-                # Link to active sound card sink monitor
                 subprocess.run(['pw-link', mon_fl, 'wave_sink_monitor:input_FL'], stderr=subprocess.DEVNULL)
                 subprocess.run(['pw-link', mon_fr, 'wave_sink_monitor:input_FR'], stderr=subprocess.DEVNULL)
         except Exception:
@@ -160,23 +187,31 @@ class MultiChannelPeakMonitor:
 
             with self._lock:
                 # Microphone channel ONLY gets microphone level
-                self.peaks["mic"] = {"left": m_l, "right": m_r}
+                self.peaks["mic"] = {"left": m_l, "right": m_r, "peak": max(m_l, m_r)}
                 
                 # Application & System Playback channels (Spotify, Discord, Games, etc.) get sink monitor level
-                for ch in ["spotify", "music", "game", "chat", "browser", "system", "sfx"]:
-                    self.peaks[ch] = {"left": s_l, "right": s_r}
+                for ch in ["spotify", "music", "game", "chat", "browser", "system", "sfx", "master"]:
+                    self.peaks[ch] = {"left": s_l, "right": s_r, "peak": max(s_l, s_r)}
+
+                # Mix buses also receive monitor levels
+                for mix in ["personal_mix", "personal", "chat_mix", "mobo_mix", "mobo", "stream_mix"]:
+                    self.peaks[mix] = {"left": s_l, "right": s_r, "peak": max(s_l, s_r)}
 
             time.sleep(0.025) # 40 FPS
 
     def get_channel_stereo_peaks(self, channel_id: str) -> tuple:
         with self._lock:
-            ch_low = channel_id.lower()
+            ch_low = str(channel_id).lower().strip()
             if ch_low in self.peaks:
                 p = self.peaks[ch_low]
                 return p.get("left", 0.0), p.get("right", 0.0)
             for k, p in self.peaks.items():
                 if k in ch_low or ch_low in k:
                     return p.get("left", 0.0), p.get("right", 0.0)
+            # Default fallback for playback channels
+            if ch_low not in ("mic", "microphone", "input"):
+                p = self.peaks.get("system", self.peaks.get("spotify", {}))
+                return p.get("left", 0.0), p.get("right", 0.0)
             return (0.0, 0.0)
 
     def get_channel_peak(self, channel_id: str) -> float:

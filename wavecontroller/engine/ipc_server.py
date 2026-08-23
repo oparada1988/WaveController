@@ -104,135 +104,168 @@ class IPCServer:
                     return c["id"]
         return target_low
 
+    def _process_command(self, req: dict) -> dict:
+        cmd = req.get("command")
+        res = {"status": "ok"}
+
+        if cmd == "get_channels":
+            res["channels"] = self.pipewire_mgr.channels
+            res["mixes"] = self.pipewire_mgr.mixes
+            res["states"] = self.pipewire_mgr.channel_states
+            res["master_states"] = self.pipewire_mgr.channel_master_states
+            res["mix_states"] = self.pipewire_mgr.mix_states
+            res["assigned_apps"] = self.pipewire_mgr.assigned_apps
+        elif cmd == "get_volume":
+            raw_target = req.get("channel_id") or req.get("target") or "mic"
+            ch = self._match_channel_id(raw_target)
+            mx = req.get("mix_id")
+            if mx:
+                res["state"] = self.pipewire_mgr.get_channel_state(ch, mx)
+            else:
+                res["state"] = {
+                    "volume": self.pipewire_mgr.get_channel_master_volume(ch),
+                    "muted": self.pipewire_mgr.get_channel_master_mute(ch)
+                }
+        elif cmd in ["set_volume", "sync_volume"]:
+            raw_target = req.get("channel_id") or req.get("target") or req.get("app_name") or "mic"
+            ch = self._match_channel_id(raw_target)
+            mx = req.get("mix_id")
+            vol = req.get("volume")
+            muted = req.get("muted")
+            
+            if mx:
+                if vol is not None:
+                    self.pipewire_mgr.set_channel_volume(ch, mx, int(vol))
+                if muted is not None:
+                    self.pipewire_mgr.set_channel_mute(ch, mx, bool(muted))
+                res["state"] = self.pipewire_mgr.get_channel_state(ch, mx)
+            else:
+                if vol is not None:
+                    self.pipewire_mgr.set_channel_master_volume(ch, int(vol))
+                if muted is not None:
+                    self.pipewire_mgr.set_channel_master_mute(ch, bool(muted))
+                res["state"] = {
+                    "volume": self.pipewire_mgr.get_channel_master_volume(ch),
+                    "muted": self.pipewire_mgr.get_channel_master_mute(ch)
+                }
+            
+            if self.pipewire_mgr.on_external_change_callback:
+                from gi.repository import GLib
+                GLib.idle_add(self.pipewire_mgr.on_external_change_callback)
+                
+        elif cmd in ["get_mix_volume", "get_mix_master_volume"]:
+            mx = req.get("mix_id") or "personal"
+            res["volume"] = self.pipewire_mgr.get_mix_master_volume(mx)
+            res["muted"] = self.pipewire_mgr.get_mix_master_mute(mx)
+        elif cmd in ["set_mix_volume", "set_mix_master_volume"]:
+            mx = req.get("mix_id") or "personal"
+            vol = req.get("volume")
+            muted = req.get("muted")
+            if vol is not None:
+                self.pipewire_mgr.set_mix_master_volume(mx, int(vol))
+            if muted is not None:
+                self.pipewire_mgr.set_mix_master_mute(mx, bool(muted))
+            res["volume"] = self.pipewire_mgr.get_mix_master_volume(mx)
+            res["muted"] = self.pipewire_mgr.get_mix_master_mute(mx)
+        elif cmd in ["toggle_mix_mute", "toggle_mix_master_mute"]:
+            mx = req.get("mix_id") or "personal"
+            is_muted = self.pipewire_mgr.toggle_mix_master_mute(mx)
+            res["muted"] = is_muted
+        elif cmd == "toggle_mute":
+            raw_target = req.get("channel_id") or req.get("target") or "mic"
+            ch = self._match_channel_id(raw_target)
+            mx = req.get("mix_id")
+            if mx:
+                is_muted = self.pipewire_mgr.toggle_channel_mute(ch, mx)
+            else:
+                is_muted = self.pipewire_mgr.toggle_channel_master_mute(ch)
+            if self.pipewire_mgr.on_external_change_callback:
+                from gi.repository import GLib
+                GLib.idle_add(self.pipewire_mgr.on_external_change_callback)
+            res["muted"] = is_muted
+        elif cmd == "get_peaks":
+            res["peaks"] = self.peak_monitor.get_all_peaks()
+        elif cmd == "get_hardware_status":
+            res["device_name"] = self.hardware_mgr.device_name
+            res["gain_db"] = self.hardware_mgr.hardware_gain_db
+            res["phantom_48v"] = self.hardware_mgr.phantom_power_48v
+            res["clipguard"] = self.hardware_mgr.clipguard_enabled
+            res["low_cut"] = self.hardware_mgr.low_cut_filter
+        elif cmd == "get_output_devices":
+            devices = self.hardware_mgr.get_tracked_output_devices() if self.hardware_mgr else []
+            res["devices"] = devices
+        elif cmd == "set_mix_target_device":
+            mx = req.get("mix_id") or "personal"
+            target_dev = req.get("target_device") or "none"
+            self.pipewire_mgr.update_mix(mx, target_device=target_dev)
+            res["target_device"] = target_dev
+            if self.pipewire_mgr.on_external_change_callback:
+                from gi.repository import GLib
+                GLib.idle_add(self.pipewire_mgr.on_external_change_callback)
+        elif cmd == "cycle_mix_target_device":
+            mx = req.get("mix_id") or "personal"
+            devices = self.hardware_mgr.get_tracked_output_devices() if self.hardware_mgr else []
+            curr_target = "none"
+            for m in self.pipewire_mgr.mixes:
+                if m["id"] == mx:
+                    curr_target = m.get("target_device", "none")
+                    break
+            
+            dev_ids = ["none"] + [d.get("name") for d in devices if d.get("name")]
+            try:
+                curr_idx = dev_ids.index(curr_target)
+                next_idx = (curr_idx + 1) % len(dev_ids)
+            except ValueError:
+                next_idx = 0
+            
+            new_target = dev_ids[next_idx]
+            self.pipewire_mgr.update_mix(mx, target_device=new_target)
+            res["target_device"] = new_target
+            if self.pipewire_mgr.on_external_change_callback:
+                from gi.repository import GLib
+                GLib.idle_add(self.pipewire_mgr.on_external_change_callback)
+        else:
+            res["status"] = "unknown_command"
+
+        return res
+
     def _handle_client(self, conn):
         try:
-            conn.settimeout(2.0)
-            data = conn.recv(4096).decode('utf-8')
-            if not data:
-                return
-            
-            req = json.loads(data)
-            cmd = req.get("command")
-            res = {"status": "ok"}
-
-            if cmd == "get_channels":
-                res["channels"] = self.pipewire_mgr.channels
-                res["mixes"] = self.pipewire_mgr.mixes
-                res["states"] = self.pipewire_mgr.channel_states
-                res["master_states"] = self.pipewire_mgr.channel_master_states
-                res["mix_states"] = self.pipewire_mgr.mix_states
-                res["assigned_apps"] = self.pipewire_mgr.assigned_apps
-            elif cmd == "get_volume":
-                raw_target = req.get("channel_id") or req.get("target") or "mic"
-                ch = self._match_channel_id(raw_target)
-                mx = req.get("mix_id")
-                if mx:
-                    res["state"] = self.pipewire_mgr.get_channel_state(ch, mx)
-                else:
-                    res["state"] = {
-                        "volume": self.pipewire_mgr.get_channel_master_volume(ch),
-                        "muted": self.pipewire_mgr.get_channel_master_mute(ch)
-                    }
-            elif cmd in ["set_volume", "sync_volume"]:
-                raw_target = req.get("channel_id") or req.get("target") or req.get("app_name") or "mic"
-                ch = self._match_channel_id(raw_target)
-                mx = req.get("mix_id")
-                vol = req.get("volume")
-                muted = req.get("muted")
-                
-                if mx:
-                    if vol is not None:
-                        self.pipewire_mgr.set_channel_volume(ch, mx, int(vol))
-                    if muted is not None:
-                        self.pipewire_mgr.set_channel_mute(ch, mx, bool(muted))
-                    res["state"] = self.pipewire_mgr.get_channel_state(ch, mx)
-                else:
-                    if vol is not None:
-                        self.pipewire_mgr.set_channel_master_volume(ch, int(vol))
-                    if muted is not None:
-                        self.pipewire_mgr.set_channel_master_mute(ch, bool(muted))
-                    res["state"] = {
-                        "volume": self.pipewire_mgr.get_channel_master_volume(ch),
-                        "muted": self.pipewire_mgr.get_channel_master_mute(ch)
-                    }
-                
-                if self.pipewire_mgr.on_external_change_callback:
-                    from gi.repository import GLib
-                    GLib.idle_add(self.pipewire_mgr.on_external_change_callback)
-                    
-            elif cmd in ["get_mix_volume", "get_mix_master_volume"]:
-                mx = req.get("mix_id") or "personal"
-                res["volume"] = self.pipewire_mgr.get_mix_master_volume(mx)
-                res["muted"] = self.pipewire_mgr.get_mix_master_mute(mx)
-            elif cmd in ["set_mix_volume", "set_mix_master_volume"]:
-                mx = req.get("mix_id") or "personal"
-                vol = req.get("volume")
-                muted = req.get("muted")
-                if vol is not None:
-                    self.pipewire_mgr.set_mix_master_volume(mx, int(vol))
-                if muted is not None:
-                    self.pipewire_mgr.set_mix_master_mute(mx, bool(muted))
-                res["volume"] = self.pipewire_mgr.get_mix_master_volume(mx)
-                res["muted"] = self.pipewire_mgr.get_mix_master_mute(mx)
-            elif cmd in ["toggle_mix_mute", "toggle_mix_master_mute"]:
-                mx = req.get("mix_id") or "personal"
-                is_muted = self.pipewire_mgr.toggle_mix_master_mute(mx)
-                res["muted"] = is_muted
-            elif cmd == "toggle_mute":
-                raw_target = req.get("channel_id") or req.get("target") or "mic"
-                ch = self._match_channel_id(raw_target)
-                mx = req.get("mix_id")
-                if mx:
-                    is_muted = self.pipewire_mgr.toggle_channel_mute(ch, mx)
-                else:
-                    is_muted = self.pipewire_mgr.toggle_channel_master_mute(ch)
-                if self.pipewire_mgr.on_external_change_callback:
-                    from gi.repository import GLib
-                    GLib.idle_add(self.pipewire_mgr.on_external_change_callback)
-                res["muted"] = is_muted
-            elif cmd == "get_peaks":
-                res["peaks"] = self.peak_monitor.get_all_peaks()
-            elif cmd == "get_hardware_status":
-                res["device_name"] = self.hardware_mgr.device_name
-                res["gain_db"] = self.hardware_mgr.hardware_gain_db
-                res["phantom_48v"] = self.hardware_mgr.phantom_power_48v
-                res["clipguard"] = self.hardware_mgr.clipguard_enabled
-                res["low_cut"] = self.hardware_mgr.low_cut_filter
-            elif cmd == "get_output_devices":
-                devices = self.hardware_mgr.get_tracked_output_devices() if self.hardware_mgr else []
-                res["devices"] = devices
-            elif cmd == "set_mix_target_device":
-                mx = req.get("mix_id") or "personal"
-                target_dev = req.get("target_device") or "none"
-                self.pipewire_mgr.update_mix(mx, target_device=target_dev)
-                res["target_device"] = target_dev
-                if self.pipewire_mgr.on_external_change_callback:
-                    from gi.repository import GLib
-                    GLib.idle_add(self.pipewire_mgr.on_external_change_callback)
-            elif cmd == "cycle_mix_target_device":
-                mx = req.get("mix_id") or "personal"
-                devices = self.hardware_mgr.get_tracked_output_devices() if self.hardware_mgr else []
-                curr_target = "none"
-                for m in self.pipewire_mgr.mixes:
-                    if m["id"] == mx:
-                        curr_target = m.get("target_device", "none")
-                        break
-                
-                dev_ids = ["none"] + [d.get("name") for d in devices if d.get("name")]
+            conn.settimeout(10.0)
+            buffer = ""
+            while self.running:
                 try:
-                    curr_idx = dev_ids.index(curr_target)
-                    next_idx = (curr_idx + 1) % len(dev_ids)
-                except ValueError:
-                    next_idx = 0
-                
-                new_target = dev_ids[next_idx]
-                self.pipewire_mgr.update_mix(mx, target_device=new_target)
-                res["target_device"] = new_target
-                if self.pipewire_mgr.on_external_change_callback:
-                    from gi.repository import GLib
-                    GLib.idle_add(self.pipewire_mgr.on_external_change_callback)
+                    data = conn.recv(8192).decode('utf-8')
+                except socket.timeout:
+                    continue
+                except Exception:
+                    break
 
-            conn.sendall(json.dumps(res).encode('utf-8'))
+                if not data:
+                    break
+                
+                buffer += data
+                while "\n" in buffer:
+                    line, buffer = buffer.split("\n", 1)
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        req = json.loads(line)
+                        res = self._process_command(req)
+                        conn.sendall((json.dumps(res) + "\n").encode('utf-8'))
+                    except Exception:
+                        pass
+
+                # Handle one-shot payloads without newline
+                if buffer and "{" in buffer and "}" in buffer:
+                    try:
+                        req = json.loads(buffer.strip())
+                        res = self._process_command(req)
+                        conn.sendall((json.dumps(res) + "\n").encode('utf-8'))
+                        buffer = ""
+                    except json.JSONDecodeError:
+                        pass
         except Exception:
             pass
         finally:
