@@ -75,14 +75,16 @@ class MixerMatrixView(Gtk.Box):
 
         # 2. Main Matrix Grid
         self.grid = Gtk.Grid(row_spacing=8, column_spacing=12)
-        self.grid.set_hexpand(True)
+        self.grid.set_halign(Gtk.Align.START)
+        self.grid.set_valign(Gtk.Align.START)
+        self.grid.set_hexpand(False)
         self.grid.set_vexpand(True)
 
         self._build_grid()
 
         # Scrolled container for channels
         scrolled = Gtk.ScrolledWindow()
-        scrolled.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        scrolled.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
         scrolled.set_child(self.grid)
         scrolled.set_vexpand(True)
         self.append(scrolled)
@@ -93,6 +95,7 @@ class MixerMatrixView(Gtk.Box):
     def _build_grid(self):
         # Top-left empty header cell
         spacer = Gtk.Box()
+        spacer.set_hexpand(False)
         spacer.set_size_request(340, 48)
         self.grid.attach(spacer, 0, 0, 1, 1)
 
@@ -110,6 +113,7 @@ class MixerMatrixView(Gtk.Box):
         create_mix_col = len(self.pipewire_mgr.mixes) + 1
         create_mix_card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
         create_mix_card.add_css_class("mix-header-card")
+        create_mix_card.set_hexpand(False)
         create_mix_card.set_size_request(52, 48)
         create_mix_card.set_valign(Gtk.Align.CENTER)
         
@@ -148,6 +152,7 @@ class MixerMatrixView(Gtk.Box):
         create_btn = Gtk.MenuButton()
         create_btn.set_label("+ Create channel")
         create_btn.add_css_class("create-channel-btn")
+        create_btn.set_hexpand(False)
         create_btn.set_size_request(340, -1)
         self._setup_create_channel_popover(create_btn)
         self.grid.attach(create_btn, 0, bottom_row, 1, 1)

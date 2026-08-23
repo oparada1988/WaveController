@@ -16,7 +16,8 @@ class MixHeaderCard(Gtk.Box):
         self.on_edit_callback = on_edit_callback
         
         self.add_css_class("mix-header-card")
-        self.set_hexpand(True)
+        self.set_hexpand(False)
+        self.set_size_request(200, -1)
 
         top_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
 

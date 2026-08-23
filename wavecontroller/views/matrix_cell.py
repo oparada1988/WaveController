@@ -18,9 +18,9 @@ class MatrixCell(Gtk.Box):
         self.pipewire_mgr = pipewire_mgr
         self.on_change_callback = on_change_callback
         
-        self.set_hexpand(True)
+        self.set_hexpand(False)
         self.set_valign(Gtk.Align.CENTER)
-        self.set_size_request(-1, 40)
+        self.set_size_request(200, 40)
 
         self.slider = None
         self.mute_btn = None

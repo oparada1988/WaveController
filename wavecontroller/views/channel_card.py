@@ -23,6 +23,7 @@ class ChannelCard(Gtk.Box):
         
         self.add_css_class("channel-row-card")
         self.set_valign(Gtk.Align.CENTER)
+        self.set_hexpand(False)
         self.set_size_request(340, -1)
 
         # Channel icon (Auto-resolve from assigned apps or channel name)
@@ -58,19 +59,20 @@ class ChannelCard(Gtk.Box):
 
         self.append(title_box)
 
-        # Channel Configuration / Settings Gear Button
+        # Channel settings gear popover button
         self.settings_btn = Gtk.MenuButton()
         self.settings_btn.set_icon_name("emblem-system-symbolic")
         self.settings_btn.add_css_class("flat")
         self.settings_btn.add_css_class("wave-icon-btn")
-        self.settings_btn.set_tooltip_text("Channel Settings")
+        self.settings_btn.set_tooltip_text(f"Configure '{display_name}'")
         self._setup_channel_popover()
         self.append(self.settings_btn)
 
-        # Master mute button
+        # Mute button
         self.mute_btn = Gtk.Button.new_from_icon_name("audio-volume-high-symbolic")
         self.mute_btn.add_css_class("flat")
         self.mute_btn.add_css_class("wave-icon-btn")
+        self.mute_btn.set_valign(Gtk.Align.CENTER)
         self.mute_btn.connect("clicked", self._on_mute_clicked)
         self.append(self.mute_btn)
 
@@ -83,7 +85,8 @@ class ChannelCard(Gtk.Box):
             sync_peaks=is_synced,
             on_volume_changed=self._on_slider_volume_changed
         )
-        self.slider.set_size_request(80, 22)
+        self.slider.set_hexpand(False)
+        self.slider.set_size_request(85, 20)
         self.append(self.slider)
 
         # Link/Unlink multi-mix toggle button
