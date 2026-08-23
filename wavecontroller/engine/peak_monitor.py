@@ -1,4 +1,5 @@
 import os
+import math
 import subprocess
 import threading
 import time
@@ -231,57 +232,60 @@ class MultiChannelPeakMonitor:
         sink_l, sink_r = 0.0, 0.0
 
         while self.running:
-            raw_ml, raw_mr = self._drain_and_calc_peaks(self.mic_proc)
-            raw_sl, raw_sr = self._drain_and_calc_peaks(self.sink_proc)
+            try:
+                raw_ml, raw_mr = self._drain_and_calc_peaks(self.mic_proc)
+                raw_sl, raw_sr = self._drain_and_calc_peaks(self.sink_proc)
 
-            # Re-spawn if exited
-            if (not self.mic_proc or self.mic_proc.poll() is not None) and self.running:
-                self.mic_proc = self._open_pw_record('wave_mic_monitor')
-                self._link_mic_monitor()
-            if (not self.sink_proc or self.sink_proc.poll() is not None) and self.running:
-                self.sink_proc = self._open_pw_record('wave_sink_monitor')
-                self._link_sink_monitor()
+                # Re-spawn if exited
+                if (not self.mic_proc or self.mic_proc.poll() is not None) and self.running:
+                    self.mic_proc = self._open_pw_record('wave_mic_monitor')
+                    self._link_mic_monitor()
+                if (not self.sink_proc or self.sink_proc.poll() is not None) and self.running:
+                    self.sink_proc = self._open_pw_record('wave_sink_monitor')
+                    self._link_sink_monitor()
 
-            # Fast attack (instant punch on rise) + smooth exponential release & graceful fade-down to 0
-            if raw_ml > mic_l:
-                mic_l = mic_l + (raw_ml - mic_l) * 0.80
-            else:
-                mic_l = max(0.0, mic_l * 0.93 - 0.002)
+                # Fast attack (instant punch on rise) + smooth exponential release & graceful fade-down to 0
+                if raw_ml > mic_l:
+                    mic_l = mic_l + (raw_ml - mic_l) * 0.80
+                else:
+                    mic_l = max(0.0, mic_l * 0.93 - 0.002)
 
-            if raw_mr > mic_r:
-                mic_r = mic_r + (raw_mr - mic_r) * 0.80
-            else:
-                mic_r = max(0.0, mic_r * 0.93 - 0.002)
+                if raw_mr > mic_r:
+                    mic_r = mic_r + (raw_mr - mic_r) * 0.80
+                else:
+                    mic_r = max(0.0, mic_r * 0.93 - 0.002)
 
-            if raw_sl > sink_l:
-                sink_l = sink_l + (raw_sl - sink_l) * 0.80
-            else:
-                sink_l = max(0.0, sink_l * 0.93 - 0.002)
+                if raw_sl > sink_l:
+                    sink_l = sink_l + (raw_sl - sink_l) * 0.80
+                else:
+                    sink_l = max(0.0, sink_l * 0.93 - 0.002)
 
-            if raw_sr > sink_r:
-                sink_r = sink_r + (raw_sr - sink_r) * 0.80
-            else:
-                sink_r = max(0.0, sink_r * 0.93 - 0.002)
+                if raw_sr > sink_r:
+                    sink_r = sink_r + (raw_sr - sink_r) * 0.80
+                else:
+                    sink_r = max(0.0, sink_r * 0.93 - 0.002)
 
-            # Gentle zero clamp only at true bottom
-            m_l = 0.0 if mic_l < 0.002 else mic_l
-            m_r = 0.0 if mic_r < 0.002 else mic_r
-            s_l = 0.0 if sink_l < 0.002 else sink_l
-            s_r = 0.0 if sink_r < 0.002 else sink_r
+                # Gentle zero clamp only at true bottom
+                m_l = 0.0 if mic_l < 0.002 else mic_l
+                m_r = 0.0 if mic_r < 0.002 else mic_r
+                s_l = 0.0 if sink_l < 0.002 else sink_l
+                s_r = 0.0 if sink_r < 0.002 else sink_r
 
-            with self._lock:
-                # Physical microphone channels (mic, fefine, etc.) ONLY get physical microphone level
-                self.peaks["mic"] = {"left": m_l, "right": m_r, "peak": max(m_l, m_r)}
-                self.peaks["fefine"] = {"left": m_l, "right": m_r, "peak": max(m_l, m_r)}
-                self.peaks["microphone"] = {"left": m_l, "right": m_r, "peak": max(m_l, m_r)}
-                
-                # Application & System Playback channels (Spotify, Discord, Games, etc.) get sink monitor level
-                for ch in ["spotify", "music", "game", "chat", "browser", "system", "sfx", "master"]:
-                    self.peaks[ch] = {"left": s_l, "right": s_r, "peak": max(s_l, s_r)}
+                with self._lock:
+                    # Physical microphone channels (mic, fefine, etc.) ONLY get physical microphone level
+                    self.peaks["mic"] = {"left": m_l, "right": m_r, "peak": max(m_l, m_r)}
+                    self.peaks["fefine"] = {"left": m_l, "right": m_r, "peak": max(m_l, m_r)}
+                    self.peaks["microphone"] = {"left": m_l, "right": m_r, "peak": max(m_l, m_r)}
+                    
+                    # Application & System Playback channels (Spotify, Discord, Games, etc.) get sink monitor level
+                    for ch in ["spotify", "music", "game", "chat", "browser", "system", "sfx", "master"]:
+                        self.peaks[ch] = {"left": s_l, "right": s_r, "peak": max(s_l, s_r)}
 
-                # Mix buses also receive monitor levels
-                for mix in ["personal_mix", "personal", "chat_mix", "mobo_mix", "mobo", "stream_mix"]:
-                    self.peaks[mix] = {"left": s_l, "right": s_r, "peak": max(s_l, s_r)}
+                    # Mix buses also receive monitor levels
+                    for mix in ["personal_mix", "personal", "chat_mix", "mobo_mix", "mobo", "stream_mix"]:
+                        self.peaks[mix] = {"left": s_l, "right": s_r, "peak": max(s_l, s_r)}
+            except Exception:
+                pass
 
             time.sleep(0.025) # 40 FPS
 
