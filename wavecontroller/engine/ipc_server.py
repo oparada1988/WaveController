@@ -5,10 +5,12 @@ import threading
 import time
 
 SOCKET_PATH = "/tmp/wavecontroller.sock"
+USER_RUNTIME_DIR = os.environ.get("XDG_RUNTIME_DIR", "/tmp")
+USER_SOCKET_PATH = os.path.join(USER_RUNTIME_DIR, "wavecontroller.sock")
 
 class IPCServer:
     """
-    Unix Domain Socket IPC Server allowing Volume Controller Plus and StreamController
+    Unix Domain Socket IPC Server allowing WaveController Plugin and StreamController
     to interact directly with WaveController sub-mixes, faders, and meters.
     """
     def __init__(self, pipewire_mgr, peak_monitor, hardware_mgr):
@@ -24,6 +26,14 @@ class IPCServer:
         self.thread = threading.Thread(target=self._run_server, daemon=True)
         self.thread.start()
 
+    def _clean_sockets(self):
+        for path in [SOCKET_PATH, USER_SOCKET_PATH]:
+            if os.path.exists(path) or os.path.islink(path):
+                try:
+                    os.remove(path)
+                except Exception:
+                    pass
+
     def stop(self):
         self.running = False
         if self.server_sock:
@@ -31,26 +41,32 @@ class IPCServer:
                 self.server_sock.close()
             except Exception:
                 pass
-        if os.path.exists(SOCKET_PATH):
-            try:
-                os.remove(SOCKET_PATH)
-            except Exception:
-                pass
+        self._clean_sockets()
 
     def _run_server(self):
-        if os.path.exists(SOCKET_PATH):
-            try:
-                os.remove(SOCKET_PATH)
-            except Exception:
-                pass
+        self._clean_sockets()
 
         try:
             self.server_sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-            self.server_sock.bind(SOCKET_PATH)
-            self.server_sock.listen(5)
+            self.server_sock.bind(USER_SOCKET_PATH)
+            self.server_sock.listen(10)
             self.server_sock.settimeout(1.0)
+
+            # Ensure /tmp/wavecontroller.sock links to USER_SOCKET_PATH if paths differ
+            if USER_SOCKET_PATH != SOCKET_PATH:
+                try:
+                    os.symlink(USER_SOCKET_PATH, SOCKET_PATH)
+                except Exception:
+                    pass
         except Exception:
-            return
+            try:
+                # Fallback to direct /tmp socket
+                self.server_sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                self.server_sock.bind(SOCKET_PATH)
+                self.server_sock.listen(10)
+                self.server_sock.settimeout(1.0)
+            except Exception:
+                return
 
         while self.running:
             try:
@@ -173,6 +189,39 @@ class IPCServer:
                 res["phantom_48v"] = self.hardware_mgr.phantom_power_48v
                 res["clipguard"] = self.hardware_mgr.clipguard_enabled
                 res["low_cut"] = self.hardware_mgr.low_cut_filter
+            elif cmd == "get_output_devices":
+                devices = self.hardware_mgr.get_tracked_output_devices() if self.hardware_mgr else []
+                res["devices"] = devices
+            elif cmd == "set_mix_target_device":
+                mx = req.get("mix_id") or "personal"
+                target_dev = req.get("target_device") or "none"
+                self.pipewire_mgr.update_mix(mx, target_device=target_dev)
+                res["target_device"] = target_dev
+                if self.pipewire_mgr.on_external_change_callback:
+                    from gi.repository import GLib
+                    GLib.idle_add(self.pipewire_mgr.on_external_change_callback)
+            elif cmd == "cycle_mix_target_device":
+                mx = req.get("mix_id") or "personal"
+                devices = self.hardware_mgr.get_tracked_output_devices() if self.hardware_mgr else []
+                curr_target = "none"
+                for m in self.pipewire_mgr.mixes:
+                    if m["id"] == mx:
+                        curr_target = m.get("target_device", "none")
+                        break
+                
+                dev_ids = ["none"] + [d.get("name") for d in devices if d.get("name")]
+                try:
+                    curr_idx = dev_ids.index(curr_target)
+                    next_idx = (curr_idx + 1) % len(dev_ids)
+                except ValueError:
+                    next_idx = 0
+                
+                new_target = dev_ids[next_idx]
+                self.pipewire_mgr.update_mix(mx, target_device=new_target)
+                res["target_device"] = new_target
+                if self.pipewire_mgr.on_external_change_callback:
+                    from gi.repository import GLib
+                    GLib.idle_add(self.pipewire_mgr.on_external_change_callback)
 
             conn.sendall(json.dumps(res).encode('utf-8'))
         except Exception:
