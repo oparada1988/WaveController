@@ -159,6 +159,9 @@ class PipeWireManager:
                 except Exception:
                     pass
 
+        # Real-time synchronization of PipeWire port connections (pw-link)
+        self._sync_channel_audio_routing()
+
     def stop(self):
         self.running = False
         self._volume_event.set()
@@ -558,13 +561,93 @@ class PipeWireManager:
             self._save_state_to_config(immediate=True)
         self._sync_channel_audio_routing(channel_id, mix_id)
 
-    def _sync_channel_audio_routing(self, channel_id: str, mix_id: str):
-        """Synchronizes audio routing with PipeWire volume/mute based on enablement."""
-        st = self.get_channel_state(channel_id, mix_id)
-        if st.get("enabled", True):
-            with self._lock:
-                self._volume_queue[channel_id] = (st.get("volume", 80), st.get("muted", False))
-                self._volume_event.set()
+    def _sync_channel_audio_routing(self, channel_id: str = None, mix_id: str = None):
+        """
+        Synchronizes real PipeWire port attachments (pw-link) for all channels and mixes.
+        When a channel is enabled for a mix, creates real-time patch links visible in qpwgraph.
+        When unrouted/disabled, destroys the links in real-time.
+        """
+        try:
+            out_ports_raw = subprocess.check_output(["pw-link", "-o"], text=True, stderr=subprocess.DEVNULL)
+            out_ports = [l.strip() for l in out_ports_raw.splitlines() if l.strip()]
+        except Exception:
+            out_ports = []
+
+        try:
+            in_ports_raw = subprocess.check_output(["pw-link", "-i"], text=True, stderr=subprocess.DEVNULL)
+            in_ports = [l.strip() for l in in_ports_raw.splitlines() if l.strip()]
+        except Exception:
+            in_ports = []
+
+        with self._lock:
+            channels_copy = list(self.channels)
+            mixes_copy = list(self.mixes)
+
+        channels_to_sync = [c for c in channels_copy if channel_id is None or c["id"] == channel_id]
+        mixes_to_sync = [m for m in mixes_copy if mix_id is None or m["id"] == mix_id]
+
+        for ch in channels_to_sync:
+            ch_id = ch["id"]
+            
+            # Find output ports for this channel
+            ch_out_ports = []
+            if ch_id == "mic":
+                for p in out_ports:
+                    if ":capture_" in p:
+                        ch_out_ports.append(p)
+            else:
+                assigned = self.get_assigned_apps(ch_id)
+                for app in assigned:
+                    app_low = app.lower()
+                    for p in out_ports:
+                        p_low = p.lower()
+                        if (app_low in p_low or p_low.startswith(app_low)) and ":output_" in p:
+                            ch_out_ports.append(p)
+
+            if not ch_out_ports:
+                continue
+
+            for m in mixes_to_sync:
+                m_id = m["id"]
+                m_type = m.get("type", "source" if m_id != "personal" else "sink")
+                
+                # Target mix input ports
+                target_in_ports = []
+                if m_type == "sink":
+                    target_prefix = f"WaveController_{m_id}_Sink:playback_"
+                else:
+                    target_prefix = f"WaveController_{m_id}_Source:input_"
+
+                for p in in_ports:
+                    if p.startswith(target_prefix):
+                        target_in_ports.append(p)
+
+                if not target_in_ports:
+                    continue
+
+                is_enabled = self.is_channel_mix_enabled(ch_id, m_id)
+
+                for src_p in ch_out_ports:
+                    is_fl = "_FL" in src_p or "_1" in src_p
+                    for tgt_p in target_in_ports:
+                        tgt_fl = "_FL" in tgt_p or "_1" in tgt_p
+                        if is_fl == tgt_fl:
+                            cmd = ["pw-link"]
+                            if not is_enabled:
+                                cmd.append("-d")
+                            cmd.extend([src_p, tgt_p])
+                            try:
+                                subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                            except Exception:
+                                pass
+
+        # Also trigger volume update
+        if channel_id:
+            st = self.get_channel_state(channel_id, mix_id or (mixes_copy[0]["id"] if mixes_copy else "personal"))
+            if st.get("enabled", True):
+                with self._lock:
+                    self._volume_queue[channel_id] = (st.get("volume", 80), st.get("muted", False))
+                    self._volume_event.set()
 
     def get_channel_state(self, channel_id: str, mix_id: str) -> dict:
         with self._lock:
