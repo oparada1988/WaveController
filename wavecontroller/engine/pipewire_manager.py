@@ -19,7 +19,7 @@ class PipeWireManager:
     ]
 
     DEFAULT_MIXES = [
-        {"id": "personal", "name": "Personal Mix", "subtitle": "1 output", "icon": "audio-headphones-symbolic", "color": "#3db356"}
+        {"id": "personal", "name": "Personal Mix", "subtitle": "1 output", "icon": "audio-headphones-symbolic", "color": "#3db356", "type": "sink"}
     ]
 
     DEFAULT_APP_MAPPINGS = {
@@ -439,6 +439,12 @@ class PipeWireManager:
     # -------------------------------------------------------------
     # Channel Master Gain / Stream Volume (1:1 with Volume Controller Plus)
     # -------------------------------------------------------------
+    def is_channel_linked(self, channel_id: str) -> bool:
+        """Returns True if the channel has multi-mix linking enabled."""
+        with self._lock:
+            states = self.channel_states.get(channel_id, {})
+            return any(s.get("linked", True) for s in states.values())
+
     def get_channel_master_volume(self, channel_id: str) -> int:
         with self._lock:
             st = self.channel_master_states.get(channel_id, {})
@@ -453,10 +459,20 @@ class PipeWireManager:
         with self._lock:
             if channel_id not in self.channel_master_states:
                 self.channel_master_states[channel_id] = {"volume": 80, "muted": False}
+            old_vol = self.channel_master_states[channel_id].get("volume", 80)
             vol = max(0, min(100, volume))
+            diff = vol - old_vol
             self.channel_master_states[channel_id]["volume"] = vol
             is_muted = self.channel_master_states[channel_id].get("muted", False)
             
+            # If Channel Link is enabled: sync master volume directly to all compatible mix send faders
+            if self.is_channel_linked(channel_id):
+                for mx in self.mixes:
+                    mx_id = mx["id"]
+                    if self.is_channel_mix_compatible(channel_id, mx_id):
+                        if channel_id in self.channel_states and mx_id in self.channel_states[channel_id]:
+                            self.channel_states[channel_id][mx_id]["volume"] = vol
+
             # Enqueue physical stream volume dispatch
             self._volume_queue[channel_id] = (vol, is_muted)
             self._volume_event.set()
@@ -468,6 +484,14 @@ class PipeWireManager:
                 self.channel_master_states[channel_id] = {"volume": 80, "muted": False}
             self.channel_master_states[channel_id]["muted"] = muted
             vol = self.channel_master_states[channel_id].get("volume", 80)
+
+            # If Channel Link is enabled: sync master mute to all compatible mixes
+            if self.is_channel_linked(channel_id):
+                for mx in self.mixes:
+                    mx_id = mx["id"]
+                    if self.is_channel_mix_compatible(channel_id, mx_id):
+                        if channel_id in self.channel_states and mx_id in self.channel_states[channel_id]:
+                            self.channel_states[channel_id][mx_id]["muted"] = muted
 
             # Enqueue physical stream volume dispatch
             self._volume_queue[channel_id] = (vol, muted)
@@ -483,6 +507,13 @@ class PipeWireManager:
             self.channel_master_states[channel_id]["muted"] = new_mute
             vol = self.channel_master_states[channel_id].get("volume", 80)
 
+            if self.is_channel_linked(channel_id):
+                for mx in self.mixes:
+                    mx_id = mx["id"]
+                    if self.is_channel_mix_compatible(channel_id, mx_id):
+                        if channel_id in self.channel_states and mx_id in self.channel_states[channel_id]:
+                            self.channel_states[channel_id][mx_id]["muted"] = new_mute
+
             self._volume_queue[channel_id] = (vol, new_mute)
             self._volume_event.set()
             self._save_state_to_config(immediate=False)
@@ -492,18 +523,10 @@ class PipeWireManager:
     # Sub-Mix Send Levels (Virtual Mix Bus Faders in Matrix Grid)
     # -------------------------------------------------------------
     def set_channel_volume(self, channel_id: str, mix_id: str, volume: int):
-        """Sets the sub-mix send level into a specific virtual mix bus."""
+        """Sets the sub-mix send level into a specific virtual mix bus (NEVER modifies Master Channel Volume)."""
         with self._lock:
             if channel_id in self.channel_states and mix_id in self.channel_states[channel_id]:
-                state = self.channel_states[channel_id][mix_id]
-                diff = volume - state["volume"]
-                state["volume"] = max(0, min(100, volume))
-                
-                if state.get("linked", True):
-                    for other_mix_id, other_state in self.channel_states[channel_id].items():
-                        if other_mix_id != mix_id:
-                            other_state["volume"] = max(0, min(100, other_state["volume"] + diff))
-
+                self.channel_states[channel_id][mix_id]["volume"] = max(0, min(100, volume))
                 self._save_state_to_config(immediate=False)
         self._sync_channel_audio_routing(channel_id, mix_id)
 
@@ -604,7 +627,7 @@ class PipeWireManager:
             return False
         
         ch_type = ch.get("type", "sink")
-        mix_type = mix.get("type", "source")
+        mix_type = mix.get("type", "sink" if mix.get("id") == "personal" else "source")
 
         # Source channels only route to source mixes; Sink channels only route to sink mixes
         return ch_type == mix_type

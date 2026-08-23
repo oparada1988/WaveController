@@ -529,6 +529,11 @@ class MixerMatrixView(Gtk.Box):
     def _on_external_sync(self):
         for ch_id, card in self.channel_cards.items():
             card.update_ui_state()
+            if self.pipewire_mgr.is_channel_linked(ch_id):
+                for m in self.pipewire_mgr.mixes:
+                    cell = self.matrix_cells.get((ch_id, m["id"]))
+                    if cell:
+                        cell.update_ui_state()
 
     def _on_link_toggled(self, channel_id: str, is_linked: bool):
         for m in self.pipewire_mgr.mixes:

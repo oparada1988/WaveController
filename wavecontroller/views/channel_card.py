@@ -278,6 +278,8 @@ class ChannelCard(Gtk.Box):
     def _on_slider_volume_changed(self, vol: int):
         ch_id = self.channel_info["id"]
         self.pipewire_mgr.set_channel_master_volume(ch_id, vol)
+        if self.pipewire_mgr.is_channel_linked(ch_id) and self.on_link_toggle_callback:
+            self.on_link_toggle_callback(ch_id, True)
 
     def update_peaks(self, peak_l: float, peak_r: float):
         self.slider.set_peaks(peak_l, peak_r)
@@ -289,14 +291,21 @@ class ChannelCard(Gtk.Box):
         ch_id = self.channel_info["id"]
         self.pipewire_mgr.toggle_channel_master_mute(ch_id)
         self.update_ui_state()
+        if self.pipewire_mgr.is_channel_linked(ch_id) and self.on_link_toggle_callback:
+            self.on_link_toggle_callback(ch_id, True)
 
     def _on_link_clicked(self, btn):
         ch_id = self.channel_info["id"]
         # Toggle link state across sub-mixes for this channel
         curr_linked = any(s.get("linked", True) for s in self.pipewire_mgr.channel_states.get(ch_id, {}).values())
         new_val = not curr_linked
+        master_vol = self.pipewire_mgr.get_channel_master_volume(ch_id)
+        master_muted = self.pipewire_mgr.get_channel_master_mute(ch_id)
         for m_id, s in self.pipewire_mgr.channel_states.get(ch_id, {}).items():
             s["linked"] = new_val
+            if new_val:
+                s["volume"] = master_vol
+                s["muted"] = master_muted
         self.pipewire_mgr._save_state_to_config(immediate=True)
         self.update_ui_state()
         if self.on_link_toggle_callback:
