@@ -98,11 +98,12 @@ class MatrixCell(Gtk.Box):
 
             self.append(empty_box)
         else:
-            # Incompatible stream type: clean placeholder box (NO '+' button)
-            self.remove_css_class("matrix-cell-card")
+            # Incompatible stream type: solid matching placeholder card (same color/border as channel card)
+            self.remove_css_class("matrix-cell-empty")
+            self.remove_css_class("matrix-cell-incompatible")
             self.remove_css_class("muted")
-            self.add_css_class("matrix-cell-empty")
-            self.add_css_class("matrix-cell-incompatible")
+            self.add_css_class("matrix-cell-card")
+            self.add_css_class("matrix-cell-placeholder")
 
             self.slider = None
             self.mute_btn = None
