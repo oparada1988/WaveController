@@ -34,10 +34,12 @@ class MatrixCell(Gtk.Box):
         while self.get_first_child():
             self.remove(self.get_first_child())
 
+        is_compatible = self.pipewire_mgr.is_channel_mix_compatible(self.channel_id, self.mix_id)
         is_enabled = self.pipewire_mgr.is_channel_mix_enabled(self.channel_id, self.mix_id)
 
-        if is_enabled:
+        if is_enabled and is_compatible:
             self.remove_css_class("matrix-cell-empty")
+            self.remove_css_class("matrix-cell-incompatible")
             self.add_css_class("matrix-cell-card")
 
             # 1. Mute button
@@ -70,8 +72,10 @@ class MatrixCell(Gtk.Box):
             self.append(self.del_btn)
 
             self.update_ui_state()
-        else:
+        elif is_compatible:
+            # Compatible but unrouted slot: render '+' button
             self.remove_css_class("matrix-cell-card")
+            self.remove_css_class("matrix-cell-incompatible")
             self.remove_css_class("muted")
             self.add_css_class("matrix-cell-empty")
 
@@ -93,6 +97,21 @@ class MatrixCell(Gtk.Box):
             empty_box.append(self.add_btn)
 
             self.append(empty_box)
+        else:
+            # Incompatible stream type: clean placeholder box (NO '+' button)
+            self.remove_css_class("matrix-cell-card")
+            self.remove_css_class("muted")
+            self.add_css_class("matrix-cell-empty")
+            self.add_css_class("matrix-cell-incompatible")
+
+            self.slider = None
+            self.mute_btn = None
+            self.del_btn = None
+            self.add_btn = None
+
+            placeholder_box = Gtk.Box()
+            placeholder_box.set_hexpand(True)
+            self.append(placeholder_box)
 
     def _on_add_clicked(self, btn):
         self.pipewire_mgr.set_channel_mix_enabled(self.channel_id, self.mix_id, True)

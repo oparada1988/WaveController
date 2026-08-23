@@ -538,14 +538,39 @@ class PipeWireManager:
                 return new_val
         return True
 
+    def is_channel_mix_compatible(self, channel_id: str, mix_id: str) -> bool:
+        """Returns True if the channel stream type is compatible with the sub-mix bus type."""
+        ch = None
+        for c in self.channels:
+            if c["id"] == channel_id:
+                ch = c
+                break
+        mix = None
+        for m in self.mixes:
+            if m["id"] == mix_id:
+                mix = m
+                break
+        if not ch or not mix:
+            return False
+        
+        ch_type = ch.get("type", "sink")
+        mix_type = mix.get("type", "source")
+
+        # Source channels only route to source mixes; Sink channels only route to sink mixes
+        return ch_type == mix_type
+
     def is_channel_mix_enabled(self, channel_id: str, mix_id: str) -> bool:
         """Returns True if the channel is actively routed into this mix."""
+        if not self.is_channel_mix_compatible(channel_id, mix_id):
+            return False
         with self._lock:
             st = self.channel_states.get(channel_id, {}).get(mix_id, {})
             return st.get("enabled", True)
 
     def set_channel_mix_enabled(self, channel_id: str, mix_id: str, enabled: bool):
         """Enables or disables routing of a channel into a specific mix bus."""
+        if enabled and not self.is_channel_mix_compatible(channel_id, mix_id):
+            return
         with self._lock:
             if channel_id not in self.channel_states:
                 self.channel_states[channel_id] = {}
@@ -679,7 +704,13 @@ class PipeWireManager:
             self.channel_states[ch_id] = {}
             self.assigned_apps[ch_id] = assigned_apps if assigned_apps is not None else ([name] if ch_type == "sink" else [])
             for mx in self.mixes:
-                self.channel_states[ch_id][mx["id"]] = {"volume": 80, "muted": False, "linked": True, "enabled": True}
+                is_compat = (ch_type == mx.get("type", "source"))
+                self.channel_states[ch_id][mx["id"]] = {
+                    "volume": 80,
+                    "muted": False,
+                    "linked": True,
+                    "enabled": is_compat
+                }
 
             self._refresh_node_cache()
             self._save_state_to_config(immediate=True)
@@ -687,8 +718,6 @@ class PipeWireManager:
 
     def remove_channel(self, channel_id: str) -> bool:
         with self._lock:
-            if channel_id == "mic":
-                return False
             self.channels = [c for c in self.channels if c["id"] != channel_id]
             if channel_id in self.channel_states:
                 del self.channel_states[channel_id]

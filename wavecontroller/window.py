@@ -292,6 +292,16 @@ class WaveMainWindow(Adw.ApplicationWindow):
             self.device_list_box.append(btn)
             self.device_buttons[view_name] = btn
 
+        # Handle View Selection
+        if select_device_key:
+            target_view_name = f"device_{select_device_key}"
+            if target_view_name in self.device_buttons:
+                self._switch_view(target_view_name, self.device_buttons[target_view_name])
+        else:
+            curr_visible = self.stack.get_visible_child_name()
+            if curr_visible and curr_visible.startswith("device_") and curr_visible not in self.device_buttons:
+                self._switch_view("mixes", self.mixes_btn)
+
     def _show_device_context_menu(self, widget, device_key: str):
         pop = Gtk.Popover()
         pop.set_parent(widget)
@@ -322,16 +332,6 @@ class WaveMainWindow(Adw.ApplicationWindow):
 
         pop.set_child(box)
         pop.popup()
-
-        # Handle View Selection
-        if select_device_key:
-            target_view_name = f"device_{select_device_key}"
-            if target_view_name in self.device_buttons:
-                self._switch_view(target_view_name, self.device_buttons[target_view_name])
-        else:
-            curr_visible = self.stack.get_visible_child_name()
-            if curr_visible and curr_visible.startswith("device_") and curr_visible not in self.device_buttons:
-                self._switch_view("mixes", self.mixes_btn)
 
     def _open_add_device_dialog(self):
         dialog = AddDeviceDialog(self.hardware_mgr, on_device_added_callback=self._on_device_added)

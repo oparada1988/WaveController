@@ -217,6 +217,28 @@ window.theme-midnight .wave-create-channel-box {
     border: 1px solid alpha(@accent_bg_color, 0.5);
 }
 
+.matrix-cell-empty.matrix-cell-incompatible {
+    background-color: alpha(@card_bg_color, 0.12);
+    border: 1px dashed alpha(@borders, 0.2);
+    opacity: 0.35;
+}
+
+.matrix-cell-empty.matrix-cell-incompatible:hover {
+    background-color: alpha(@card_bg_color, 0.12);
+    border: 1px dashed alpha(@borders, 0.2);
+}
+
+window.theme-midnight .matrix-cell-empty.matrix-cell-incompatible {
+    background-color: rgba(22, 22, 26, 0.25);
+    border: 1px dashed rgba(255, 255, 255, 0.05);
+    opacity: 0.35;
+}
+
+window.theme-midnight .matrix-cell-empty.matrix-cell-incompatible:hover {
+    background-color: rgba(22, 22, 26, 0.25);
+    border: 1px dashed rgba(255, 255, 255, 0.05);
+}
+
 .matrix-cell-add-btn {
     opacity: 0.4;
     border-radius: 6px;

@@ -226,20 +226,34 @@ class ChannelCard(Gtk.Box):
         meter_box.append(sync_switch)
         pop_box.append(meter_box)
 
-        # 5. Delete Channel Button (Only for user-added channels)
-        if self.channel_info["id"] != "mic":
-            pop_box.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
-            del_btn = Gtk.Button(label="Delete Channel")
-            del_btn.add_css_class("destructive-action")
-            
-            def on_delete(b):
-                popover.popdown()
-                self.pipewire_mgr.remove_channel(self.channel_info["id"])
-                if self.on_channel_removed_callback:
-                    self.on_channel_removed_callback(self.channel_info["id"])
+        # 5. Delete Channel Button (Available for all channels)
+        pop_box.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
+        del_btn = Gtk.Button(label="Delete Channel")
+        del_btn.add_css_class("destructive-action")
+        
+        def on_delete(b):
+            popover.popdown()
+            dialog = Adw.MessageDialog(
+                transient_for=self.get_root() if isinstance(self.get_root(), Gtk.Window) else None,
+                heading=f"Delete '{self.title_lbl.get_text()}'?",
+                body="This channel strip will be removed from your mixer matrix and its audio streams unrouted."
+            )
+            dialog.add_response("cancel", "Cancel")
+            dialog.add_response("delete", "Delete")
+            dialog.set_response_appearance("delete", Adw.ResponseAppearance.DESTRUCTIVE)
+            dialog.set_default_response("cancel")
 
-            del_btn.connect("clicked", on_delete)
-            pop_box.append(del_btn)
+            def on_dialog_response(d, resp):
+                if resp == "delete":
+                    self.pipewire_mgr.remove_channel(self.channel_info["id"])
+                    if self.on_channel_removed_callback:
+                        self.on_channel_removed_callback(self.channel_info["id"])
+
+            dialog.connect("response", on_dialog_response)
+            dialog.present()
+
+        del_btn.connect("clicked", on_delete)
+        pop_box.append(del_btn)
 
         popover.set_child(pop_box)
         self.settings_btn.set_popover(popover)
