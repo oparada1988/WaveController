@@ -189,7 +189,7 @@ class SettingsView(Gtk.Box):
 
         github_link = Gtk.LinkButton(
             uri="https://github.com/oparada1988/WaveController",
-            label="GitHub Page"
+            label="GitHub"
         )
         github_link.add_css_class("flat")
         github_link.set_halign(Gtk.Align.CENTER)
