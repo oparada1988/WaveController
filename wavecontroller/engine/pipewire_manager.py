@@ -694,25 +694,8 @@ class PipeWireManager:
         return True
 
     def is_channel_mix_compatible(self, channel_id: str, mix_id: str) -> bool:
-        """Returns True if the channel stream type is compatible with the sub-mix bus type."""
-        ch = None
-        for c in self.channels:
-            if c["id"] == channel_id:
-                ch = c
-                break
-        mix = None
-        for m in self.mixes:
-            if m["id"] == mix_id:
-                mix = m
-                break
-        if not ch or not mix:
-            return False
-        
-        ch_type = ch.get("type", "sink")
-        mix_type = mix.get("type", "sink" if mix.get("id") == "personal" else "source")
-
-        # Source channels only route to source mixes; Sink channels only route to sink mixes
-        return ch_type == mix_type
+        """Returns True since any audio channel can be routed to any mix bus."""
+        return True
 
     def is_channel_mix_enabled(self, channel_id: str, mix_id: str) -> bool:
         """Returns True if the channel is actively routed into this mix."""
@@ -789,18 +772,12 @@ class PipeWireManager:
 
             for m in mixes_to_sync:
                 m_id = m["id"]
-                m_type = m.get("type", "source" if m_id != "personal" else "sink")
-                
-                # Target mix input ports
+                target_prefixes = [f"WaveController_{m_id}_Sink:playback_", f"WaveController_{m_id}_Source:input_"]
                 target_in_ports = []
-                if m_type == "sink":
-                    target_prefix = f"WaveController_{m_id}_Sink:playback_"
-                else:
-                    target_prefix = f"WaveController_{m_id}_Source:input_"
-
                 for p in in_ports:
-                    if p.startswith(target_prefix):
-                        target_in_ports.append(p)
+                    for pref in target_prefixes:
+                        if p.startswith(pref):
+                            target_in_ports.append(p)
 
                 if not target_in_ports:
                     continue
@@ -808,10 +785,22 @@ class PipeWireManager:
                 is_enabled = self.is_channel_mix_enabled(ch_id, m_id)
 
                 for src_p in ch_out_ports:
-                    is_fl = "_FL" in src_p or "_1" in src_p
+                    is_fl = "_FL" in src_p or "_1" in src_p or "_mono" in src_p.lower() or "_l" in src_p.lower()
+                    is_fr = "_FR" in src_p or "_2" in src_p or "_r" in src_p.lower()
+                    is_pure_mono = (len(ch_out_ports) == 1) or ("_mono" in src_p.lower())
                     for tgt_p in target_in_ports:
-                        tgt_fl = "_FL" in tgt_p or "_1" in tgt_p
-                        if is_fl == tgt_fl:
+                        tgt_fl = "_FL" in tgt_p or "_1" in tgt_p or "_l" in tgt_p.lower()
+                        tgt_fr = "_FR" in tgt_p or "_2" in tgt_p or "_r" in tgt_p.lower()
+                        
+                        match = False
+                        if is_pure_mono:
+                            match = True
+                        elif is_fl and tgt_fl:
+                            match = True
+                        elif is_fr and tgt_fr:
+                            match = True
+
+                        if match:
                             cmd = ["pw-link"]
                             if not is_enabled:
                                 cmd.append("-d")
