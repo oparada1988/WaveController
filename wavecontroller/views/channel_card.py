@@ -29,11 +29,11 @@ class ChannelCard(Gtk.Box):
         self.set_hexpand(False)
         self.set_size_request(340, -1)
 
-        # 1. Dedicated Vertical 6-Dots Drag Grip Handle
-        self.drag_grip = Gtk.Image.new_from_icon_name("view-more-symbolic")
-        self.drag_grip.set_pixel_size(14)
+        # 1. Dedicated Vertical 6-Dots Drag Grip Handle (list-drag-handle-symbolic)
+        self.drag_grip = Gtk.Image.new_from_icon_name("list-drag-handle-symbolic")
+        self.drag_grip.set_pixel_size(16)
         self.drag_grip.add_css_class("channel-drag-handle")
-        self.drag_grip.set_tooltip_text("Drag to reorder channel vertically")
+        self.drag_grip.set_tooltip_text("Click and hold to reorder channel vertically")
         self.append(self.drag_grip)
 
         # 2. Channel icon (Auto-resolve from assigned apps or channel name)
@@ -109,7 +109,7 @@ class ChannelCard(Gtk.Box):
         self.append(self.link_btn)
 
         # -------------------------------------------------------------
-        # Vertical Drag & Drop Controller Setup
+        # Vertical Drag & Drop Controller Setup (Attached ONLY to Grip)
         # -------------------------------------------------------------
         self.drag_source = Gtk.DragSource.new()
         self.drag_source.set_actions(Gdk.DragAction.MOVE)
@@ -119,7 +119,7 @@ class ChannelCard(Gtk.Box):
 
         def on_drag_begin(src, drag):
             paintable = Gtk.WidgetPaintable.new(self)
-            src.set_icon(paintable, int(x if 'x' in locals() else 10), int(y if 'y' in locals() else 10))
+            src.set_icon(paintable, 20, int(self.get_height() / 2))
             self.add_css_class("drag-source-active")
 
         def on_drag_end(src, drag, delete_data):
@@ -130,7 +130,7 @@ class ChannelCard(Gtk.Box):
         self.drag_source.connect("prepare", on_drag_prepare)
         self.drag_source.connect("drag-begin", on_drag_begin)
         self.drag_source.connect("drag-end", on_drag_end)
-        self.add_controller(self.drag_source)
+        self.drag_grip.add_controller(self.drag_source)
 
         self.drop_target = Gtk.DropTarget.new(GObject.TYPE_STRING, Gdk.DragAction.MOVE)
 
