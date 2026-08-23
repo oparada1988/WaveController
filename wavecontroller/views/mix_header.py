@@ -195,38 +195,69 @@ class MixHeaderCard(Gtk.Box):
         color_row.append(color_combo)
         box.append(color_row)
 
-        # Context-Aware Minimal Symbolic Icon Selector
-        MIX_ICONS = [
-            ("user-available-symbolic", "Chat / Discord"),
-            ("camera-web-symbolic", "Stream / OBS"),
-            ("input-gaming-symbolic", "Game / Gaming"),
-            ("applications-multimedia-symbolic", "Music / Media"),
-            ("audio-headphones-symbolic", "Headphones / Monitor"),
-            ("audio-input-microphone-symbolic", "Microphone / Voice"),
-            ("audio-speakers-symbolic", "Speakers / Main"),
-            ("applications-internet-symbolic", "Browser / Web"),
-            ("preferences-system-symbolic", "System / Alerts / SFX"),
-            ("media-record-symbolic", "Recording / Studio")
+        # Minimal Symbolic Icon Palette (Pure Vector Icons, No Text Labels, Zero Emojis)
+        AVAILABLE_MIX_ICONS = [
+            "user-available-symbolic",         # Chat / Discord
+            "camera-web-symbolic",             # Stream / OBS
+            "input-gaming-symbolic",           # Gaming
+            "applications-multimedia-symbolic",# Music / Media
+            "audio-headphones-symbolic",       # Headphones
+            "audio-input-microphone-symbolic", # Microphone
+            "audio-headset-symbolic",          # Headset
+            "audio-speakers-symbolic",         # Speakers
+            "applications-internet-symbolic",  # Web
+            "preferences-system-symbolic",     # System SFX
+            "media-record-symbolic",           # Recording
+            "radio-symbolic"                   # Broadcast
         ]
 
-        icon_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        icon_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
         icon_lbl = Gtk.Label(label="Icon:")
         icon_lbl.add_css_class("mix-header-subtitle")
-        icon_lbl.set_size_request(45, -1)
         icon_lbl.set_halign(Gtk.Align.START)
-        icon_row.append(icon_lbl)
+        icon_box.append(icon_lbl)
 
-        icon_combo = Gtk.DropDown.new_from_strings([item[1] for item in MIX_ICONS])
-        curr_icon = self.mix_info.get("icon", "audio-headphones-symbolic")
-        sel_ic_idx = 0
-        for i, (ic_name, _) in enumerate(MIX_ICONS):
-            if ic_name == curr_icon:
-                sel_ic_idx = i
-                break
-        icon_combo.set_selected(sel_ic_idx)
-        icon_combo.set_hexpand(True)
-        icon_row.append(icon_combo)
-        box.append(icon_row)
+        palette_grid = Gtk.Grid(row_spacing=6, column_spacing=6)
+        palette_grid.add_css_class("icon-palette-grid")
+        palette_grid.set_halign(Gtk.Align.START)
+
+        self.selected_icon = self.mix_info.get("icon", "audio-headphones-symbolic")
+        icon_buttons = {}
+
+        def select_icon(icon_name):
+            self.selected_icon = icon_name
+            for name, btn in icon_buttons.items():
+                if name == icon_name:
+                    btn.add_css_class("selected")
+                else:
+                    btn.remove_css_class("selected")
+            # Live visual preview update
+            self.icon_img.set_from_icon_name(icon_name)
+
+        cols_per_row = 6
+        for idx, icon_name in enumerate(AVAILABLE_MIX_ICONS):
+            row = idx // cols_per_row
+            col = idx % cols_per_row
+
+            btn = Gtk.Button()
+            btn.add_css_class("flat")
+            btn.add_css_class("icon-palette-btn")
+            btn.set_size_request(34, 34)
+            btn.set_tooltip_text(icon_name.replace("-symbolic", ""))
+
+            img = Gtk.Image.new_from_icon_name(icon_name)
+            img.set_pixel_size(18)
+            btn.set_child(img)
+
+            if icon_name == self.selected_icon:
+                btn.add_css_class("selected")
+
+            btn.connect("clicked", lambda b, ic=icon_name: select_icon(ic))
+            icon_buttons[icon_name] = btn
+            palette_grid.attach(btn, col, row, 1, 1)
+
+        icon_box.append(palette_grid)
+        box.append(icon_box)
 
         save_btn = Gtk.Button(label="Save Changes")
         save_btn.add_css_class("suggested-action")
@@ -236,10 +267,13 @@ class MixHeaderCard(Gtk.Box):
             new_sub = sub_entry.get_text().strip() or "Custom Mix"
             c_idx = color_combo.get_selected()
             new_color = colors_map[c_idx][0] if c_idx < len(colors_map) else "#9146ff"
-            new_icon = MIX_ICONS[icon_combo.get_selected()][0] if icon_combo.get_selected() < len(MIX_ICONS) else curr_icon
+            new_icon = self.selected_icon
 
             if new_name:
                 self.mix_info["icon"] = new_icon
+                self.mix_info["name"] = new_name
+                self.mix_info["subtitle"] = new_sub
+                self.mix_info["color"] = new_color
                 self.pipewire_mgr.update_mix(self.mix_info["id"], name=new_name, subtitle=new_sub, color=new_color, icon=new_icon)
                 self.title_lbl.set_text(new_name)
                 self.subtitle_lbl.set_text(new_sub)

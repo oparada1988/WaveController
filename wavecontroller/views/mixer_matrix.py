@@ -246,41 +246,75 @@ class MixerMatrixView(Gtk.Box):
         type_row.append(type_combo)
         box.append(type_row)
 
-        # Context-Aware Minimal Symbolic Icon Selector
-        MIX_ICONS = [
-            ("user-available-symbolic", "Chat / Discord"),
-            ("camera-web-symbolic", "Stream / OBS"),
-            ("input-gaming-symbolic", "Game / Gaming"),
-            ("applications-multimedia-symbolic", "Music / Media"),
-            ("audio-headphones-symbolic", "Headphones / Monitor"),
-            ("audio-input-microphone-symbolic", "Microphone / Voice"),
-            ("audio-speakers-symbolic", "Speakers / Main"),
-            ("applications-internet-symbolic", "Browser / Web"),
-            ("preferences-system-symbolic", "System / Alerts / SFX"),
-            ("media-record-symbolic", "Recording / Studio")
+        # Minimal Symbolic Icon Palette (Pure Vector Icons, No Text Labels, Zero Emojis)
+        AVAILABLE_MIX_ICONS = [
+            "user-available-symbolic",         # Chat / Discord
+            "camera-web-symbolic",             # Stream / OBS
+            "input-gaming-symbolic",           # Gaming
+            "applications-multimedia-symbolic",# Music / Media
+            "audio-headphones-symbolic",       # Headphones
+            "audio-input-microphone-symbolic", # Microphone
+            "audio-headset-symbolic",          # Headset
+            "audio-speakers-symbolic",         # Speakers
+            "applications-internet-symbolic",  # Web
+            "preferences-system-symbolic",     # System SFX
+            "media-record-symbolic",           # Recording
+            "radio-symbolic"                   # Broadcast
         ]
 
-        icon_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        icon_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
         icon_lbl = Gtk.Label(label="Icon:")
         icon_lbl.add_css_class("mix-header-subtitle")
-        icon_lbl.set_size_request(45, -1)
         icon_lbl.set_halign(Gtk.Align.START)
-        icon_row.append(icon_lbl)
+        icon_box.append(icon_lbl)
 
-        icon_combo = Gtk.DropDown.new_from_strings([item[1] for item in MIX_ICONS])
-        icon_combo.set_hexpand(True)
-        icon_row.append(icon_combo)
-        box.append(icon_row)
+        palette_grid = Gtk.Grid(row_spacing=6, column_spacing=6)
+        palette_grid.add_css_class("icon-palette-grid")
+        palette_grid.set_halign(Gtk.Align.START)
+
+        selected_icon_holder = {"icon": "user-available-symbolic"}
+        icon_buttons = {}
+
+        def select_icon(icon_name):
+            selected_icon_holder["icon"] = icon_name
+            for name, btn in icon_buttons.items():
+                if name == icon_name:
+                    btn.add_css_class("selected")
+                else:
+                    btn.remove_css_class("selected")
+
+        cols_per_row = 6
+        for idx, icon_name in enumerate(AVAILABLE_MIX_ICONS):
+            row = idx // cols_per_row
+            col = idx % cols_per_row
+
+            btn = Gtk.Button()
+            btn.add_css_class("flat")
+            btn.add_css_class("icon-palette-btn")
+            btn.set_size_request(34, 34)
+            btn.set_tooltip_text(icon_name.replace("-symbolic", ""))
+
+            img = Gtk.Image.new_from_icon_name(icon_name)
+            img.set_pixel_size(18)
+            btn.set_child(img)
+
+            if icon_name == selected_icon_holder["icon"]:
+                btn.add_css_class("selected")
+
+            btn.connect("clicked", lambda b, ic=icon_name: select_icon(ic))
+            icon_buttons[icon_name] = btn
+            palette_grid.attach(btn, col, row, 1, 1)
+
+        icon_box.append(palette_grid)
+        box.append(icon_box)
 
         def on_name_changed(entry):
             txt = entry.get_text().strip()
             if txt:
                 m_type = "source" if type_combo.get_selected() == 0 else "sink"
                 suggested_icon = self.pipewire_mgr.resolve_smart_mix_icon(txt, m_type)
-                for idx, (icon_name, _) in enumerate(MIX_ICONS):
-                    if icon_name == suggested_icon:
-                        icon_combo.set_selected(idx)
-                        break
+                if suggested_icon in icon_buttons:
+                    select_icon(suggested_icon)
 
         name_entry.connect("changed", on_name_changed)
 
@@ -307,9 +341,7 @@ class MixerMatrixView(Gtk.Box):
                 c_idx = color_combo.get_selected()
                 c = colors[c_idx] if c_idx < len(colors) else "#9146ff"
                 
-                sel_icon_idx = icon_combo.get_selected()
-                selected_icon = MIX_ICONS[sel_icon_idx][0] if sel_icon_idx < len(MIX_ICONS) else None
-                
+                selected_icon = selected_icon_holder["icon"]
                 mix_type = "source" if type_combo.get_selected() == 0 else "sink"
                 self.pipewire_mgr.add_mix(name, subtitle=sub, mix_type=mix_type, color=c, icon=selected_icon)
                 popover.popdown()
