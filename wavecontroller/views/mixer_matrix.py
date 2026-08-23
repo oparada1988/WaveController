@@ -106,7 +106,7 @@ class MixerMatrixView(Gtk.Box):
                 pipewire_mgr=self.pipewire_mgr,
                 hardware_mgr=self.hardware_mgr,
                 on_remove_callback=lambda m_id: (self.pipewire_mgr.remove_mix(m_id), GLib.idle_add(self._rebuild_grid)),
-                on_edit_callback=lambda m_id: GLib.idle_add(self._rebuild_grid)
+                on_edit_callback=None
             )
             self.grid.attach(mix_header, col_idx, 0, 1, 1)
 
@@ -210,6 +210,7 @@ class MixerMatrixView(Gtk.Box):
 
     def _setup_create_mix_popover(self, menu_btn: Gtk.MenuButton):
         popover = Gtk.Popover()
+        popover.set_autohide(True)
         popover.add_css_class("wave-popover")
 
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
@@ -394,6 +395,7 @@ class MixerMatrixView(Gtk.Box):
 
     def _setup_create_channel_popover(self, menu_btn: Gtk.MenuButton):
         popover = Gtk.Popover()
+        popover.set_autohide(True)
         popover.add_css_class("wave-popover")
 
         stack = Gtk.Stack()

@@ -141,6 +141,7 @@ class MixHeaderCard(Gtk.Box):
 
     def _setup_edit_popover(self, menu_btn: Gtk.MenuButton):
         popover = Gtk.Popover()
+        popover.set_autohide(True)
         popover.add_css_class("wave-popover")
 
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
