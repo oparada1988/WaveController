@@ -30,10 +30,11 @@ class UnifiedDeviceSettingsView(Gtk.Box):
         # 1. Header Area with Device Title, Status & Remove Action
         header_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
         
-        icon_img = Gtk.Image.new_from_icon_name(device_info.get("icon", "audio-headset-symbolic"))
-        icon_img.set_pixel_size(32)
-        icon_img.set_valign(Gtk.Align.CENTER)
-        header_box.append(icon_img)
+        curr_icon = self.hardware_mgr.get_device_icon(self.device_key)
+        self.header_icon_img = Gtk.Image.new_from_icon_name(curr_icon)
+        self.header_icon_img.set_pixel_size(32)
+        self.header_icon_img.set_valign(Gtk.Align.CENTER)
+        header_box.append(self.header_icon_img)
 
         title_vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
         title_vbox.set_hexpand(True)
@@ -70,7 +71,7 @@ class UnifiedDeviceSettingsView(Gtk.Box):
         pref_page = Adw.PreferencesPage()
 
         # Group 1: Nickname & Identification
-        grp_ident = Adw.PreferencesGroup(title="Device Identification &amp; Nickname")
+        grp_ident = Adw.PreferencesGroup(title="Device Identification &amp; Appearance")
         
         self.name_entry = Adw.EntryRow(title="Custom Device Nickname")
         curr_alias = self.hardware_mgr.get_device_display_name(self.device_key)
@@ -80,6 +81,17 @@ class UnifiedDeviceSettingsView(Gtk.Box):
         self.name_entry.connect("apply", self._on_nickname_applied)
         self.name_entry.connect("entry-activated", self._on_nickname_applied)
         grp_ident.add(self.name_entry)
+
+        # Device Icon Picker Row
+        icon_row = Adw.ActionRow(title="Device Icon", subtitle="Customize icon displayed across WaveController")
+        self.icon_btn = Gtk.MenuButton()
+        self.icon_btn.set_icon_name(curr_icon)
+        self.icon_btn.add_css_class("flat")
+        self.icon_btn.add_css_class("wave-icon-btn")
+        self.icon_btn.set_valign(Gtk.Align.CENTER)
+        self._setup_icon_popover(self.icon_btn)
+        icon_row.add_suffix(self.icon_btn)
+        grp_ident.add(icon_row)
 
         hw_row = Adw.ActionRow(title="Hardware Identifier", subtitle=self.device_key)
         grp_ident.add(hw_row)
@@ -316,9 +328,77 @@ class UnifiedDeviceSettingsView(Gtk.Box):
             self.db_label.set_text("-∞ dB")
         return True
 
+    def _setup_icon_popover(self, menu_btn: Gtk.MenuButton):
+        popover = Gtk.Popover()
+        popover.add_css_class("wave-popover")
+
+        vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        vbox.set_margin_top(8)
+        vbox.set_margin_bottom(8)
+        vbox.set_margin_start(8)
+        vbox.set_margin_end(8)
+
+        lbl = Gtk.Label(label="Select Device Icon")
+        lbl.add_css_class("heading")
+        lbl.set_halign(Gtk.Align.START)
+        vbox.append(lbl)
+
+        grid = Gtk.Grid()
+        grid.set_row_spacing(8)
+        grid.set_column_spacing(8)
+
+        icons = [
+            ("audio-input-microphone-symbolic", "Microphone (Desktop / Standalone)"),
+            ("audio-headphones-symbolic", "Headphones / IEMs"),
+            ("audio-headset-symbolic", "Headset (with attached mic)"),
+            ("audio-speakers-symbolic", "Speakers / Monitors"),
+            ("audio-card-symbolic", "Audio Interface / DAC"),
+            ("computer-symbolic", "Computer / Built-in Audio"),
+        ]
+
+        for idx, (icon_name, tooltip) in enumerate(icons):
+            btn = Gtk.Button.new_from_icon_name(icon_name)
+            btn.add_css_class("flat")
+            btn.add_css_class("wave-icon-btn")
+            btn.set_size_request(40, 40)
+            btn.set_tooltip_text(tooltip)
+            btn.connect("clicked", lambda b, iname=icon_name: self._on_icon_selected(popover, iname))
+            grid.attach(btn, idx % 3, idx // 3, 1, 1)
+
+        vbox.append(grid)
+
+        reset_btn = Gtk.Button(label="Reset to Auto-Detected Icon")
+        reset_btn.add_css_class("flat")
+        reset_btn.connect("clicked", lambda b: self._on_icon_reset(popover))
+        vbox.append(reset_btn)
+
+        popover.set_child(vbox)
+        menu_btn.set_popover(popover)
+
+    def _on_icon_selected(self, popover, icon_name: str):
+        self.hardware_mgr.set_device_custom_icon(self.device_key, icon_name)
+        self.header_icon_img.set_from_icon_name(icon_name)
+        self.icon_btn.set_icon_name(icon_name)
+        popover.popdown()
+        if self.on_device_renamed:
+            self.on_device_renamed()
+
+    def _on_icon_reset(self, popover):
+        self.hardware_mgr.set_device_custom_icon(self.device_key, "")
+        smart_icon = self.hardware_mgr.get_device_icon(self.device_key)
+        self.header_icon_img.set_from_icon_name(smart_icon)
+        self.icon_btn.set_icon_name(smart_icon)
+        popover.popdown()
+        if self.on_device_renamed:
+            self.on_device_renamed()
+
     def refresh_device_names(self):
         display_name = self.hardware_mgr.get_device_display_name(self.device_key)
         self.title_lbl.set_text(display_name)
+        curr_icon = self.hardware_mgr.get_device_icon(self.device_key)
+        self.header_icon_img.set_from_icon_name(curr_icon)
+        if hasattr(self, "icon_btn"):
+            self.icon_btn.set_icon_name(curr_icon)
 
 
 class AddDeviceDialog(Adw.PreferencesDialog):

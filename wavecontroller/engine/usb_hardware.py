@@ -120,15 +120,19 @@ class USBHardwareManager:
             if num_in > 0 and num_out > 0:
                 d["type"] = "duplex"
                 d["badge"] = "In / Out"
-                d["icon"] = "audio-headset-symbolic" if any(x in d["name"].lower() for x in ["head", "fifine", "wave"]) else "audio-input-microphone-symbolic"
             elif num_in > 0:
                 d["type"] = "input"
                 d["badge"] = "In"
-                d["icon"] = "audio-input-microphone-symbolic"
             else:
                 d["type"] = "output"
                 d["badge"] = "Out"
-                d["icon"] = "audio-headphones-symbolic" if "head" in d["name"].lower() else "audio-speakers-symbolic"
+            
+            d["icon"] = self._detect_smart_icon(
+                name=d["name"],
+                form_factor=d.get("form_factor", ""),
+                icon_name=d.get("icon_name", ""),
+                dev_type=d["type"]
+            )
             
             d["primary_source_id"] = d["sources"][0]["id"] if d["sources"] else None
             d["primary_sink_id"] = d["sinks"][0]["id"] if d["sinks"] else None
@@ -141,6 +145,10 @@ class USBHardwareManager:
             if not dev_id or dev_id not in devices:
                 key = n["name"]
                 dtype = "input" if n["media_class"] == "Audio/Source" else "output"
+                smart_icon = self._detect_smart_icon(
+                    name=n["description"] or n["name"],
+                    dev_type=dtype
+                )
                 hw_map[key] = {
                     "device_id": n["id"],
                     "device_key": key,
@@ -150,7 +158,7 @@ class USBHardwareManager:
                     "form_factor": "",
                     "type": dtype,
                     "badge": "In" if dtype == "input" else "Out",
-                    "icon": "audio-input-microphone-symbolic" if dtype == "input" else "audio-headphones-symbolic",
+                    "icon": smart_icon,
                     "sources": [n] if dtype == "input" else [],
                     "sinks": [n] if dtype == "output" else [],
                     "primary_source_id": n["id"] if dtype == "input" else None,
@@ -159,6 +167,60 @@ class USBHardwareManager:
                 }
 
         self.discovered_devices = hw_map
+
+    def _detect_smart_icon(self, name: str, form_factor: str = "", icon_name: str = "", dev_type: str = "duplex") -> str:
+        """Smart icon selector matching physical hardware form factors accurately."""
+        name_low = name.lower()
+        form_factor = form_factor.lower()
+        icon_name = icon_name.lower()
+
+        # 1. Desktop Standalone Microphones (Fifine, Wave, Blue Yeti, Rode, Shure, QuadCast, etc.)
+        if form_factor == "microphone" or any(x in name_low for x in ["mic", "fifine", "wave", "yeti", "shure", "rode", "quadcast", "seiren"]):
+            return "audio-input-microphone-symbolic"
+
+        # 2. Integrated Headsets (Gaming headphones with attached boom mic)
+        if form_factor == "headset" or "headset" in name_low:
+            return "audio-headset-symbolic"
+
+        # 3. Headphones / In-Ear Monitors (Playback Only)
+        if form_factor == "headphone" or any(x in name_low for x in ["headphone", "iem", "earphone", "airpods", "buds"]):
+            return "audio-headphones-symbolic"
+
+        # 4. Speakers / Studio Monitors / Soundbars
+        if form_factor == "speaker" or any(x in name_low for x in ["speaker", "soundbar"]):
+            return "audio-speakers-symbolic"
+
+        # 5. Audio Interfaces / Dedicated Soundcards / DACs
+        if "card" in icon_name or any(x in name_low for x in ["interface", "dac", "focusrite", "scarlett", "hd-audio", "starship", "realtek", "alc"]):
+            return "audio-card-symbolic"
+
+        # 6. Fallback based on device capability
+        if dev_type == "input":
+            return "audio-input-microphone-symbolic"
+        elif dev_type == "output":
+            return "audio-speakers-symbolic"
+        return "audio-input-microphone-symbolic"
+
+    def get_device_icon(self, device_key: str) -> str:
+        """Returns the custom icon if set by user, else the smart detected icon."""
+        custom_icons = config_manager.get("device_icons", {})
+        if device_key in custom_icons and custom_icons[device_key]:
+            return custom_icons[device_key]
+        if device_key in self.discovered_devices:
+            return self.discovered_devices[device_key].get("icon", "audio-input-microphone-symbolic")
+        return "audio-input-microphone-symbolic"
+
+    def set_device_custom_icon(self, device_key: str, icon_name: str):
+        """Sets a persistent custom icon for an audio device."""
+        icons = dict(config_manager.get("device_icons", {}))
+        icon_name = icon_name.strip()
+        if icon_name:
+            icons[device_key] = icon_name
+        else:
+            icons.pop(device_key, None)
+        config_manager.set("device_icons", icons, immediate=True)
+        if self.on_device_renamed_callback:
+            self.on_device_renamed_callback(device_key, "")
 
         # Legacy lists for backward compatibility
         inputs = []
@@ -207,6 +269,7 @@ class USBHardwareManager:
                     "connected": False
                 }
             
+            dev["icon"] = self.get_device_icon(key) if dev.get("connected", True) else "network-offline-symbolic"
             dev["display_name"] = aliases.get(key, dev["name"])
             dev["custom_name"] = aliases.get(key, "")
             dev["assigned_mix"] = assigned_mixes.get(key, "personal_mix")
