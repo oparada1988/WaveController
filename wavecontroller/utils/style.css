@@ -33,17 +33,27 @@ window.theme-midnight .wave-sidebar-row.selected {
     color: #d8b4fe;
 }
 
+/* Smooth Rounded Cards matching Libadwaita Boxed-List Hierarchy */
+window.theme-midnight list.boxed-list,
 window.theme-midnight .mix-header-card,
 window.theme-midnight .channel-row-card,
 window.theme-midnight .matrix-cell-card,
-window.theme-midnight .card,
-window.theme-midnight preferencesgroup > box {
-    background-color: #1a1a20;
-    border: 1px solid rgba(255, 255, 255, 0.08);
+window.theme-midnight .card {
+    background-color: #1d1d24;
+    border: 1px solid rgba(255, 255, 255, 0.07);
+    border-radius: 12px;
+}
+
+window.theme-midnight list.boxed-list > row {
+    border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+window.theme-midnight list.boxed-list > row:last-child {
+    border-bottom: none;
 }
 
 window.theme-midnight .wave-output-dropdown {
-    background-color: #1a1a20;
+    background-color: #1d1d24;
     border: 1px solid rgba(255, 255, 255, 0.1);
 }
 
