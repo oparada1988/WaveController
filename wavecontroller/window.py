@@ -184,7 +184,7 @@ class WaveMainWindow(Adw.ApplicationWindow):
             real_name = dev.get("name", "Audio Device")
 
             dev_lbl = Gtk.Label(label=display_name)
-            dev_lbl.set_ellipsize(Pango.EllipSizeMode.END)
+            dev_lbl.set_ellipsize(Pango.EllipsizeMode.END)
             dev_lbl.set_max_width_chars(15)
             dev_lbl.set_hexpand(True)
             dev_lbl.set_halign(Gtk.Align.START)
