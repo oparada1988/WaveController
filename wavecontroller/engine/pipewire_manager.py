@@ -439,6 +439,8 @@ class PipeWireManager:
             state = self.channel_states.get(channel_id, {}).get("personal", {"volume": 80, "muted": False})
             self.set_channel_volume(channel_id, "personal", state["volume"])
             self._save_state_to_config(immediate=True)
+            self._refresh_node_cache()
+            self._sync_channel_audio_routing(channel_id=channel_id)
 
     def get_assigned_apps(self, channel_id: str) -> list:
         with self._lock:
@@ -657,23 +659,42 @@ class PipeWireManager:
                     continue
 
                 assigned_app_names = self.get_assigned_apps(channel_id)
+                ch_name = ""
+                with self._lock:
+                    ch_obj = next((c for c in self.channels if c["id"] == channel_id), None)
+                    if ch_obj:
+                        ch_name = ch_obj.get("name", "")
+
+                search_keys = set([channel_id.lower()])
+                if ch_name:
+                    search_keys.add(ch_name.lower())
+                for a in assigned_app_names:
+                    search_keys.add(a.lower())
+
+                # Common aliases for hardware channels
+                if "fefine" in search_keys:
+                    search_keys.add("fifine")
+                if "mobo" in search_keys or "motherboard" in search_keys:
+                    search_keys.add("starship")
+                    search_keys.add("matisse")
+                    search_keys.add("pci-0000_14_00.4")
+
                 target_node_ids = set()
 
-                with self._lock:
-                    for app in assigned_app_names:
-                        app_low = app.lower()
-                        for cached_name, node_ids in self._node_cache.items():
-                            if app_low in cached_name or cached_name in app_low:
-                                target_node_ids.update(node_ids)
-
-                if not target_node_ids and assigned_app_names:
-                    self._refresh_node_cache()
+                def collect_matches():
+                    matches = set()
                     with self._lock:
-                        for app in assigned_app_names:
-                            app_low = app.lower()
+                        for sk in search_keys:
                             for cached_name, node_ids in self._node_cache.items():
-                                if app_low in cached_name or cached_name in app_low:
-                                    target_node_ids.update(node_ids)
+                                if sk in cached_name or cached_name in sk:
+                                    matches.update(node_ids)
+                    return matches
+
+                target_node_ids = collect_matches()
+
+                if not target_node_ids:
+                    self._refresh_node_cache()
+                    target_node_ids = collect_matches()
 
                 for node_id in target_node_ids:
                     try:
@@ -1000,6 +1021,7 @@ class PipeWireManager:
 
             self._refresh_node_cache()
             self._save_state_to_config(immediate=True)
+            self._sync_channel_audio_routing(channel_id=ch_id)
             return new_ch
 
     def remove_channel(self, channel_id: str) -> bool:
@@ -1011,6 +1033,7 @@ class PipeWireManager:
                 del self.assigned_apps[channel_id]
             self._refresh_node_cache()
             self._save_state_to_config(immediate=True)
+            self._sync_channel_audio_routing()
             return True
 
     def rename_channel(self, channel_id: str, new_name: str) -> bool:
@@ -1128,6 +1151,8 @@ class PipeWireManager:
                 }
             self._save_state_to_config(immediate=True)
             self._ensure_virtual_mix_nodes()
+            self._refresh_node_cache()
+            self._sync_channel_audio_routing(mix_id=mix_id)
             return new_mix
 
     def update_mix(self, mix_id: str, name: str = None, subtitle: str = None, color: str = None, icon: str = None, target_device: str = None) -> bool:
@@ -1147,6 +1172,8 @@ class PipeWireManager:
                         m["target_device"] = target_device
                     self._save_state_to_config(immediate=True)
                     self._ensure_virtual_mix_nodes()
+                    self._refresh_node_cache()
+                    self._sync_channel_audio_routing(mix_id=mix_id)
                     return True
         return False
 
@@ -1158,6 +1185,8 @@ class PipeWireManager:
                 self.channel_states[ch_id].pop(mix_id, None)
             self._save_state_to_config(immediate=True)
             self._ensure_virtual_mix_nodes()
+            self._refresh_node_cache()
+            self._sync_channel_audio_routing()
 
     @staticmethod
     def resolve_icon_for_app(app_name: str) -> str:
