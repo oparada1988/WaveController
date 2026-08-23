@@ -4,9 +4,10 @@ import socket
 import threading
 import time
 
-SOCKET_PATH = "/tmp/wavecontroller.sock"
+CONFIG_SOCKET_PATH = os.path.expanduser("~/.config/WaveController/wavecontroller.sock")
 USER_RUNTIME_DIR = os.environ.get("XDG_RUNTIME_DIR", "/tmp")
 USER_SOCKET_PATH = os.path.join(USER_RUNTIME_DIR, "wavecontroller.sock")
+TMP_SOCKET_PATH = "/tmp/wavecontroller.sock"
 
 class IPCServer:
     """
@@ -27,7 +28,7 @@ class IPCServer:
         self.thread.start()
 
     def _clean_sockets(self):
-        for path in [SOCKET_PATH, USER_SOCKET_PATH]:
+        for path in [CONFIG_SOCKET_PATH, USER_SOCKET_PATH, TMP_SOCKET_PATH]:
             if os.path.exists(path) or os.path.islink(path):
                 try:
                     os.remove(path)
@@ -46,27 +47,32 @@ class IPCServer:
     def _run_server(self):
         self._clean_sockets()
 
-        try:
-            self.server_sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-            self.server_sock.bind(USER_SOCKET_PATH)
-            self.server_sock.listen(10)
-            self.server_sock.settimeout(1.0)
+        os.makedirs(os.path.dirname(CONFIG_SOCKET_PATH), exist_ok=True)
 
-            # Ensure /tmp/wavecontroller.sock links to USER_SOCKET_PATH if paths differ
-            if USER_SOCKET_PATH != SOCKET_PATH:
+        bound_path = None
+        # Prioritize CONFIG_SOCKET_PATH for Flatpak access
+        for path in [CONFIG_SOCKET_PATH, USER_SOCKET_PATH, TMP_SOCKET_PATH]:
+            try:
+                sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                sock.bind(path)
+                sock.listen(10)
+                sock.settimeout(1.0)
+                self.server_sock = sock
+                bound_path = path
+                break
+            except Exception:
+                continue
+
+        if not bound_path:
+            return
+
+        # Symlink other paths to the bound socket path for host & flatpak interop
+        for path in [CONFIG_SOCKET_PATH, USER_SOCKET_PATH, TMP_SOCKET_PATH]:
+            if path != bound_path and not os.path.exists(path) and not os.path.islink(path):
                 try:
-                    os.symlink(USER_SOCKET_PATH, SOCKET_PATH)
+                    os.symlink(bound_path, path)
                 except Exception:
                     pass
-        except Exception:
-            try:
-                # Fallback to direct /tmp socket
-                self.server_sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-                self.server_sock.bind(SOCKET_PATH)
-                self.server_sock.listen(10)
-                self.server_sock.settimeout(1.0)
-            except Exception:
-                return
 
         while self.running:
             try:
@@ -113,6 +119,9 @@ class IPCServer:
                 res["channels"] = self.pipewire_mgr.channels
                 res["mixes"] = self.pipewire_mgr.mixes
                 res["states"] = self.pipewire_mgr.channel_states
+                res["master_states"] = self.pipewire_mgr.channel_master_states
+                res["mix_states"] = self.pipewire_mgr.mix_states
+                res["assigned_apps"] = self.pipewire_mgr.assigned_apps
             elif cmd == "get_volume":
                 raw_target = req.get("channel_id") or req.get("target") or "mic"
                 ch = self._match_channel_id(raw_target)
