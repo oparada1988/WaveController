@@ -880,6 +880,13 @@ class PipeWireManager:
                     self._save_state_to_config(immediate=True)
                     break
 
+    def get_channel_sync_meter(self, channel_id: str) -> bool:
+        with self._lock:
+            for ch in self.channels:
+                if ch["id"] == channel_id:
+                    return ch.get("sync_meter", False)
+            return False
+
     def move_channel_up(self, channel_id: str) -> bool:
         """Moves a channel up by one position in the mixer matrix."""
         with self._lock:
