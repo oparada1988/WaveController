@@ -220,22 +220,59 @@ class USBHardwareManager:
         except Exception:
             pass
 
-    def test_output_chime(self):
-        """Plays a clean test sound to verify headphones/speakers."""
-        threading.Thread(target=self._play_test_chime, daemon=True).start()
+    def test_output_chime(self, device_id: str = None):
+        """Plays a clean test chime to verify headphones/speakers on the selected device."""
+        threading.Thread(target=self._play_test_chime, args=(device_id,), daemon=True).start()
 
-    def _play_test_chime(self):
-        for sound_file in [
-            "/usr/share/sounds/freedesktop/stereo/bell.oga",
+    def _play_test_chime(self, device_id: str = None):
+        sound_files = [
             "/usr/share/sounds/freedesktop/stereo/complete.oga",
-            "/usr/share/sounds/gnome/default/alerts/glass.ogg"
-        ]:
-            if subprocess.run(["which", "paplay"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0:
-                try:
-                    subprocess.run(["paplay", sound_file], stderr=subprocess.DEVNULL)
+            "/usr/share/sounds/freedesktop/stereo/bell.oga",
+            "/usr/share/sounds/freedesktop/stereo/audio-test-signal.oga",
+            "/usr/share/sounds/gnome/default/alerts/swing.ogg"
+        ]
+        target_sound = None
+        for sf in sound_files:
+            if os.path.exists(sf):
+                target_sound = sf
+                break
+
+        if not target_sound:
+            return
+
+        target_dev = str(device_id) if device_id else None
+        if not target_dev:
+            for d in self.output_devices:
+                if d.get("is_default"):
+                    target_dev = str(d["id"])
+                    break
+
+        # 1. Direct pw-play targeting the specific sink node
+        if target_dev:
+            try:
+                res = subprocess.run(["pw-play", f"--target={target_dev}", target_sound], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                if res.returncode == 0:
                     return
-                except Exception:
-                    pass
+            except Exception:
+                pass
+
+        # 2. paplay with device parameter
+        try:
+            cmd = ["paplay"]
+            if target_dev:
+                cmd.extend(["--device", target_dev])
+            cmd.append(target_sound)
+            res = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            if res.returncode == 0:
+                return
+        except Exception:
+            pass
+
+        # 3. Fallback to default pw-play
+        try:
+            subprocess.run(["pw-play", target_sound], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception:
+            pass
 
     def toggle_mic_monitoring(self) -> bool:
         """Toggles live microphone loopback to headphones for instant testing."""

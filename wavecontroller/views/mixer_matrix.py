@@ -61,7 +61,13 @@ class MixerMatrixView(Gtk.Box):
         test_sound_btn.add_css_class("flat")
         test_sound_btn.add_css_class("wave-icon-btn")
         test_sound_btn.set_tooltip_text("Test Output (Play Chime)")
-        test_sound_btn.connect("clicked", lambda b: self.hardware_mgr.test_output_chime())
+        
+        def on_header_chime_clicked(b):
+            idx = self.output_dropdown.get_selected()
+            sink_id = self.output_dropdown_sinks[idx]["id"] if idx < len(self.output_dropdown_sinks) else None
+            self.hardware_mgr.test_output_chime(sink_id)
+
+        test_sound_btn.connect("clicked", on_header_chime_clicked)
         out_box.append(test_sound_btn)
 
         header_box.append(out_box)

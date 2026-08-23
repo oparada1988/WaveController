@@ -44,17 +44,10 @@ class WaveMainWindow(Adw.ApplicationWindow):
         header_bar = Adw.HeaderBar()
         header_bar.set_show_title(True)
         
-        # Window Title Widget with custom App Icon
-        title_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        icon_path = os.path.join(os.path.dirname(__file__), "..", "assets", "icons", "WaveController.png")
-        if os.path.exists(icon_path):
-            app_icon = Gtk.Image.new_from_file(icon_path)
-            app_icon.set_pixel_size(24)
-        else:
-            app_icon = Gtk.Image.new_from_icon_name("com.oparada.WaveController")
+        # Window Title Widget (Text only, no icon)
+        title_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         app_lbl = Gtk.Label(label="WaveController")
         app_lbl.add_css_class("wave-sidebar-title")
-        title_box.append(app_icon)
         title_box.append(app_lbl)
         header_bar.set_title_widget(title_box)
 

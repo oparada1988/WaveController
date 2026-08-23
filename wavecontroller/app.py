@@ -1,7 +1,8 @@
+import os
 import gi
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
-from gi.repository import Adw, Gio, GLib
+from gi.repository import Adw, Gio, GLib, Gtk, Gdk
 
 from .window import WaveMainWindow
 from .engine.pipewire_manager import PipeWireManager
@@ -25,6 +26,12 @@ class WaveControllerApp(Adw.Application):
 
     def do_startup(self):
         Adw.Application.do_startup(self)
+        display = Gdk.Display.get_default()
+        if display:
+            theme = Gtk.IconTheme.get_for_display(display)
+            icons_dir = os.path.join(os.path.dirname(__file__), "..", "assets", "icons")
+            if os.path.exists(icons_dir):
+                theme.add_search_path(icons_dir)
         self.pipewire_mgr.start()
         self.peak_monitor.start()
         self.ipc_server.start()

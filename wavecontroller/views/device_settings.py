@@ -271,7 +271,7 @@ class OutputDeviceSettingsView(Gtk.Box):
         test_sound_btn = Gtk.Button(label="Test Output")
         test_sound_btn.set_icon_name("media-playback-start-symbolic")
         test_sound_btn.set_valign(Gtk.Align.CENTER)
-        test_sound_btn.connect("clicked", lambda b: self.hardware_mgr.test_output_chime())
+        test_sound_btn.connect("clicked", lambda b: self.hardware_mgr.test_output_chime(self._get_selected_output_device()["id"] if self._get_selected_output_device() else None))
         test_row.add_suffix(test_sound_btn)
         grp_vol.add(test_row)
 
