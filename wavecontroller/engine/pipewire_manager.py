@@ -745,7 +745,12 @@ class PipeWireManager:
                 ch_id = ch["id"]
                 if ch_id not in self.channel_states:
                     self.channel_states[ch_id] = {}
-                self.channel_states[ch_id][mix_id] = {"volume": 80, "muted": False, "linked": True}
+                self.channel_states[ch_id][mix_id] = {
+                    "volume": 80,
+                    "muted": False,
+                    "linked": True,
+                    "enabled": False
+                }
             self._save_state_to_config(immediate=True)
             self._ensure_virtual_mix_nodes()
             return new_mix
