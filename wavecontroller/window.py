@@ -44,9 +44,14 @@ class WaveMainWindow(Adw.ApplicationWindow):
         header_bar = Adw.HeaderBar()
         header_bar.set_show_title(True)
         
-        # Window Title Widget
-        title_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-        app_icon = Gtk.Image.new_from_icon_name("audio-card-symbolic")
+        # Window Title Widget with custom App Icon
+        title_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        icon_path = os.path.join(os.path.dirname(__file__), "..", "assets", "icons", "WaveController.png")
+        if os.path.exists(icon_path):
+            app_icon = Gtk.Image.new_from_file(icon_path)
+            app_icon.set_pixel_size(24)
+        else:
+            app_icon = Gtk.Image.new_from_icon_name("com.oparada.WaveController")
         app_lbl = Gtk.Label(label="WaveController")
         app_lbl.add_css_class("wave-sidebar-title")
         title_box.append(app_icon)
@@ -59,10 +64,6 @@ class WaveMainWindow(Adw.ApplicationWindow):
         main_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
         
         # 1. Left Compact Sidebar
-        self.in_buttons = []
-        self.out_buttons = []
-        self.sidebar_in_box = None
-        self.sidebar_out_box = None
         sidebar = self._build_sidebar()
         main_box.append(sidebar)
 
@@ -108,31 +109,47 @@ class WaveMainWindow(Adw.ApplicationWindow):
         sidebar.set_size_request(200, -1)
         sidebar.set_hexpand(False)
 
-        # Section 1: Input Devices
-        sec1_lbl = Gtk.Label(label="Input Devices")
+        # Section 1: Audio Hardware Devices
+        sec1_lbl = Gtk.Label(label="Audio Devices")
         sec1_lbl.add_css_class("wave-sidebar-section-title")
         sec1_lbl.set_halign(Gtk.Align.START)
         sidebar.append(sec1_lbl)
 
-        self.sidebar_in_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
-        sidebar.append(self.sidebar_in_box)
+        # 1. Audio Inputs Button
+        self.inputs_btn = Gtk.Button()
+        self.inputs_btn.add_css_class("flat")
+        self.inputs_btn.add_css_class("wave-sidebar-row")
+        in_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        in_icon = Gtk.Image.new_from_icon_name("audio-input-microphone-symbolic")
+        in_lbl = Gtk.Label(label="Audio Inputs")
+        in_lbl.set_halign(Gtk.Align.START)
+        in_lbl.set_hexpand(True)
+        in_box.append(in_icon)
+        in_box.append(in_lbl)
+        self.inputs_btn.set_child(in_box)
+        self.inputs_btn.connect("clicked", lambda b: self._switch_view("input_settings", self.inputs_btn))
+        sidebar.append(self.inputs_btn)
 
-        # Section 2: Output Devices
-        sec2_lbl = Gtk.Label(label="Output Devices")
+        # 2. Audio Outputs Button
+        self.outputs_btn = Gtk.Button()
+        self.outputs_btn.add_css_class("flat")
+        self.outputs_btn.add_css_class("wave-sidebar-row")
+        out_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        out_icon = Gtk.Image.new_from_icon_name("audio-headphones-symbolic")
+        out_lbl = Gtk.Label(label="Audio Outputs")
+        out_lbl.set_halign(Gtk.Align.START)
+        out_lbl.set_hexpand(True)
+        out_box.append(out_icon)
+        out_box.append(out_lbl)
+        self.outputs_btn.set_child(out_box)
+        self.outputs_btn.connect("clicked", lambda b: self._switch_view("output_settings", self.outputs_btn))
+        sidebar.append(self.outputs_btn)
+
+        # Section 2: Mixes & Effects
+        sec2_lbl = Gtk.Label(label="Mixes & Effects")
         sec2_lbl.add_css_class("wave-sidebar-section-title")
         sec2_lbl.set_halign(Gtk.Align.START)
         sidebar.append(sec2_lbl)
-
-        self.sidebar_out_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
-        sidebar.append(self.sidebar_out_box)
-
-        self._populate_sidebar_devices()
-
-        # Section 3: Mixes & Effects
-        sec3_lbl = Gtk.Label(label="Mixes & Effects")
-        sec3_lbl.add_css_class("wave-sidebar-section-title")
-        sec3_lbl.set_halign(Gtk.Align.START)
-        sidebar.append(sec3_lbl)
 
         self.mixes_btn = Gtk.Button()
         self.mixes_btn.add_css_class("flat")
@@ -142,6 +159,8 @@ class WaveMainWindow(Adw.ApplicationWindow):
         mix_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         mix_icon = Gtk.Image.new_from_icon_name("view-grid-symbolic")
         mix_lbl = Gtk.Label(label="Mixes")
+        mix_lbl.set_halign(Gtk.Align.START)
+        mix_lbl.set_hexpand(True)
         mix_box.append(mix_icon)
         mix_box.append(mix_lbl)
         self.mixes_btn.set_child(mix_box)
@@ -155,6 +174,8 @@ class WaveMainWindow(Adw.ApplicationWindow):
         fx_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         fx_icon = Gtk.Image.new_from_icon_name("system-run-symbolic")
         fx_lbl = Gtk.Label(label="Audio Effects (DSP)")
+        fx_lbl.set_halign(Gtk.Align.START)
+        fx_lbl.set_hexpand(True)
         fx_box.append(fx_icon)
         fx_box.append(fx_lbl)
         self.fx_btn.set_child(fx_box)
@@ -171,6 +192,8 @@ class WaveMainWindow(Adw.ApplicationWindow):
         set_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         set_icon = Gtk.Image.new_from_icon_name("emblem-system-symbolic")
         set_lbl = Gtk.Label(label="Settings")
+        set_lbl.set_halign(Gtk.Align.START)
+        set_lbl.set_hexpand(True)
         set_box.append(set_icon)
         set_box.append(set_lbl)
         self.settings_btn.set_child(set_box)
@@ -184,16 +207,18 @@ class WaveMainWindow(Adw.ApplicationWindow):
         self.stack.set_visible_child_name(name)
         
         # Clear selected styling from all buttons
+        self.inputs_btn.remove_css_class("selected")
+        self.outputs_btn.remove_css_class("selected")
         self.mixes_btn.remove_css_class("selected")
         self.fx_btn.remove_css_class("selected")
         self.settings_btn.remove_css_class("selected")
-        for btn in self.in_buttons:
-            btn.remove_css_class("selected")
-        for btn in self.out_buttons:
-            btn.remove_css_class("selected")
 
         if active_btn:
             active_btn.add_css_class("selected")
+        elif name == "input_settings":
+            self.inputs_btn.add_css_class("selected")
+        elif name == "output_settings":
+            self.outputs_btn.add_css_class("selected")
         elif name == "mixes":
             self.mixes_btn.add_css_class("selected")
         elif name == "effects":
@@ -201,74 +226,7 @@ class WaveMainWindow(Adw.ApplicationWindow):
         elif name == "settings":
             self.settings_btn.add_css_class("selected")
 
-    def _populate_sidebar_devices(self):
-        self.in_buttons = []
-        self.out_buttons = []
-
-        # 1. Populate Inputs
-        for dev in self.hardware_mgr.input_devices:
-            dev_btn = Gtk.Button()
-            dev_btn.add_css_class("flat")
-            dev_btn.add_css_class("wave-sidebar-row")
-            
-            dev_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-            dev_icon = Gtk.Image.new_from_icon_name("audio-input-microphone-symbolic")
-            
-            display_name = self.hardware_mgr.get_device_display_name(dev)
-            real_name = dev.get("name", "Microphone")
-
-            dev_lbl = Gtk.Label(label=display_name)
-            dev_lbl.set_ellipsize(Pango.EllipsizeMode.END)
-            dev_lbl.set_max_width_chars(15)
-            dev_lbl.set_hexpand(True)
-            dev_lbl.set_halign(Gtk.Align.START)
-            
-            tooltip = f"{display_name} ({real_name})" if display_name != real_name else real_name
-            dev_btn.set_tooltip_text(tooltip)
-
-            dev_box.append(dev_icon)
-            dev_box.append(dev_lbl)
-            dev_btn.set_child(dev_box)
-            dev_btn.connect("clicked", lambda b, d=dev, btn=dev_btn: self._switch_view("input_settings", btn))
-            self.sidebar_in_box.append(dev_btn)
-            self.in_buttons.append(dev_btn)
-
-        # 2. Populate Outputs
-        for dev in self.hardware_mgr.output_devices:
-            dev_btn = Gtk.Button()
-            dev_btn.add_css_class("flat")
-            dev_btn.add_css_class("wave-sidebar-row")
-            
-            dev_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-            dev_icon = Gtk.Image.new_from_icon_name("audio-headphones-symbolic")
-            
-            display_name = self.hardware_mgr.get_device_display_name(dev)
-            real_name = dev.get("name", "Headphones / Speaker")
-
-            dev_lbl = Gtk.Label(label=display_name)
-            dev_lbl.set_ellipsize(Pango.EllipsizeMode.END)
-            dev_lbl.set_max_width_chars(15)
-            dev_lbl.set_hexpand(True)
-            dev_lbl.set_halign(Gtk.Align.START)
-            
-            tooltip = f"{display_name} ({real_name})" if display_name != real_name else real_name
-            dev_btn.set_tooltip_text(tooltip)
-
-            dev_box.append(dev_icon)
-            dev_box.append(dev_lbl)
-            dev_btn.set_child(dev_box)
-            dev_btn.connect("clicked", lambda b, d=dev, btn=dev_btn: self._switch_view("output_settings", btn))
-            self.sidebar_out_box.append(dev_btn)
-            self.out_buttons.append(dev_btn)
-
     def _refresh_sidebar_devices(self):
-        if self.sidebar_in_box:
-            while self.sidebar_in_box.get_first_child():
-                self.sidebar_in_box.remove(self.sidebar_in_box.get_first_child())
-        if self.sidebar_out_box:
-            while self.sidebar_out_box.get_first_child():
-                self.sidebar_out_box.remove(self.sidebar_out_box.get_first_child())
-        self._populate_sidebar_devices()
         if hasattr(self, "input_view") and self.input_view:
             self.input_view.refresh_device_names()
         if hasattr(self, "output_view") and self.output_view:
