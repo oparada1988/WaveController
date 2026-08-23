@@ -14,9 +14,13 @@ GLib.set_prgname("com.oparada.WaveController")
 GLib.set_application_name("WaveController")
 Gtk.Window.set_default_icon_name("com.oparada.WaveController")
 
+from wavecontroller.utils.logger import setup_logging, get_logger
 from wavecontroller.app import WaveControllerApp
 
 def main():
+    setup_logging()
+    logger = get_logger("Main")
+    logger.info("Starting WaveController Application...")
     app = WaveControllerApp()
     return app.run(sys.argv)
 

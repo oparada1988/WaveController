@@ -1,9 +1,11 @@
+from datetime import datetime
 import gi
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
-from gi.repository import Gtk, Adw
+from gi.repository import Gtk, Adw, Gio, GLib
 
 from ..engine.config_manager import config_manager
+from ..utils.logger import get_log_file_path, get_log_dir_path, get_log_size_str, export_logs_to, clear_logs
 
 class SettingsView(Gtk.Box):
     """
@@ -83,7 +85,99 @@ class SettingsView(Gtk.Box):
         grp_audio.add(buffer_row)
 
         pref_page.add(grp_audio)
+
+        # Group 4: Diagnostics & Troubleshooting
+        grp_diag = Adw.PreferencesGroup(title="Diagnostics &amp; Troubleshooting")
+
+        # Row 1: Active Log File Info + Open Folder
+        self.log_info_row = Adw.ActionRow(
+            title="Application Log",
+            subtitle=f"{get_log_file_path()} ({get_log_size_str()})"
+        )
+        
+        open_folder_btn = Gtk.Button(label="Open Folder")
+        open_folder_btn.set_icon_name("folder-open-symbolic")
+        open_folder_btn.add_css_class("flat")
+        open_folder_btn.set_valign(Gtk.Align.CENTER)
+        
+        def on_open_folder_clicked(btn):
+            log_dir = get_log_dir_path()
+            try:
+                Gio.AppInfo.launch_default_for_uri(f"file://{log_dir}", None)
+            except Exception:
+                import subprocess
+                subprocess.Popen(["xdg-open", log_dir])
+
+        open_folder_btn.connect("clicked", on_open_folder_clicked)
+        self.log_info_row.add_suffix(open_folder_btn)
+        grp_diag.add(self.log_info_row)
+
+        # Row 2: Export Logs
+        export_row = Adw.ActionRow(
+            title="Export Diagnostics &amp; Logs",
+            subtitle="Save active log file to disk for troubleshooting or bug reporting"
+        )
+        
+        export_btn = Gtk.Button(label="Export Logs...")
+        export_btn.set_icon_name("document-save-symbolic")
+        export_btn.add_css_class("suggested-action")
+        export_btn.set_valign(Gtk.Align.CENTER)
+
+        def on_export_clicked(btn):
+            dialog = Gtk.FileChooserNative.new(
+                "Export WaveController Logs",
+                self.get_root(),
+                Gtk.FileChooserAction.SAVE,
+                "Export",
+                "Cancel"
+            )
+            date_str = datetime.now().strftime("%Y-%m-%d")
+            dialog.set_current_name(f"WaveController_Logs_{date_str}.log")
+
+            def on_response(dlg, response_id):
+                if response_id == Gtk.ResponseType.ACCEPT:
+                    target_file = dlg.get_file()
+                    if target_file:
+                        dest_path = target_file.get_path()
+                        if export_logs_to(dest_path):
+                            export_btn.set_label("Exported!")
+                            GLib.timeout_add(2000, lambda: (export_btn.set_label("Export Logs..."), False))
+                dlg.destroy()
+
+            dialog.connect("response", on_response)
+            dialog.show()
+
+        export_btn.connect("clicked", on_export_clicked)
+        export_row.add_suffix(export_btn)
+        grp_diag.add(export_row)
+
+        # Row 3: Clear Logs
+        clear_row = Adw.ActionRow(
+            title="Clear Logs",
+            subtitle="Reset and truncate the active log file"
+        )
+        
+        clear_btn = Gtk.Button(label="Clear Logs")
+        clear_btn.set_icon_name("edit-clear-symbolic")
+        clear_btn.add_css_class("flat")
+        clear_btn.set_valign(Gtk.Align.CENTER)
+
+        def on_clear_clicked(btn):
+            clear_logs()
+            self._update_log_info()
+            clear_btn.set_label("Cleared!")
+            GLib.timeout_add(1500, lambda: (clear_btn.set_label("Clear Logs"), False))
+
+        clear_btn.connect("clicked", on_clear_clicked)
+        clear_row.add_suffix(clear_btn)
+        grp_diag.add(clear_row)
+
+        pref_page.add(grp_diag)
+
         self.append(pref_page)
+
+    def _update_log_info(self):
+        self.log_info_row.set_subtitle(f"{get_log_file_path()} ({get_log_size_str()})")
 
     def _on_theme_toggled(self, row, *args):
         is_sys = row.get_active()
