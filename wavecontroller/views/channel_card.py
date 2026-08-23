@@ -157,33 +157,37 @@ class ChannelCard(Gtk.Box):
             apps_title.set_halign(Gtk.Align.START)
             pop_box.append(apps_title)
 
-            # Query only currently running apps on the system
-            active_streams = self.pipewire_mgr.get_active_application_streams()
-            assigned = set(self.pipewire_mgr.get_assigned_apps(self.channel_info["id"]))
+            app_list_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+            pop_box.append(app_list_box)
 
-            if active_streams:
-                app_list_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
-                for stream in active_streams:
-                    app_name = stream["name"]
-                    row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-                    icon_name = stream.get("icon") or self.pipewire_mgr.resolve_icon_for_app(app_name)
-                    img = Gtk.Image.new_from_icon_name(icon_name)
-                    img.set_pixel_size(16)
-                    chk = Gtk.CheckButton(label=app_name)
-                    chk.set_active(app_name in assigned or app_name.lower() in [a.lower() for a in assigned])
-                    chk.connect("toggled", self._on_app_toggled, app_name)
-                    chk.set_hexpand(True)
+            def refresh_apps_list(p=None):
+                while app_list_box.get_first_child():
+                    app_list_box.remove(app_list_box.get_first_child())
+                active_streams = self.pipewire_mgr.get_active_application_streams()
+                assigned = set(self.pipewire_mgr.get_assigned_apps(self.channel_info["id"]))
+                if active_streams:
+                    for stream in active_streams:
+                        app_name = stream["name"]
+                        row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+                        icon_name = stream.get("icon") or self.pipewire_mgr.resolve_icon_for_app(app_name)
+                        img = Gtk.Image.new_from_icon_name(icon_name)
+                        img.set_pixel_size(16)
+                        chk = Gtk.CheckButton(label=app_name)
+                        chk.set_active(app_name in assigned or app_name.lower() in [a.lower() for a in assigned])
+                        chk.connect("toggled", self._on_app_toggled, app_name)
+                        chk.set_hexpand(True)
 
-                    row.append(img)
-                    row.append(chk)
-                    app_list_box.append(row)
-                pop_box.append(app_list_box)
-            else:
-                no_apps_lbl = Gtk.Label(label="No active audio apps detected.\nStart an app (e.g. Spotify, Games) to route it.")
-                no_apps_lbl.add_css_class("mix-header-subtitle")
-                no_apps_lbl.set_halign(Gtk.Align.START)
-                pop_box.append(no_apps_lbl)
+                        row.append(img)
+                        row.append(chk)
+                        app_list_box.append(row)
+                else:
+                    no_apps_lbl = Gtk.Label(label="No active audio apps detected.\nStart an app (e.g. Spotify, Games) to route it.")
+                    no_apps_lbl.add_css_class("mix-header-subtitle")
+                    no_apps_lbl.set_halign(Gtk.Align.START)
+                    app_list_box.append(no_apps_lbl)
 
+            refresh_apps_list()
+            popover.connect("show", refresh_apps_list)
             pop_box.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
 
         # 4. VU Meter Physics: Sync L/R Channels (Mono Mode)

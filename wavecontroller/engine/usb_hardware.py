@@ -140,6 +140,28 @@ class USBHardwareManager:
                 self.device_type = "elgato" if "wave" in d["name"].lower() else "generic"
                 break
 
+    def get_output_volume(self, device_id: str = None) -> int:
+        """Returns current volume percentage for the output device."""
+        target = str(device_id) if device_id else "@DEFAULT_AUDIO_SINK@"
+        try:
+            out = subprocess.check_output(["wpctl", "get-volume", target], text=True, stderr=subprocess.DEVNULL).strip()
+            import re
+            m = re.search(r'Volume:\s*([\d\.]+)', out)
+            if m:
+                return int(round(float(m.group(1)) * 100))
+        except Exception:
+            pass
+        return 75
+
+    def set_output_volume(self, device_id: str = None, volume_pct: int = 75):
+        """Sets volume percentage for the output device."""
+        target = str(device_id) if device_id else "@DEFAULT_AUDIO_SINK@"
+        vol_frac = max(0.0, min(1.5, volume_pct / 100.0))
+        try:
+            subprocess.run(["wpctl", "set-volume", target, f"{vol_frac:.2f}"], stderr=subprocess.DEVNULL)
+        except Exception:
+            pass
+
     def get_output_mute(self, device_id: str = None) -> bool:
         """Returns True if the specified or default output device is muted."""
         target = str(device_id) if device_id else "@DEFAULT_AUDIO_SINK@"

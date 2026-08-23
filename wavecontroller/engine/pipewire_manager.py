@@ -285,17 +285,41 @@ class PipeWireManager:
             self._node_cache = cache
             self._last_cache_time = time.time()
 
+    KNOWN_AUDIO_BINARIES = {
+        "spotify": ("Spotify", "spotify"),
+        "discord": ("Discord", "discord"),
+        "steam": ("Steam", "steam"),
+        "steamwebhelper": ("Steam", "steam"),
+        "firefox": ("Firefox", "firefox"),
+        "chrome": ("Google Chrome", "google-chrome"),
+        "chromium": ("Chromium", "chromium"),
+        "brave": ("Brave", "brave-browser"),
+        "vlc": ("VLC Media Player", "vlc"),
+        "mpv": ("MPV", "mpv"),
+        "rhythmbox": ("Rhythmbox", "rhythmbox"),
+        "audacity": ("Audacity", "audacity"),
+        "obs": ("OBS Studio", "obs"),
+        "obs64": ("OBS Studio", "obs"),
+        "cider": ("Cider", "cider"),
+        "strawberry": ("Strawberry", "strawberry"),
+        "telegram-desktop": ("Telegram", "telegram")
+    }
+
     def get_active_application_streams(self) -> list:
-        """Discovers running audio playback streams currently outputting audio."""
+        """Discovers running audio applications from active PipeWire streams and desktop processes."""
         apps = []
         seen = set()
+
+        # 1. Active PipeWire Audio Streams
         try:
             out = subprocess.check_output(["pw-dump"], text=True, stderr=subprocess.DEVNULL)
             data = json.loads(out)
             for obj in data:
                 props = obj.get("info", {}).get("props", {})
                 media_class = props.get("media.class", "")
-                if "Stream/Output/Audio" in media_class:
+                media_type = props.get("media.type", "")
+                
+                if "Stream/Output/Audio" in media_class or media_type == "Audio":
                     name = props.get("application.name") or props.get("node.description") or props.get("node.name")
                     binary = props.get("application.process.binary")
                     icon = props.get("application.icon-name") or props.get("application.icon_name")
@@ -304,11 +328,12 @@ class PipeWireManager:
                     if not name:
                         continue
                     name_low = name.lower()
-                    if any(x in name_low for x in ["wave_sink", "wave_mic", "vcp_monitor", "pw-record", "parecord", "pipewire", "wireplumber", "easyeffects"]):
+                    if any(x in name_low for x in ["wave_sink", "wave_mic", "vcp_monitor", "pw-record", "parecord", "pipewire", "wireplumber", "easyeffects", "wpctl", "system_capture", "system capture"]):
                         continue
                         
-                    if name not in seen:
+                    if name not in seen and name.lower() not in seen:
                         seen.add(name)
+                        seen.add(name.lower())
                         apps.append({
                             "id": node_id,
                             "name": name,
@@ -317,6 +342,32 @@ class PipeWireManager:
                         })
         except Exception:
             pass
+
+        # 2. Running User Desktop Audio Processes (e.g. newly opened apps before playback)
+        try:
+            for proc_entry in os.listdir("/proc"):
+                if proc_entry.isdigit():
+                    try:
+                        comm_file = os.path.join("/proc", proc_entry, "comm")
+                        if os.path.exists(comm_file):
+                            with open(comm_file, "r") as f:
+                                comm = f.read().strip().lower()
+                                if comm in self.KNOWN_AUDIO_BINARIES:
+                                    app_title, app_icon = self.KNOWN_AUDIO_BINARIES[comm]
+                                    if app_title not in seen and app_title.lower() not in seen:
+                                        seen.add(app_title)
+                                        seen.add(app_title.lower())
+                                        apps.append({
+                                            "id": None,
+                                            "name": app_title,
+                                            "binary": comm,
+                                            "icon": app_icon or self.resolve_icon_for_app(app_title)
+                                        })
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
         return apps
 
     def assign_app_to_channel(self, channel_id: str, app_name: str):
