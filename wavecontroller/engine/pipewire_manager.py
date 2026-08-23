@@ -53,6 +53,7 @@ class PipeWireManager:
         self._worker_thread = None
         self._sync_thread = None
         self._submix_procs = {} # {(channel_id, mix_id): subprocess.Popen}
+        self._submix_node_ids = {} # {(channel_id, mix_id): [node_id, ...]}
         self.on_external_change_callback = None
 
         self._init_default_states()
@@ -189,6 +190,7 @@ class PipeWireManager:
                 except Exception:
                     pass
             self._submix_procs.clear()
+            self._submix_node_ids.clear()
 
     def get_application_volume_status(self, app_name: str) -> tuple:
         """Queries volume and mute status of an application from its PipeWire node."""
@@ -461,7 +463,18 @@ class PipeWireManager:
         """Returns True if the channel has multi-mix linking enabled."""
         with self._lock:
             states = self.channel_states.get(channel_id, {})
+            if not states:
+                return True
             return any(s.get("linked", True) for s in states.values())
+
+    def set_channel_linked(self, channel_id: str, linked: bool):
+        """Sets the linking state for a channel across all mixes."""
+        with self._lock:
+            if channel_id in self.channel_states:
+                for m_id in self.channel_states[channel_id]:
+                    self.channel_states[channel_id][m_id]["linked"] = linked
+                self._save_state_to_config(immediate=True)
+                self._sync_channel_audio_routing(channel_id)
 
     def get_channel_master_volume(self, channel_id: str) -> int:
         with self._lock:
@@ -633,31 +646,52 @@ class PipeWireManager:
 
     def _apply_submix_gain(self, ch_id: str, m_id: str, vol_pct: int, is_muted: bool):
         """Applies independent sub-mix attenuation to dedicated PipeWire loopback stream node."""
+        key = (ch_id, m_id)
         node_name = f"WaveController_submix_{ch_id}_{m_id}"
         vol_frac = max(0.0, min(1.5, vol_pct / 100.0))
-        try:
-            out = subprocess.check_output(["pw-dump"], text=True, stderr=subprocess.DEVNULL)
-            data = json.loads(out)
-            for obj in data:
-                if obj.get("type") == "PipeWire:Interface:Node":
-                    props = obj.get("info", {}).get("props", {})
-                    if node_name in props.get("node.name", ""):
-                        subprocess.run(["wpctl", "set-volume", str(obj["id"]), f"{vol_frac:.2f}"], stderr=subprocess.DEVNULL)
-                        subprocess.run(["wpctl", "set-mute", str(obj["id"]), "1" if is_muted else "0"], stderr=subprocess.DEVNULL)
-        except Exception:
-            pass
+        
+        node_ids = self._submix_node_ids.get(key, [])
+        if not node_ids:
+            try:
+                out = subprocess.check_output(["pw-dump"], text=True, stderr=subprocess.DEVNULL)
+                data = json.loads(out)
+                found = []
+                for obj in data:
+                    if obj.get("type") == "PipeWire:Interface:Node":
+                        props = obj.get("info", {}).get("props", {})
+                        if node_name in props.get("node.name", ""):
+                            found.append(str(obj["id"]))
+                if found:
+                    self._submix_node_ids[key] = found
+                    node_ids = found
+            except Exception:
+                pass
 
-    def _ensure_submix_loopback(self, ch_id: str, m_id: str, capture_target: str, playback_target: str, vol_pct: int, is_muted: bool):
+        for n_id in node_ids:
+            try:
+                subprocess.run(["wpctl", "set-volume", str(n_id), f"{vol_frac:.2f}"], stderr=subprocess.DEVNULL)
+                subprocess.run(["wpctl", "set-mute", str(n_id), "1" if is_muted else "0"], stderr=subprocess.DEVNULL)
+            except Exception:
+                pass
+
+    def _ensure_submix_loopback(self, ch_id: str, m_id: str, vol_pct: int, is_muted: bool):
         """Provisions an isolated, ultra-low latency sub-mix loopback stream with independent hardware DSP gain."""
         key = (ch_id, m_id)
+        node_name = f"WaveController_submix_{ch_id}_{m_id}"
         with self._lock:
             proc = self._submix_procs.get(key)
             if proc is None or proc.poll() is not None:
-                node_name = f"WaveController_submix_{ch_id}_{m_id}"
-                cmd = ["pw-loopback", "-C", capture_target, "-P", playback_target, "-n", node_name, "--latency=5"]
+                cmd = [
+                    "pw-loopback",
+                    "--capture-props=node.autoconnect=false",
+                    "--playback-props=node.autoconnect=false",
+                    "-n", node_name,
+                    "--latency=5"
+                ]
                 try:
                     p = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                     self._submix_procs[key] = p
+                    time.sleep(0.05)
                 except Exception:
                     pass
         self._apply_submix_gain(ch_id, m_id, vol_pct, is_muted)
@@ -666,11 +700,12 @@ class PipeWireManager:
         """Tears down the sub-mix loopback stream process cleanly."""
         key = (ch_id, m_id)
         with self._lock:
+            self._submix_node_ids.pop(key, None)
             proc = self._submix_procs.pop(key, None)
             if proc:
                 try:
                     proc.terminate()
-                    proc.wait(timeout=0.5)
+                    proc.wait(timeout=0.3)
                 except Exception:
                     pass
 
@@ -838,6 +873,36 @@ class PipeWireManager:
             self._save_state_to_config(immediate=True)
         self._sync_channel_audio_routing(channel_id, mix_id)
 
+    def _link_stereo_ports(self, src_ports: list, dst_ports: list, unlink: bool = False):
+        """Helper to establish or destroy stereo/mono PipeWire link connections accurately."""
+        if not src_ports or not dst_ports:
+            return
+        for src_p in src_ports:
+            is_fl = "_fl" in src_p.lower() or "_1" in src_p or "_mono" in src_p.lower() or "_l" in src_p.lower()
+            is_fr = "_fr" in src_p.lower() or "_2" in src_p or "_r" in src_p.lower()
+            is_pure_mono = (len(src_ports) == 1) or ("_mono" in src_p.lower())
+            for dst_p in dst_ports:
+                dst_fl = "_fl" in dst_p.lower() or "_1" in dst_p or "_l" in dst_p.lower()
+                dst_fr = "_fr" in dst_p.lower() or "_2" in dst_p or "_r" in dst_p.lower()
+                
+                match = False
+                if is_pure_mono:
+                    match = True
+                elif is_fl and dst_fl:
+                    match = True
+                elif is_fr and dst_fr:
+                    match = True
+
+                if match:
+                    cmd = ["pw-link"]
+                    if unlink:
+                        cmd.append("-d")
+                    cmd.extend([src_p, dst_p])
+                    try:
+                        subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    except Exception:
+                        pass
+
     def _sync_channel_audio_routing(self, channel_id: str = None, mix_id: str = None):
         """
         Synchronizes real PipeWire port attachments (pw-link) for all channels and mixes.
@@ -870,22 +935,19 @@ class PipeWireManager:
             
             # Find output ports for this channel
             ch_out_ports = []
-            capture_source_name = None
             if ch_id == "mic":
-                capture_source_name = "@DEFAULT_AUDIO_SOURCE@"
                 for p in out_ports:
+                    if p.startswith("output.WaveController_") or p.startswith("WaveController_"):
+                        continue
                     if ":capture_" in p:
                         ch_out_ports.append(p)
             else:
                 assigned = self.get_assigned_apps(ch_id)
-                if assigned:
-                    capture_source_name = assigned[0]
-                else:
-                    capture_source_name = ch.get("name", ch_id)
-
                 for app in assigned:
                     app_low = app.lower()
                     for p in out_ports:
+                        if p.startswith("output.WaveController_") or p.startswith("WaveController_"):
+                            continue
                         p_low = p.lower()
                         if (app_low in p_low or p_low.startswith(app_low)) and ":output_" in p:
                             ch_out_ports.append(p)
@@ -903,9 +965,6 @@ class PipeWireManager:
 
             for m in mixes_to_sync:
                 m_id = m["id"]
-                m_type = m.get("type", "source")
-                playback_node = f"WaveController_{m_id}_Sink" if (m_type == "sink" or m_id == "personal") else f"WaveController_{m_id}_Source"
-
                 target_prefixes = [f"WaveController_{m_id}_Sink:playback_", f"WaveController_{m_id}_Source:input_"]
                 target_in_ports = []
                 for p in in_ports:
@@ -920,51 +979,44 @@ class PipeWireManager:
 
                 if not is_linked:
                     # Unlinked Mode: Use independent submix loopback with per-mix attenuation
-                    # Unlink direct pw-link between app and mix sink
-                    if ch_out_ports:
-                        for src_p in ch_out_ports:
-                            for tgt_p in target_in_ports:
+                    # 1. Sever any direct link between app output and mix target
+                    self._link_stereo_ports(ch_out_ports, target_in_ports, unlink=True)
+
+                    if is_enabled:
+                        self._ensure_submix_loopback(ch_id, m_id, vol_pct, is_muted)
+                        
+                        loopback_in_prefix = f"input.WaveController_submix_{ch_id}_{m_id}:input_"
+                        loopback_out_prefix = f"output.WaveController_submix_{ch_id}_{m_id}:output_"
+                        
+                        lb_in_ports = [p for p in in_ports if p.startswith(loopback_in_prefix)]
+                        lb_out_ports = [p for p in out_ports if p.startswith(loopback_out_prefix)]
+
+                        if not lb_in_ports or not lb_out_ports:
+                            for _ in range(8):
+                                time.sleep(0.03)
                                 try:
-                                    subprocess.run(["pw-link", "-d", src_p, tgt_p], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                                    o_raw = subprocess.check_output(["pw-link", "-o"], text=True, stderr=subprocess.DEVNULL)
+                                    i_raw = subprocess.check_output(["pw-link", "-i"], text=True, stderr=subprocess.DEVNULL)
+                                    out_ports = [l.strip() for l in o_raw.splitlines() if l.strip()]
+                                    in_ports = [l.strip() for l in i_raw.splitlines() if l.strip()]
+                                    lb_in_ports = [p for p in in_ports if p.startswith(loopback_in_prefix)]
+                                    lb_out_ports = [p for p in out_ports if p.startswith(loopback_out_prefix)]
+                                    if lb_in_ports and lb_out_ports:
+                                        target_in_ports = [p for p in in_ports if any(p.startswith(pref) for pref in target_prefixes)]
+                                        break
                                 except Exception:
                                     pass
 
-                    if is_enabled and capture_source_name:
-                        self._ensure_submix_loopback(ch_id, m_id, capture_source_name, playback_node, vol_pct, is_muted)
+                        # Link Stage 1: Channel Output -> Loopback Input
+                        self._link_stereo_ports(ch_out_ports, lb_in_ports, unlink=False)
+                        # Link Stage 2: Loopback Output -> Mix Target Input
+                        self._link_stereo_ports(lb_out_ports, target_in_ports, unlink=False)
                     else:
                         self._stop_submix_loopback(ch_id, m_id)
                 else:
                     # Linked Mode: Stop dedicated loopback and route via direct low-latency pw-link
                     self._stop_submix_loopback(ch_id, m_id)
-
-                    if not ch_out_ports or not target_in_ports:
-                        continue
-
-                    for src_p in ch_out_ports:
-                        is_fl = "_FL" in src_p or "_1" in src_p or "_mono" in src_p.lower() or "_l" in src_p.lower()
-                        is_fr = "_FR" in src_p or "_2" in src_p or "_r" in src_p.lower()
-                        is_pure_mono = (len(ch_out_ports) == 1) or ("_mono" in src_p.lower())
-                        for tgt_p in target_in_ports:
-                            tgt_fl = "_FL" in tgt_p or "_1" in tgt_p or "_l" in tgt_p.lower()
-                            tgt_fr = "_FR" in tgt_p or "_2" in tgt_p or "_r" in tgt_p.lower()
-                            
-                            match = False
-                            if is_pure_mono:
-                                match = True
-                            elif is_fl and tgt_fl:
-                                match = True
-                            elif is_fr and tgt_fr:
-                                match = True
-
-                            if match:
-                                cmd = ["pw-link"]
-                                if not is_enabled:
-                                    cmd.append("-d")
-                                cmd.extend([src_p, tgt_p])
-                                try:
-                                    subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                                except Exception:
-                                    pass
+                    self._link_stereo_ports(ch_out_ports, target_in_ports, unlink=not is_enabled)
 
         # Synchronize physical output target devices for all Sink mixes
         self._sync_mix_physical_output_routing(mix_id, out_ports, in_ports)
