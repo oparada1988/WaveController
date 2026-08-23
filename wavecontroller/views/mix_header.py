@@ -130,9 +130,11 @@ class MixHeaderCard(Gtk.Box):
         if muted:
             self.mute_btn.set_icon_name("audio-volume-muted-symbolic")
             self.mute_btn.add_css_class("muted")
+            self.add_css_class("muted")
         else:
             self.mute_btn.set_icon_name("audio-volume-high-symbolic")
             self.mute_btn.remove_css_class("muted")
+            self.remove_css_class("muted")
 
     def _on_mute_clicked(self, btn):
         if self.pipewire_mgr:
@@ -140,9 +142,11 @@ class MixHeaderCard(Gtk.Box):
             if new_mute:
                 self.mute_btn.set_icon_name("audio-volume-muted-symbolic")
                 self.mute_btn.add_css_class("muted")
+                self.add_css_class("muted")
             else:
                 self.mute_btn.set_icon_name("audio-volume-high-symbolic")
                 self.mute_btn.remove_css_class("muted")
+                self.remove_css_class("muted")
 
     def _on_scale_value_changed(self, scale):
         vol = int(scale.get_value())

@@ -224,8 +224,26 @@ window.theme-midnight .wave-create-channel-box {
     border-color: alpha(@accent_bg_color, 0.35);
 }
 
+/* Card Muted State - Tint entire card red when muted */
+.channel-row-card.muted,
+.mix-header-card.muted,
 .matrix-cell-card.muted {
-    opacity: 0.6;
+    background-color: rgba(239, 68, 68, 0.14);
+    border-color: rgba(239, 68, 68, 0.40);
+}
+
+window.theme-midnight .channel-row-card.muted,
+window.theme-midnight .mix-header-card.muted,
+window.theme-midnight .matrix-cell-card.muted {
+    background-color: rgba(239, 68, 68, 0.16);
+    border-color: rgba(239, 68, 68, 0.45);
+}
+
+window.theme-midnight .channel-row-card.muted:hover,
+window.theme-midnight .mix-header-card.muted:hover,
+window.theme-midnight .matrix-cell-card.muted:hover {
+    background-color: rgba(239, 68, 68, 0.22);
+    border-color: rgba(239, 68, 68, 0.60);
 }
 
 /* Matrix Mix Cell (Unrouted / Empty Slot matching Wave Link) */
