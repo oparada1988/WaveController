@@ -196,7 +196,36 @@ class UnifiedDeviceSettingsView(Gtk.Box):
 
             pref_page.add(grp_out)
 
+        # Group 4: Device Management / Removal (Explicit Manual Control)
+        grp_danger = Adw.PreferencesGroup(title="Device Management")
+        remove_row = Adw.ActionRow(
+            title="Remove from WaveController",
+            subtitle="Remove this device from your sidebar. You can manually add it back anytime."
+        )
+        remove_btn = Gtk.Button(label="Remove Device")
+        remove_btn.set_icon_name("user-trash-symbolic")
+        remove_btn.add_css_class("destructive-action")
+        remove_btn.set_valign(Gtk.Align.CENTER)
+        remove_btn.connect("clicked", self._on_remove_clicked)
+        remove_row.add_suffix(remove_btn)
+        grp_danger.add(remove_row)
+        pref_page.add(grp_danger)
+
         self.append(pref_page)
+
+        # Prominent Remove Button at bottom of page
+        btn_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+        btn_box.set_halign(Gtk.Align.CENTER)
+        btn_box.set_margin_top(16)
+        btn_box.set_margin_bottom(24)
+
+        big_remove_btn = Gtk.Button(label="Remove Device from WaveController")
+        big_remove_btn.set_icon_name("user-trash-symbolic")
+        big_remove_btn.add_css_class("destructive-action")
+        big_remove_btn.set_size_request(320, 44)
+        big_remove_btn.connect("clicked", self._on_remove_clicked)
+        btn_box.append(big_remove_btn)
+        self.append(btn_box)
 
         # Start live meter timer if mic is available
         if self.device_type in ["duplex", "input"]:

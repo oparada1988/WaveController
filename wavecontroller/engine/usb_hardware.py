@@ -41,25 +41,15 @@ class USBHardwareManager:
         self._ensure_default_tracked_devices()
 
     def _ensure_default_tracked_devices(self):
-        """Initializes tracked devices list on first run if empty."""
+        """Initializes tracked devices list strictly on first install if config key is None."""
         tracked = config_manager.get("tracked_devices", None)
         if tracked is None:
             new_tracked = []
-            # Auto-add primary duplex / input device
+            # Only track the primary microphone / duplex device (e.g. Fifine)
             for k, dev in self.discovered_devices.items():
                 if dev.get("type") in ["duplex", "input"]:
                     new_tracked.append(k)
                     break
-            # Auto-add primary output device if different
-            for k, dev in self.discovered_devices.items():
-                if k not in new_tracked and dev.get("type") in ["duplex", "output"]:
-                    new_tracked.append(k)
-                    break
-            
-            # If still empty, add any first discovered device
-            if not new_tracked and self.discovered_devices:
-                new_tracked.append(list(self.discovered_devices.keys())[0])
-
             config_manager.set("tracked_devices", new_tracked, immediate=True)
 
     def detect_connected_hardware(self):

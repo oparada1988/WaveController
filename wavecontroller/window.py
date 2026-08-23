@@ -274,8 +274,45 @@ class WaveMainWindow(Adw.ApplicationWindow):
             btn.set_child(row_box)
             btn.connect("clicked", lambda b, vn=view_name, bt=btn: self._switch_view(vn, bt))
 
+            # Right-click context menu
+            click_gesture = Gtk.GestureClick()
+            click_gesture.set_button(3) # Secondary / Right-click
+            click_gesture.connect("pressed", lambda g, n, x, y, k=key, b=btn: self._show_device_context_menu(b, k))
+            btn.add_controller(click_gesture)
+
             self.device_list_box.append(btn)
             self.device_buttons[view_name] = btn
+
+    def _show_device_context_menu(self, widget, device_key: str):
+        pop = Gtk.Popover()
+        pop.set_parent(widget)
+        pop.add_css_class("wave-popover")
+
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        box.set_margin_top(6)
+        box.set_margin_bottom(6)
+        box.set_margin_start(6)
+        box.set_margin_end(6)
+
+        display_name = self.hardware_mgr.get_device_display_name(device_key)
+
+        # Open Settings Option
+        open_btn = Gtk.Button(label=f"Configure {display_name}")
+        open_btn.set_icon_name("emblem-system-symbolic")
+        open_btn.add_css_class("flat")
+        open_btn.connect("clicked", lambda b: (pop.popdown(), self._switch_view(f"device_{device_key}", self.device_buttons.get(f"device_{device_key}"))))
+        box.append(open_btn)
+
+        # Remove Device Option
+        rem_btn = Gtk.Button(label="Remove from WaveController")
+        rem_btn.set_icon_name("user-trash-symbolic")
+        rem_btn.add_css_class("flat")
+        rem_btn.add_css_class("destructive-action")
+        rem_btn.connect("clicked", lambda b: (pop.popdown(), self.hardware_mgr.remove_tracked_device(device_key), self._on_device_removed(device_key)))
+        box.append(rem_btn)
+
+        pop.set_child(box)
+        pop.popup()
 
         # Handle View Selection
         if select_device_key:
