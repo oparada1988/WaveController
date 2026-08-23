@@ -104,6 +104,7 @@ class MixerMatrixView(Gtk.Box):
             mix_header = MixHeaderCard(
                 mix,
                 pipewire_mgr=self.pipewire_mgr,
+                hardware_mgr=self.hardware_mgr,
                 on_remove_callback=lambda m_id: (self.pipewire_mgr.remove_mix(m_id), GLib.idle_add(self._rebuild_grid)),
                 on_edit_callback=lambda m_id: GLib.idle_add(self._rebuild_grid)
             )
@@ -246,6 +247,37 @@ class MixerMatrixView(Gtk.Box):
         type_row.append(type_combo)
         box.append(type_row)
 
+        # Physical Output Target Routing (For Sink / Speaker mixes, defaults to 'None (Virtual Only)')
+        target_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        target_lbl = Gtk.Label(label="Target:")
+        target_lbl.add_css_class("mix-header-subtitle")
+        target_lbl.set_size_request(45, -1)
+        target_lbl.set_halign(Gtk.Align.START)
+        target_row.append(target_lbl)
+
+        target_options = [("none", "None (Virtual Only)"), ("default", "Default Output")]
+        if self.hardware_mgr:
+            for dev in self.hardware_mgr.get_tracked_output_devices():
+                key = dev.get("device_key", dev.get("name", ""))
+                name = dev.get("display_name", dev.get("name", "Audio Device"))
+                target_options.append((key, name))
+
+        target_dev_keys = [opt[0] for opt in target_options]
+        target_dev_labels = [opt[1] for opt in target_options]
+
+        target_combo = Gtk.DropDown.new_from_strings(target_dev_labels)
+        target_combo.set_selected(0) # Default to 'None (Virtual Only)'!
+        target_combo.set_hexpand(True)
+        target_row.append(target_combo)
+        target_row.set_visible(False) # Hidden by default since initial type is Source (Microphone)
+        box.append(target_row)
+
+        def on_type_changed(combo, *args):
+            is_sink = (combo.get_selected() == 1)
+            target_row.set_visible(is_sink)
+
+        type_combo.connect("notify::selected", on_type_changed)
+
         # Minimal Symbolic Icon Palette (Pure Vector Icons, No Text Labels, Zero Emojis)
         AVAILABLE_MIX_ICONS = [
             "user-available-symbolic",         # Chat / Discord
@@ -343,7 +375,14 @@ class MixerMatrixView(Gtk.Box):
                 
                 selected_icon = selected_icon_holder["icon"]
                 mix_type = "source" if type_combo.get_selected() == 0 else "sink"
-                self.pipewire_mgr.add_mix(name, subtitle=sub, mix_type=mix_type, color=c, icon=selected_icon)
+                
+                selected_target = "none"
+                if mix_type == "sink":
+                    t_idx = target_combo.get_selected()
+                    if t_idx < len(target_dev_keys):
+                        selected_target = target_dev_keys[t_idx]
+
+                self.pipewire_mgr.add_mix(name, subtitle=sub, mix_type=mix_type, color=c, icon=selected_icon, target_device=selected_target)
                 popover.popdown()
                 GLib.idle_add(self._rebuild_grid)
 

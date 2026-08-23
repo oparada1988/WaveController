@@ -810,6 +810,79 @@ class PipeWireManager:
                             except Exception:
                                 pass
 
+        # Synchronize physical output target devices for all Sink mixes
+        self._sync_mix_physical_output_routing(mix_id, out_ports, in_ports)
+
+    def _sync_mix_physical_output_routing(self, mix_id: str = None, out_ports: list = None, in_ports: list = None):
+        """
+        Routes WaveController Sink mixes (e.g. Personal Mix, Guest Mix)
+        to their designated physical output target devices via pw-link.
+        """
+        if out_ports is None:
+            try:
+                out_ports_raw = subprocess.check_output(["pw-link", "-o"], text=True, stderr=subprocess.DEVNULL)
+                out_ports = [l.strip() for l in out_ports_raw.splitlines() if l.strip()]
+            except Exception:
+                out_ports = []
+
+        if in_ports is None:
+            try:
+                in_ports_raw = subprocess.check_output(["pw-link", "-i"], text=True, stderr=subprocess.DEVNULL)
+                in_ports = [l.strip() for l in in_ports_raw.splitlines() if l.strip()]
+            except Exception:
+                in_ports = []
+
+        with self._lock:
+            mixes_copy = list(self.mixes)
+
+        mixes_to_sync = [m for m in mixes_copy if mix_id is None or m["id"] == mix_id]
+
+        for m in mixes_to_sync:
+            m_id = m["id"]
+            m_type = m.get("type", "source")
+            target_dev = m.get("target_device", "none" if m_id != "personal" else "default")
+
+            if m_type != "sink" and m_id != "personal":
+                continue
+
+            mon_fl = f"WaveController_{m_id}_Sink:monitor_FL"
+            mon_fr = f"WaveController_{m_id}_Sink:monitor_FR"
+
+            phys_playback_fl = []
+            phys_playback_fr = []
+
+            if target_dev and target_dev != "none":
+                for p in in_ports:
+                    if p.startswith("WaveController_"):
+                        continue
+                    if ":playback_" in p:
+                        if target_dev == "default":
+                            if "_FL" in p or "_1" in p or "_l" in p.lower():
+                                phys_playback_fl.append(p)
+                            elif "_FR" in p or "_2" in p or "_r" in p.lower():
+                                phys_playback_fr.append(p)
+                        else:
+                            t_clean = target_dev.lower().replace("usb-", "").replace("-00", "").replace("_", "")
+                            p_clean = p.lower().replace("_", "").replace("-", "")
+                            if t_clean in p_clean:
+                                if "_FL" in p or "_1" in p or "_l" in p.lower():
+                                    phys_playback_fl.append(p)
+                                elif "_FR" in p or "_2" in p or "_r" in p.lower():
+                                    phys_playback_fr.append(p)
+
+            if mon_fl in out_ports and phys_playback_fl:
+                for dest in phys_playback_fl:
+                    try:
+                        subprocess.run(["pw-link", mon_fl, dest], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    except Exception:
+                        pass
+            if mon_fr in out_ports and phys_playback_fr:
+                for dest in phys_playback_fr:
+                    try:
+                        subprocess.run(["pw-link", mon_fr, dest], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    except Exception:
+                        pass
+
     def get_channel_state(self, channel_id: str, mix_id: str) -> dict:
         with self._lock:
             st = self.channel_states.get(channel_id, {}).get(mix_id, {})
@@ -946,7 +1019,7 @@ class PipeWireManager:
         else:
             return "audio-input-microphone-symbolic"
 
-    def add_mix(self, name: str, subtitle: str = "Custom Mix", mix_type: str = "source", icon: str = None, color: str = "#3584e4") -> dict:
+    def add_mix(self, name: str, subtitle: str = "Custom Mix", mix_type: str = "source", icon: str = None, color: str = "#3584e4", target_device: str = "none") -> dict:
         with self._lock:
             mix_id = name.lower().replace(" ", "_")
             existing_ids = [m["id"] for m in self.mixes]
@@ -962,7 +1035,8 @@ class PipeWireManager:
                 "subtitle": subtitle,
                 "type": mix_type,
                 "icon": icon,
-                "color": color
+                "color": color,
+                "target_device": target_device if mix_type == "sink" else "none"
             }
             self.mixes.append(new_mix)
             for ch in self.channels:
@@ -979,8 +1053,8 @@ class PipeWireManager:
             self._ensure_virtual_mix_nodes()
             return new_mix
 
-    def update_mix(self, mix_id: str, name: str = None, subtitle: str = None, color: str = None, icon: str = None) -> bool:
-        """Updates metadata (name, subtitle, color, icon) of a configured mix and syncs PipeWire node descriptions."""
+    def update_mix(self, mix_id: str, name: str = None, subtitle: str = None, color: str = None, icon: str = None, target_device: str = None) -> bool:
+        """Updates metadata (name, subtitle, color, icon, target_device) of a configured mix and syncs PipeWire node descriptions."""
         with self._lock:
             for m in self.mixes:
                 if m["id"] == mix_id:
@@ -992,6 +1066,8 @@ class PipeWireManager:
                         m["color"] = color
                     if icon:
                         m["icon"] = icon
+                    if target_device is not None:
+                        m["target_device"] = target_device
                     self._save_state_to_config(immediate=True)
                     self._ensure_virtual_mix_nodes()
                     return True

@@ -8,10 +8,11 @@ class MixHeaderCard(Gtk.Box):
     Column header card representing an output mix bus (e.g. Personal Mix / Record Mix).
     Supports customizing mix name, subtitle, and accent color, as well as deletion.
     """
-    def __init__(self, mix_info: dict, pipewire_mgr=None, on_remove_callback=None, on_edit_callback=None):
+    def __init__(self, mix_info: dict, pipewire_mgr=None, hardware_mgr=None, on_remove_callback=None, on_edit_callback=None):
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=4)
         self.mix_info = mix_info
         self.pipewire_mgr = pipewire_mgr
+        self.hardware_mgr = hardware_mgr
         self.on_remove_callback = on_remove_callback
         self.on_edit_callback = on_edit_callback
         
@@ -45,91 +46,98 @@ class MixHeaderCard(Gtk.Box):
 
         top_box.append(title_box)
 
-        # Edit Mix Settings Button
-        if self.pipewire_mgr:
-            self.edit_btn = Gtk.MenuButton()
-            self.edit_btn.set_icon_name("emblem-system-symbolic")
-            self.edit_btn.add_css_class("flat")
-            self.edit_btn.add_css_class("wave-icon-btn")
-            self.edit_btn.set_tooltip_text(f"Edit '{mix_info.get('name')}'")
-            self._setup_edit_popover(self.edit_btn)
-            top_box.append(self.edit_btn)
+        # Action Buttons Box (Edit Popover + Delete)
+        btn_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
 
-        # Delete Mix Button
-        if self.on_remove_callback:
-            del_btn = Gtk.Button.new_from_icon_name("user-trash-symbolic")
-            del_btn.add_css_class("flat")
-            del_btn.add_css_class("wave-icon-btn")
-            del_btn.set_tooltip_text(f"Delete '{mix_info.get('name')}'")
-            del_btn.connect("clicked", lambda b: self.on_remove_callback(mix_info["id"]))
-            top_box.append(del_btn)
+        # Edit button with popover
+        self.edit_btn = Gtk.MenuButton()
+        self.edit_btn.set_icon_name("emblem-system-symbolic")
+        self.edit_btn.add_css_class("flat")
+        self.edit_btn.add_css_class("wave-icon-btn")
+        self.edit_btn.set_tooltip_text(f"Edit '{mix_info.get('name')}' settings")
+        self._setup_edit_popover(self.edit_btn)
+        btn_box.append(self.edit_btn)
 
+        # Delete mix button
+        self.del_btn = Gtk.Button.new_from_icon_name("user-trash-symbolic")
+        self.del_btn.add_css_class("flat")
+        self.del_btn.add_css_class("wave-icon-btn")
+        self.del_btn.set_tooltip_text(f"Delete '{mix_info.get('name')}'")
+        self.del_btn.connect("clicked", self._on_delete_clicked)
+        btn_box.append(self.del_btn)
+
+        top_box.append(btn_box)
         self.append(top_box)
 
-        # Master Mix Bus Volume Control Row
-        if self.pipewire_mgr:
-            bus_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-            bus_box.set_margin_top(2)
-            bus_box.set_margin_bottom(2)
+        # Master Volume Slider & VU Meter (Controls WaveController_<mix_id>_Sink/Source)
+        fader_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        fader_box.set_margin_top(4)
+        fader_box.set_margin_bottom(2)
 
-            # Master Mute Button
-            is_muted = self.pipewire_mgr.get_mix_master_mute(mix_info["id"])
-            self.mute_btn = Gtk.Button.new_from_icon_name("audio-volume-muted-symbolic" if is_muted else "audio-volume-high-symbolic")
-            self.mute_btn.add_css_class("flat")
-            self.mute_btn.add_css_class("wave-icon-btn")
-            if is_muted:
-                self.mute_btn.add_css_class("muted")
-            self.mute_btn.set_tooltip_text(f"Mute '{mix_info.get('name')}' Master Output")
-            self.mute_btn.connect("clicked", self._on_mute_clicked)
-            bus_box.append(self.mute_btn)
+        vol = self.pipewire_mgr.get_mix_master_volume(mix_info["id"]) if self.pipewire_mgr else 100
+        muted = self.pipewire_mgr.get_mix_master_mute(mix_info["id"]) if self.pipewire_mgr else False
 
-            # Master Volume Slider
-            vol = self.pipewire_mgr.get_mix_master_volume(mix_info["id"])
-            self.slider = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 0, 100, 1)
-            self.slider.set_value(vol)
-            self.slider.set_hexpand(True)
-            self.slider.set_draw_value(False)
-            self.slider.add_css_class("wave-slider")
-            self.slider.set_tooltip_text(f"Mix Master Volume: {vol}%")
-            self.slider.connect("value-changed", self._on_slider_changed)
-            bus_box.append(self.slider)
+        self.mute_btn = Gtk.Button.new_from_icon_name("audio-volume-high-symbolic" if not muted else "audio-volume-muted-symbolic")
+        self.mute_btn.add_css_class("flat")
+        self.mute_btn.add_css_class("wave-icon-btn")
+        self.mute_btn.set_valign(Gtk.Align.CENTER)
+        self.mute_btn.set_tooltip_text(f"Mute {mix_info.get('name')} Bus")
+        if muted:
+            self.mute_btn.add_css_class("muted")
+        self.mute_btn.connect("clicked", self._on_mute_clicked)
+        fader_box.append(self.mute_btn)
 
-            # Volume percentage label
-            self.vol_lbl = Gtk.Label(label=f"{vol}%")
-            self.vol_lbl.add_css_class("mix-header-subtitle")
-            self.vol_lbl.set_size_request(32, -1)
-            bus_box.append(self.vol_lbl)
+        self.scale = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 0, 100, 1)
+        self.scale.set_value(vol)
+        self.scale.set_draw_value(False)
+        self.scale.set_hexpand(True)
+        self.scale.add_css_class("wave-mix-master-fader")
+        self.scale.connect("value-changed", self._on_scale_value_changed)
+        fader_box.append(self.scale)
 
-            self.append(bus_box)
+        self.vol_lbl = Gtk.Label(label=f"{vol}%")
+        self.vol_lbl.add_css_class("mix-header-subtitle")
+        self.vol_lbl.set_size_request(32, -1)
+        self.vol_lbl.set_halign(Gtk.Align.END)
+        fader_box.append(self.vol_lbl)
 
-        # Active underline accent
-        self.indicator = Gtk.Box()
-        self.indicator.add_css_class("mix-header-indicator-active")
+        self.append(fader_box)
+
+        # Mix Accent Color Indicator Line
+        self.color_bar = Gtk.Box()
+        self.color_bar.set_size_request(-1, 3)
+        self.color_bar.add_css_class("mix-color-indicator")
         self._apply_indicator_color(mix_info.get("color", "#9146ff"))
-        self.append(self.indicator)
-
-    def _on_slider_changed(self, scale):
-        vol = int(scale.get_value())
-        self.vol_lbl.set_text(f"{vol}%")
-        self.slider.set_tooltip_text(f"Mix Master Volume: {vol}%")
-        if self.pipewire_mgr:
-            self.pipewire_mgr.set_mix_master_volume(self.mix_info["id"], vol)
+        self.append(self.color_bar)
 
     def _on_mute_clicked(self, btn):
         if self.pipewire_mgr:
-            is_muted = self.pipewire_mgr.toggle_mix_master_mute(self.mix_info["id"])
-            if is_muted:
+            new_mute = self.pipewire_mgr.toggle_mix_master_mute(self.mix_info["id"])
+            if new_mute:
                 self.mute_btn.set_icon_name("audio-volume-muted-symbolic")
                 self.mute_btn.add_css_class("muted")
             else:
                 self.mute_btn.set_icon_name("audio-volume-high-symbolic")
                 self.mute_btn.remove_css_class("muted")
 
-    def _apply_indicator_color(self, color: str):
-        css_provider = Gtk.CssProvider()
-        css_provider.load_from_data(f".indicator-{self.mix_info['id']} {{ background-color: {color}; }}".encode('utf-8'))
-        self.indicator.add_css_class(f"indicator-{self.mix_info['id']}")
-        Gtk.StyleContext.add_provider_for_display(Gtk.Widget.get_display(self), css_provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+    def _on_scale_value_changed(self, scale):
+        vol = int(scale.get_value())
+        self.vol_lbl.set_text(f"{vol}%")
+        if self.pipewire_mgr:
+            self.pipewire_mgr.set_mix_master_volume(self.mix_info["id"], vol)
+
+    def _apply_indicator_color(self, hex_code: str):
+        # We can dynamically apply custom color via CSS provider
+        css = f".mix-color-indicator {{ background-color: {hex_code}; border-radius: 2px; }}"
+        provider = Gtk.CssProvider()
+        provider.load_from_data(css.encode())
+        self.color_bar.get_style_context().add_provider(provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION + 10)
+
+    def _on_delete_clicked(self, b):
+        if self.pipewire_mgr:
+            self.pipewire_mgr.remove_mix(self.mix_info["id"])
+        if self.on_remove_callback:
+            self.on_remove_callback(self.mix_info["id"])
 
     def _setup_edit_popover(self, menu_btn: Gtk.MenuButton):
         popover = Gtk.Popover()
@@ -140,7 +148,7 @@ class MixHeaderCard(Gtk.Box):
         box.set_margin_bottom(12)
         box.set_margin_start(12)
         box.set_margin_end(12)
-        box.set_size_request(250, -1)
+        box.set_size_request(260, -1)
 
         head_lbl = Gtk.Label(label="Edit Mix Settings")
         head_lbl.add_css_class("mix-header-title")
@@ -194,6 +202,39 @@ class MixHeaderCard(Gtk.Box):
         color_combo.set_hexpand(True)
         color_row.append(color_combo)
         box.append(color_row)
+
+        # Physical Output Target Routing (For Sink / Speaker mixes only)
+        target_dev_combo = None
+        target_dev_keys = []
+        if m_type == "sink" or self.mix_info.get("id") == "personal":
+            target_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+            target_lbl = Gtk.Label(label="Target:")
+            target_lbl.add_css_class("mix-header-subtitle")
+            target_lbl.set_size_request(45, -1)
+            target_lbl.set_halign(Gtk.Align.START)
+            target_row.append(target_lbl)
+
+            target_options = [("none", "None (Virtual Only)"), ("default", "Default Output")]
+            if self.hardware_mgr:
+                for dev in self.hardware_mgr.get_tracked_output_devices():
+                    key = dev.get("device_key", dev.get("name", ""))
+                    name = dev.get("display_name", dev.get("name", "Audio Device"))
+                    target_options.append((key, name))
+
+            target_dev_keys = [opt[0] for opt in target_options]
+            target_dev_labels = [opt[1] for opt in target_options]
+
+            target_dev_combo = Gtk.DropDown.new_from_strings(target_dev_labels)
+            curr_target = self.mix_info.get("target_device", "none" if self.mix_info.get("id") != "personal" else "default")
+            sel_target_idx = 0
+            for i, k in enumerate(target_dev_keys):
+                if k == curr_target:
+                    sel_target_idx = i
+                    break
+            target_dev_combo.set_selected(sel_target_idx)
+            target_dev_combo.set_hexpand(True)
+            target_row.append(target_dev_combo)
+            box.append(target_row)
 
         # Minimal Symbolic Icon Palette (Pure Vector Icons, No Text Labels, Zero Emojis)
         AVAILABLE_MIX_ICONS = [
@@ -268,13 +309,19 @@ class MixHeaderCard(Gtk.Box):
             c_idx = color_combo.get_selected()
             new_color = colors_map[c_idx][0] if c_idx < len(colors_map) else "#9146ff"
             new_icon = self.selected_icon
+            new_target = "none"
+            if target_dev_combo and target_dev_keys:
+                idx = target_dev_combo.get_selected()
+                if idx < len(target_dev_keys):
+                    new_target = target_dev_keys[idx]
 
             if new_name:
                 self.mix_info["icon"] = new_icon
                 self.mix_info["name"] = new_name
                 self.mix_info["subtitle"] = new_sub
                 self.mix_info["color"] = new_color
-                self.pipewire_mgr.update_mix(self.mix_info["id"], name=new_name, subtitle=new_sub, color=new_color, icon=new_icon)
+                self.mix_info["target_device"] = new_target
+                self.pipewire_mgr.update_mix(self.mix_info["id"], name=new_name, subtitle=new_sub, color=new_color, icon=new_icon, target_device=new_target)
                 self.title_lbl.set_text(new_name)
                 self.subtitle_lbl.set_text(new_sub)
                 self.icon_img.set_from_icon_name(new_icon)
