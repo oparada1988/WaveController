@@ -105,6 +105,10 @@ class WaveMainWindow(Adw.ApplicationWindow):
             "height": self.get_height(),
             "maximized": self.is_maximized()
         }, immediate=True)
+        close_to_tray = config_manager.get("close_to_tray", True)
+        if close_to_tray:
+            self.set_visible(False)
+            return True  # Prevents default destruction and keeps daemon running
         return False
 
     def _build_sidebar(self) -> Gtk.Box:

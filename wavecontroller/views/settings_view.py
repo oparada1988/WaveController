@@ -49,8 +49,10 @@ class SettingsView(Gtk.Box):
         autostart_row.set_active(True)
         grp_gen.add(autostart_row)
 
+        tray_active = config_manager.get("close_to_tray", True)
         tray_row = Adw.SwitchRow(title="Close to System Tray", subtitle="Keep sub-mixing engine active in background")
-        tray_row.set_active(True)
+        tray_row.set_active(tray_active)
+        tray_row.connect("notify::active", lambda r, p: config_manager.set("close_to_tray", r.get_active(), immediate=True))
         grp_gen.add(tray_row)
 
         pref_page.add(grp_gen)
