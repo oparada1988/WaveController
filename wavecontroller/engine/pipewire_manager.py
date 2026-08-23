@@ -755,6 +755,22 @@ class PipeWireManager:
             self._ensure_virtual_mix_nodes()
             return new_mix
 
+    def update_mix(self, mix_id: str, name: str = None, subtitle: str = None, color: str = None) -> bool:
+        """Updates metadata (name, subtitle, color) of a configured mix and syncs PipeWire node descriptions."""
+        with self._lock:
+            for m in self.mixes:
+                if m["id"] == mix_id:
+                    if name:
+                        m["name"] = name.strip()
+                    if subtitle is not None:
+                        m["subtitle"] = subtitle.strip()
+                    if color:
+                        m["color"] = color
+                    self._save_state_to_config(immediate=True)
+                    self._ensure_virtual_mix_nodes()
+                    return True
+        return False
+
     def remove_mix(self, mix_id: str):
         """Removes a mix and tears down its PipeWire virtual audio device."""
         with self._lock:

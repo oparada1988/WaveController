@@ -23,7 +23,7 @@ class ChannelCard(Gtk.Box):
         
         self.add_css_class("channel-row-card")
         self.set_valign(Gtk.Align.CENTER)
-        self.set_size_request(280, -1)
+        self.set_size_request(340, -1)
 
         # Channel icon (Auto-resolve from assigned apps or channel name)
         assigned = self.pipewire_mgr.get_assigned_apps(channel_info["id"])
@@ -36,7 +36,7 @@ class ChannelCard(Gtk.Box):
         # Channel Title + Subtitle Box
         title_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=1)
         title_box.set_hexpand(False)
-        title_box.set_size_request(100, -1)
+        title_box.set_size_request(130, -1)
 
         display_name = channel_info.get("name", "Channel")
         if channel_info["id"] == "mic" and self.hardware_mgr:

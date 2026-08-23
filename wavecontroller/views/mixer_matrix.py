@@ -93,14 +93,16 @@ class MixerMatrixView(Gtk.Box):
     def _build_grid(self):
         # Top-left empty header cell
         spacer = Gtk.Box()
-        spacer.set_size_request(280, 48)
+        spacer.set_size_request(340, 48)
         self.grid.attach(spacer, 0, 0, 1, 1)
 
         # Mix Column Headers (Row 0, Columns 1..N)
         for col_idx, mix in enumerate(self.pipewire_mgr.mixes, start=1):
             mix_header = MixHeaderCard(
                 mix,
-                on_remove_callback=lambda m_id: (self.pipewire_mgr.remove_mix(m_id), GLib.idle_add(self._rebuild_grid))
+                pipewire_mgr=self.pipewire_mgr,
+                on_remove_callback=lambda m_id: (self.pipewire_mgr.remove_mix(m_id), GLib.idle_add(self._rebuild_grid)),
+                on_edit_callback=lambda m_id: GLib.idle_add(self._rebuild_grid)
             )
             self.grid.attach(mix_header, col_idx, 0, 1, 1)
 
@@ -146,6 +148,7 @@ class MixerMatrixView(Gtk.Box):
         create_btn = Gtk.MenuButton()
         create_btn.set_label("+ Create channel")
         create_btn.add_css_class("create-channel-btn")
+        create_btn.set_size_request(340, -1)
         self._setup_create_channel_popover(create_btn)
         self.grid.attach(create_btn, 0, bottom_row, 1, 1)
 
