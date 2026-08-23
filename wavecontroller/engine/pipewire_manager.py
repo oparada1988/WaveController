@@ -631,9 +631,7 @@ class PipeWireManager:
             return new_mix
 
     def remove_mix(self, mix_id: str):
-        """Removes a custom mix and tears down its PipeWire virtual audio device."""
-        if mix_id == "personal":
-            return # Protect default Personal Mix
+        """Removes a mix and tears down its PipeWire virtual audio device."""
         with self._lock:
             self.mixes = [m for m in self.mixes if m["id"] != mix_id]
             for ch_id in self.channel_states:

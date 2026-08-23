@@ -39,16 +39,22 @@ class MixHeaderCard(Gtk.Box):
 
         top_box.append(title_box)
 
-        # Listen / Monitor indicator icon or Delete button
-        if mix_info.get("id") == "personal":
-            self.listen_icon = Gtk.Image.new_from_icon_name("audio-headset-symbolic")
-            self.listen_icon.set_tooltip_text("Listening on Monitor Output")
-            top_box.append(self.listen_icon)
-        elif self.on_remove_callback:
+        # Mix Type Indicator Icon
+        mix_type = mix_info.get("type", "source" if mix_info.get("id") != "personal" else "sink")
+        if mix_type == "sink":
+            self.type_icon = Gtk.Image.new_from_icon_name("audio-headphones-symbolic")
+            self.type_icon.set_tooltip_text("Sink Mix (Headphone / Speaker Output)")
+        else:
+            self.type_icon = Gtk.Image.new_from_icon_name("audio-input-microphone-symbolic")
+            self.type_icon.set_tooltip_text("Source Mix (Virtual Microphone for OBS / Discord)")
+        top_box.append(self.type_icon)
+
+        # Delete Mix Button
+        if self.on_remove_callback:
             del_btn = Gtk.Button.new_from_icon_name("user-trash-symbolic")
             del_btn.add_css_class("flat")
             del_btn.add_css_class("wave-icon-btn")
-            del_btn.set_tooltip_text("Delete Mix")
+            del_btn.set_tooltip_text(f"Delete '{mix_info.get('name')}'")
             del_btn.connect("clicked", lambda b: self.on_remove_callback(mix_info["id"]))
             top_box.append(del_btn)
 
