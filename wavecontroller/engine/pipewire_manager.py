@@ -31,11 +31,13 @@ class PipeWireManager:
         saved_mixes = config_manager.get("mixes")
         saved_apps = config_manager.get("assigned_apps")
         saved_states = config_manager.get("channel_states")
+        saved_masters = config_manager.get("channel_master_states")
 
         self.channels = list(saved_channels) if saved_channels else list(self.DEFAULT_CHANNELS)
         self.mixes = list(saved_mixes) if saved_mixes else list(self.DEFAULT_MIXES)
         self.assigned_apps = dict(saved_apps) if saved_apps else dict(self.DEFAULT_APP_MAPPINGS)
         self.channel_states = dict(saved_states) if saved_states else {}
+        self.channel_master_states = dict(saved_masters) if saved_masters else {}
         self.output_devices = []
         self.selected_monitor_device = None
         self.running = False
@@ -59,7 +61,8 @@ class PipeWireManager:
                 "channels": self.channels,
                 "mixes": self.mixes,
                 "assigned_apps": self.assigned_apps,
-                "channel_states": self.channel_states
+                "channel_states": self.channel_states,
+                "channel_master_states": self.channel_master_states
             }
             config_manager.update(data, immediate=immediate)
         
@@ -71,6 +74,11 @@ class PipeWireManager:
 
         for ch in self.channels:
             ch_id = ch["id"]
+            if ch_id not in self.channel_master_states:
+                self.channel_master_states[ch_id] = {
+                    "volume": mic_vol if ch_id == "mic" else ch.get("default_vol", 80),
+                    "muted": mic_muted if ch_id == "mic" else False
+                }
             if ch_id not in self.channel_states:
                 self.channel_states[ch_id] = {}
             if ch_id not in self.assigned_apps:
@@ -202,24 +210,19 @@ class PipeWireManager:
             try:
                 changed = False
                 
-                # 1. Sync Microphone (Source) Channel
+                # 1. Sync Microphone (Source) Channel Master
                 curr_mic_vol, curr_mic_muted = self._query_system_source_status()
                 if curr_mic_vol is not None:
                     with self._lock:
-                        if "mic" in self.channel_states and "personal" in self.channel_states["mic"]:
-                            st = self.channel_states["mic"]["personal"]
-                            if abs(st["volume"] - curr_mic_vol) >= 1 or st["muted"] != curr_mic_muted:
-                                diff = curr_mic_vol - st["volume"]
-                                st["volume"] = curr_mic_vol
-                                st["muted"] = curr_mic_muted
-                                if st.get("linked", True):
-                                    for m_id, o_st in self.channel_states["mic"].items():
-                                        if m_id != "personal":
-                                            o_st["volume"] = max(0, min(100, o_st["volume"] + diff))
-                                            o_st["muted"] = curr_mic_muted
-                                changed = True
+                        if "mic" not in self.channel_master_states:
+                            self.channel_master_states["mic"] = {"volume": 80, "muted": False}
+                        st = self.channel_master_states["mic"]
+                        if abs(st["volume"] - curr_mic_vol) >= 1 or st["muted"] != curr_mic_muted:
+                            st["volume"] = curr_mic_vol
+                            st["muted"] = curr_mic_muted
+                            changed = True
 
-                # 2. Sync Application Channels (e.g. Spotify, Games, Discord)
+                # 2. Sync Application Channels (e.g. Spotify, Games, Discord) Master
                 channels_to_check = []
                 with self._lock:
                     for ch in self.channels:
@@ -232,18 +235,13 @@ class PipeWireManager:
                         app_vol, app_muted = self.get_application_volume_status(app_name)
                         if app_vol is not None:
                             with self._lock:
-                                if ch_id in self.channel_states and "personal" in self.channel_states[ch_id]:
-                                    st = self.channel_states[ch_id]["personal"]
-                                    if abs(st["volume"] - app_vol) >= 1 or st["muted"] != app_muted:
-                                        diff = app_vol - st["volume"]
-                                        st["volume"] = app_vol
-                                        st["muted"] = app_muted
-                                        if st.get("linked", True):
-                                            for m_id, o_st in self.channel_states[ch_id].items():
-                                                if m_id != "personal":
-                                                    o_st["volume"] = max(0, min(100, o_st["volume"] + diff))
-                                                    o_st["muted"] = app_muted
-                                        changed = True
+                                if ch_id not in self.channel_master_states:
+                                    self.channel_master_states[ch_id] = {"volume": 80, "muted": False}
+                                st = self.channel_master_states[ch_id]
+                                if abs(st["volume"] - app_vol) >= 1 or st["muted"] != app_muted:
+                                    st["volume"] = app_vol
+                                    st["muted"] = app_muted
+                                    changed = True
                             break
 
                 if changed and self.on_external_change_callback:
@@ -438,7 +436,63 @@ class PipeWireManager:
         with self._lock:
             return list(self.assigned_apps.get(channel_id, []))
 
+    # -------------------------------------------------------------
+    # Channel Master Gain / Stream Volume (1:1 with Volume Controller Plus)
+    # -------------------------------------------------------------
+    def get_channel_master_volume(self, channel_id: str) -> int:
+        with self._lock:
+            st = self.channel_master_states.get(channel_id, {})
+            return st.get("volume", 80)
+
+    def get_channel_master_mute(self, channel_id: str) -> bool:
+        with self._lock:
+            st = self.channel_master_states.get(channel_id, {})
+            return st.get("muted", False)
+
+    def set_channel_master_volume(self, channel_id: str, volume: int):
+        with self._lock:
+            if channel_id not in self.channel_master_states:
+                self.channel_master_states[channel_id] = {"volume": 80, "muted": False}
+            vol = max(0, min(100, volume))
+            self.channel_master_states[channel_id]["volume"] = vol
+            is_muted = self.channel_master_states[channel_id].get("muted", False)
+            
+            # Enqueue physical stream volume dispatch
+            self._volume_queue[channel_id] = (vol, is_muted)
+            self._volume_event.set()
+            self._save_state_to_config(immediate=False)
+
+    def set_channel_master_mute(self, channel_id: str, muted: bool):
+        with self._lock:
+            if channel_id not in self.channel_master_states:
+                self.channel_master_states[channel_id] = {"volume": 80, "muted": False}
+            self.channel_master_states[channel_id]["muted"] = muted
+            vol = self.channel_master_states[channel_id].get("volume", 80)
+
+            # Enqueue physical stream volume dispatch
+            self._volume_queue[channel_id] = (vol, muted)
+            self._volume_event.set()
+            self._save_state_to_config(immediate=False)
+
+    def toggle_channel_master_mute(self, channel_id: str) -> bool:
+        with self._lock:
+            if channel_id not in self.channel_master_states:
+                self.channel_master_states[channel_id] = {"volume": 80, "muted": False}
+            curr = self.channel_master_states[channel_id].get("muted", False)
+            new_mute = not curr
+            self.channel_master_states[channel_id]["muted"] = new_mute
+            vol = self.channel_master_states[channel_id].get("volume", 80)
+
+            self._volume_queue[channel_id] = (vol, new_mute)
+            self._volume_event.set()
+            self._save_state_to_config(immediate=False)
+            return new_mute
+
+    # -------------------------------------------------------------
+    # Sub-Mix Send Levels (Virtual Mix Bus Faders in Matrix Grid)
+    # -------------------------------------------------------------
     def set_channel_volume(self, channel_id: str, mix_id: str, volume: int):
+        """Sets the sub-mix send level into a specific virtual mix bus."""
         with self._lock:
             if channel_id in self.channel_states and mix_id in self.channel_states[channel_id]:
                 state = self.channel_states[channel_id][mix_id]
@@ -450,30 +504,26 @@ class PipeWireManager:
                         if other_mix_id != mix_id:
                             other_state["volume"] = max(0, min(100, other_state["volume"] + diff))
 
-                # Enqueue debounced volume update
-                self._volume_queue[channel_id] = (state["volume"], state.get("muted", False))
-                self._volume_event.set()
                 self._save_state_to_config(immediate=False)
+        self._sync_channel_audio_routing(channel_id, mix_id)
 
     def set_channel_mute(self, channel_id: str, mix_id: str, muted: bool):
+        """Mutes or unmutes a channel within a specific virtual mix bus."""
         with self._lock:
             if channel_id in self.channel_states and mix_id in self.channel_states[channel_id]:
                 self.channel_states[channel_id][mix_id]["muted"] = muted
-                state = self.channel_states[channel_id][mix_id]
-                self._volume_queue[channel_id] = (state["volume"], muted)
-                self._volume_event.set()
                 self._save_state_to_config(immediate=False)
+        self._sync_channel_audio_routing(channel_id, mix_id)
 
     def toggle_channel_mute(self, channel_id: str, mix_id: str) -> bool:
+        """Toggles mute state within a specific virtual mix bus."""
         with self._lock:
             if channel_id in self.channel_states and mix_id in self.channel_states[channel_id]:
                 curr = self.channel_states[channel_id][mix_id]["muted"]
                 new_mute = not curr
                 self.channel_states[channel_id][mix_id]["muted"] = new_mute
-                state = self.channel_states[channel_id][mix_id]
-                self._volume_queue[channel_id] = (state["volume"], new_mute)
-                self._volume_event.set()
                 self._save_state_to_config(immediate=False)
+                self._sync_channel_audio_routing(channel_id, mix_id)
                 return new_mute
         return False
 
