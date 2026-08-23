@@ -276,6 +276,24 @@ class USBHardwareManager:
             result.append(dev)
         return result
 
+    def get_tracked_output_devices(self) -> list:
+        """Returns only user-configured/tracked devices that have output capability."""
+        tracked = self.get_tracked_devices()
+        outputs = []
+        for dev in tracked:
+            if dev.get("type") in ["duplex", "output"] or dev.get("sinks") or dev.get("primary_sink_id"):
+                outputs.append(dev)
+        return outputs
+
+    def get_tracked_input_devices(self) -> list:
+        """Returns only user-configured/tracked devices that have input capability."""
+        tracked = self.get_tracked_devices()
+        inputs = []
+        for dev in tracked:
+            if dev.get("type") in ["duplex", "input"] or dev.get("sources") or dev.get("primary_source_id"):
+                inputs.append(dev)
+        return inputs
+
     def get_available_untracked_devices(self) -> list:
         """Returns discovered hardware devices that are not currently tracked."""
         self.detect_connected_hardware()

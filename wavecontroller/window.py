@@ -307,6 +307,9 @@ class WaveMainWindow(Adw.ApplicationWindow):
             if curr_visible and curr_visible.startswith("device_") and curr_visible not in self.device_buttons:
                 self._switch_view("mixes", self.mixes_btn)
 
+        if hasattr(self, "mixer_view") and self.mixer_view:
+            self.mixer_view.refresh_device_names()
+
     def _show_device_context_menu(self, widget, device_key: str):
         pop = Gtk.Popover()
         pop.set_parent(widget)

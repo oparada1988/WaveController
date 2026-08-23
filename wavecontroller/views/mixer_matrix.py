@@ -27,7 +27,7 @@ class MixerMatrixView(Gtk.Box):
         self.set_margin_start(20)
         self.set_margin_end(20)
 
-        # 1. Header Bar: Title + Output Device Selector
+        # 1. Header Bar: Title + Output Device Selector (Configured/Tracked Devices Only)
         header_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
         
         title_lbl = Gtk.Label(label="Mixes")
@@ -36,12 +36,13 @@ class MixerMatrixView(Gtk.Box):
 
         header_box.append(Gtk.Box(hexpand=True)) # Spacer
 
-        # Output Target Selector Dropdown
+        # Output Target Selector Dropdown (Configured Devices Only)
         out_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        out_names = [self.hardware_mgr.get_device_display_name(d) for d in self.hardware_mgr.output_devices] or ["Default Output"]
+        self.output_devices_list = self.hardware_mgr.get_tracked_output_devices() if self.hardware_mgr else []
+        out_names = [d.get("display_name", d.get("name", "Output")) for d in self.output_devices_list] or ["No Configured Output"]
         self.out_dropdown = Gtk.DropDown.new_from_strings(out_names)
         self.out_dropdown.add_css_class("wave-output-dropdown")
-        for idx, d in enumerate(self.hardware_mgr.output_devices):
+        for idx, d in enumerate(self.output_devices_list):
             if d.get("is_default"):
                 self.out_dropdown.set_selected(idx)
                 break
@@ -63,8 +64,7 @@ class MixerMatrixView(Gtk.Box):
         test_sound_btn.set_tooltip_text("Test Output (Play Chime)")
         
         def on_header_chime_clicked(b):
-            idx = self.output_dropdown.get_selected()
-            sink_id = self.output_dropdown_sinks[idx]["id"] if idx < len(self.output_dropdown_sinks) else None
+            sink_id = self._get_selected_output_sink_id()
             self.hardware_mgr.test_output_chime(sink_id)
 
         test_sound_btn.connect("clicked", on_header_chime_clicked)
@@ -677,17 +677,19 @@ class MixerMatrixView(Gtk.Box):
 
     def _on_output_dropdown_changed(self, dropdown, *args):
         idx = dropdown.get_selected()
-        if idx < len(self.hardware_mgr.output_devices):
-            dev = self.hardware_mgr.output_devices[idx]
-            self.hardware_mgr.set_active_output_device(dev["id"])
-            sink_id = dev["id"]
-            is_muted = self.hardware_mgr.get_output_mute(sink_id)
-            self._update_out_mute_btn(is_muted)
+        if idx < len(self.output_devices_list):
+            dev = self.output_devices_list[idx]
+            sink_id = dev.get("primary_sink_id") or (dev.get("sinks", [{}])[0].get("id") if dev.get("sinks") else None) or dev.get("id")
+            if sink_id:
+                self.hardware_mgr.set_active_output_device(sink_id)
+                is_muted = self.hardware_mgr.get_output_mute(sink_id)
+                self._update_out_mute_btn(is_muted)
 
     def _get_selected_output_sink_id(self):
         idx = self.out_dropdown.get_selected()
-        if idx < len(self.hardware_mgr.output_devices):
-            return self.hardware_mgr.output_devices[idx]["id"]
+        if idx < len(self.output_devices_list):
+            dev = self.output_devices_list[idx]
+            return dev.get("primary_sink_id") or (dev.get("sinks", [{}])[0].get("id") if dev.get("sinks") else None) or dev.get("id")
         return None
 
     def _on_output_mute_clicked(self, btn):
@@ -706,11 +708,14 @@ class MixerMatrixView(Gtk.Box):
             self.out_mute_btn.set_tooltip_text("Mute Output")
 
     def refresh_device_names(self):
-        out_names = [self.hardware_mgr.get_device_display_name(d) for d in self.hardware_mgr.output_devices] or ["Default Output"]
+        self.output_devices_list = self.hardware_mgr.get_tracked_output_devices() if self.hardware_mgr else []
+        out_names = [d.get("display_name", d.get("name", "Output")) for d in self.output_devices_list] or ["No Configured Output"]
         curr_selected = self.out_dropdown.get_selected()
         self.out_dropdown.set_model(Gtk.StringList.new(out_names))
         if curr_selected < len(out_names):
             self.out_dropdown.set_selected(curr_selected)
+        elif len(out_names) > 0:
+            self.out_dropdown.set_selected(0)
 
         for ch_id, card in self.channel_cards.items():
             if hasattr(card, "refresh_name"):
