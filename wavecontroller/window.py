@@ -5,7 +5,7 @@ gi.require_version("Adw", "1")
 from gi.repository import Gtk, Adw, Gdk, Pango, GLib
 
 from .views.mixer_matrix import MixerMatrixView
-from .views.device_settings import InputDeviceSettingsView, OutputDeviceSettingsView
+from .views.device_settings import UnifiedDeviceSettingsView, AddDeviceDialog
 from .views.effects_view import EffectsView
 from .views.settings_view import SettingsView
 from .engine.config_manager import config_manager
@@ -13,13 +13,16 @@ from .engine.config_manager import config_manager
 class WaveMainWindow(Adw.ApplicationWindow):
     """
     Main WaveController Desktop Window with unified Adw.HeaderBar, compact sidebar,
-    separated Input/Output device settings, and multi-mix matrix sub-mixing layout.
+    user-curated Audio Devices Hub (Duplex/Input/Output), and multi-mix matrix sub-mixing layout.
     """
     def __init__(self, app, pipewire_mgr, peak_monitor, hardware_mgr, **kwargs):
         super().__init__(application=app, title="WaveController", **kwargs)
         self.pipewire_mgr = pipewire_mgr
         self.peak_monitor = peak_monitor
         self.hardware_mgr = hardware_mgr
+
+        self.device_views = {}
+        self.device_buttons = {}
 
         # Restore saved window size & maximized state
         win_state = config_manager.get("window_state", {"width": 1280, "height": 780, "maximized": False})
@@ -69,12 +72,6 @@ class WaveMainWindow(Adw.ApplicationWindow):
         self.mixer_view = MixerMatrixView(self.pipewire_mgr, self.peak_monitor, self.hardware_mgr)
         self.stack.add_named(self.mixer_view, "mixes")
 
-        self.input_view = InputDeviceSettingsView(self.hardware_mgr, self.peak_monitor, on_device_renamed=self._refresh_sidebar_devices)
-        self.stack.add_named(self.input_view, "input_settings")
-
-        self.output_view = OutputDeviceSettingsView(self.hardware_mgr, on_device_renamed=self._refresh_sidebar_devices)
-        self.stack.add_named(self.output_view, "output_settings")
-
         self.effects_view = EffectsView()
         self.stack.add_named(self.effects_view, "effects")
 
@@ -86,7 +83,11 @@ class WaveMainWindow(Adw.ApplicationWindow):
         toolbar_view.set_content(main_box)
         self.set_content(toolbar_view)
 
-        self.hardware_mgr.on_device_renamed_callback = lambda *a: GLib.idle_add(self._refresh_sidebar_devices)
+        # Populate dynamic device views and sidebar list
+        self._rebuild_device_views()
+
+        self.hardware_mgr.on_device_renamed_callback = lambda *a: GLib.idle_add(self._refresh_sidebar_device_names)
+        self.hardware_mgr.on_devices_changed_callback = lambda *a: GLib.idle_add(self._rebuild_device_views)
 
     def _on_close_request(self, win):
         config_manager.set("window_state", {
@@ -99,44 +100,52 @@ class WaveMainWindow(Adw.ApplicationWindow):
     def _build_sidebar(self) -> Gtk.Box:
         sidebar = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
         sidebar.add_css_class("wave-sidebar")
-        sidebar.set_size_request(200, -1)
+        sidebar.set_size_request(210, -1)
         sidebar.set_hexpand(False)
 
-        # Section 1: Audio Hardware Devices
+        # Section 1: Audio Hardware Devices Header with [+] button
+        sec1_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        sec1_box.set_margin_start(16)
+        sec1_box.set_margin_end(12)
+        sec1_box.set_margin_top(14)
+        sec1_box.set_margin_bottom(6)
+
         sec1_lbl = Gtk.Label(label="Audio Devices")
         sec1_lbl.add_css_class("wave-sidebar-section-title")
+        sec1_lbl.set_margin_start(0)
+        sec1_lbl.set_margin_end(0)
+        sec1_lbl.set_margin_top(0)
+        sec1_lbl.set_margin_bottom(0)
         sec1_lbl.set_halign(Gtk.Align.START)
-        sidebar.append(sec1_lbl)
+        sec1_lbl.set_hexpand(True)
+        sec1_box.append(sec1_lbl)
 
-        # 1. Audio Inputs Button
-        self.inputs_btn = Gtk.Button()
-        self.inputs_btn.add_css_class("flat")
-        self.inputs_btn.add_css_class("wave-sidebar-row")
-        in_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        in_icon = Gtk.Image.new_from_icon_name("audio-input-microphone-symbolic")
-        in_lbl = Gtk.Label(label="Audio Inputs")
-        in_lbl.set_halign(Gtk.Align.START)
-        in_lbl.set_hexpand(True)
-        in_box.append(in_icon)
-        in_box.append(in_lbl)
-        self.inputs_btn.set_child(in_box)
-        self.inputs_btn.connect("clicked", lambda b: self._switch_view("input_settings", self.inputs_btn))
-        sidebar.append(self.inputs_btn)
+        add_header_btn = Gtk.Button.new_from_icon_name("list-add-symbolic")
+        add_header_btn.add_css_class("flat")
+        add_header_btn.add_css_class("wave-icon-btn")
+        add_header_btn.set_tooltip_text("Add Audio Device")
+        add_header_btn.connect("clicked", lambda b: self._open_add_device_dialog())
+        sec1_box.append(add_header_btn)
+        sidebar.append(sec1_box)
 
-        # 2. Audio Outputs Button
-        self.outputs_btn = Gtk.Button()
-        self.outputs_btn.add_css_class("flat")
-        self.outputs_btn.add_css_class("wave-sidebar-row")
-        out_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        out_icon = Gtk.Image.new_from_icon_name("audio-headphones-symbolic")
-        out_lbl = Gtk.Label(label="Audio Outputs")
-        out_lbl.set_halign(Gtk.Align.START)
-        out_lbl.set_hexpand(True)
-        out_box.append(out_icon)
-        out_box.append(out_lbl)
-        self.outputs_btn.set_child(out_box)
-        self.outputs_btn.connect("clicked", lambda b: self._switch_view("output_settings", self.outputs_btn))
-        sidebar.append(self.outputs_btn)
+        # Container for tracked device list rows
+        self.device_list_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        sidebar.append(self.device_list_box)
+
+        # Add Audio Device Row Button
+        self.add_device_row_btn = Gtk.Button()
+        self.add_device_row_btn.add_css_class("flat")
+        self.add_device_row_btn.add_css_class("wave-sidebar-row")
+        add_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        add_icon = Gtk.Image.new_from_icon_name("list-add-symbolic")
+        add_lbl = Gtk.Label(label="Add Audio Device...")
+        add_lbl.set_halign(Gtk.Align.START)
+        add_lbl.set_hexpand(True)
+        add_box.append(add_icon)
+        add_box.append(add_lbl)
+        self.add_device_row_btn.set_child(add_box)
+        self.add_device_row_btn.connect("clicked", lambda b: self._open_add_device_dialog())
+        sidebar.append(self.add_device_row_btn)
 
         # Section 2: Mixes & Effects
         sec2_lbl = Gtk.Label(label="Mixes & Effects")
@@ -196,22 +205,114 @@ class WaveMainWindow(Adw.ApplicationWindow):
         sidebar.set_margin_bottom(12)
         return sidebar
 
+    def _rebuild_device_views(self, select_device_key: str = None):
+        """Rebuilds the sidebar device buttons and views stack for all tracked devices."""
+        # Clear previous dynamic buttons
+        while True:
+            child = self.device_list_box.get_first_child()
+            if not child:
+                break
+            self.device_list_box.remove(child)
+
+        self.device_buttons.clear()
+
+        # Remove old device views from stack
+        for view_name in list(self.device_views.keys()):
+            view = self.device_views.pop(view_name)
+            if self.stack.get_child_by_name(view_name):
+                self.stack.remove(view)
+
+        tracked_devices = self.hardware_mgr.get_tracked_devices()
+
+        for dev in tracked_devices:
+            key = dev["device_key"]
+            view_name = f"device_{key}"
+
+            view = UnifiedDeviceSettingsView(
+                device_info=dev,
+                hardware_mgr=self.hardware_mgr,
+                peak_monitor=self.peak_monitor,
+                pipewire_mgr=self.pipewire_mgr,
+                on_device_renamed=self._refresh_sidebar_device_names,
+                on_device_removed=self._on_device_removed
+            )
+            self.device_views[view_name] = view
+            self.stack.add_named(view, view_name)
+
+            # Create Sidebar Row Button
+            btn = Gtk.Button()
+            btn.add_css_class("flat")
+            btn.add_css_class("wave-sidebar-row")
+
+            row_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+
+            icon_name = dev.get("icon", "audio-headset-symbolic")
+            icon_img = Gtk.Image.new_from_icon_name(icon_name)
+            row_box.append(icon_img)
+
+            lbl = Gtk.Label(label=dev.get("display_name", dev.get("name", "Device")))
+            lbl.set_halign(Gtk.Align.START)
+            lbl.set_hexpand(True)
+            lbl.set_ellipsize(Pango.EllipsizeMode.END)
+            row_box.append(lbl)
+
+            badge_text = dev.get("badge", "In/Out")
+            badge_lbl = Gtk.Label(label=badge_text)
+            badge_lbl.add_css_class("device-badge")
+            
+            dtype = dev.get("type", "duplex")
+            if not dev.get("connected", True):
+                badge_lbl.add_css_class("offline")
+            elif dtype == "duplex":
+                badge_lbl.add_css_class("duplex")
+            elif dtype == "input":
+                badge_lbl.add_css_class("input")
+            elif dtype == "output":
+                badge_lbl.add_css_class("output")
+            row_box.append(badge_lbl)
+
+            btn.set_child(row_box)
+            btn.connect("clicked", lambda b, vn=view_name, bt=btn: self._switch_view(vn, bt))
+
+            self.device_list_box.append(btn)
+            self.device_buttons[view_name] = btn
+
+        # Handle View Selection
+        if select_device_key:
+            target_view_name = f"device_{select_device_key}"
+            if target_view_name in self.device_buttons:
+                self._switch_view(target_view_name, self.device_buttons[target_view_name])
+        else:
+            curr_visible = self.stack.get_visible_child_name()
+            if curr_visible and curr_visible.startswith("device_") and curr_visible not in self.device_buttons:
+                self._switch_view("mixes", self.mixes_btn)
+
+    def _open_add_device_dialog(self):
+        dialog = AddDeviceDialog(self.hardware_mgr, on_device_added_callback=self._on_device_added)
+        dialog.present(self)
+
+    def _on_device_added(self, device_key: str):
+        self._rebuild_device_views(select_device_key=device_key)
+
+    def _on_device_removed(self, device_key: str):
+        self._rebuild_device_views()
+        self._switch_view("mixes", self.mixes_btn)
+
     def _switch_view(self, name: str, active_btn=None):
-        self.stack.set_visible_child_name(name)
+        if self.stack.get_child_by_name(name):
+            self.stack.set_visible_child_name(name)
         
         # Clear selected styling from all buttons
-        self.inputs_btn.remove_css_class("selected")
-        self.outputs_btn.remove_css_class("selected")
+        for btn in self.device_buttons.values():
+            btn.remove_css_class("selected")
         self.mixes_btn.remove_css_class("selected")
         self.fx_btn.remove_css_class("selected")
         self.settings_btn.remove_css_class("selected")
 
         if active_btn:
             active_btn.add_css_class("selected")
-        elif name == "input_settings":
-            self.inputs_btn.add_css_class("selected")
-        elif name == "output_settings":
-            self.outputs_btn.add_css_class("selected")
+        elif name in self.device_buttons:
+            self.device_buttons[name].add_css_class("selected")
         elif name == "mixes":
             self.mixes_btn.add_css_class("selected")
         elif name == "effects":
@@ -219,12 +320,11 @@ class WaveMainWindow(Adw.ApplicationWindow):
         elif name == "settings":
             self.settings_btn.add_css_class("selected")
 
-    def _refresh_sidebar_devices(self):
-        if hasattr(self, "input_view") and self.input_view:
-            self.input_view.refresh_device_names()
-        if hasattr(self, "output_view") and self.output_view:
-            self.output_view.refresh_device_names()
+    def _refresh_sidebar_device_names(self):
+        for view in self.device_views.values():
+            view.refresh_device_names()
         if hasattr(self, "mixer_view") and self.mixer_view:
             self.mixer_view.refresh_device_names()
+        self._rebuild_device_views()
 
 

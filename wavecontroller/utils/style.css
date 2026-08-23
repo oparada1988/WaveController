@@ -273,3 +273,33 @@ popover.wave-popover entry {
 popover.wave-popover entry:focus {
     border-color: @accent_color;
 }
+
+/* Device Capability Badges */
+.device-badge {
+    font-size: 10px;
+    font-weight: 700;
+    padding: 1px 6px;
+    border-radius: 4px;
+    background-color: alpha(@window_fg_color, 0.12);
+    color: alpha(@window_fg_color, 0.75);
+}
+
+.device-badge.duplex {
+    background-color: alpha(#9146ff, 0.22);
+    color: #c084fc;
+}
+
+.device-badge.input {
+    background-color: alpha(#3db356, 0.22);
+    color: #4ade80;
+}
+
+.device-badge.output {
+    background-color: alpha(#3584e4, 0.22);
+    color: #60a5fa;
+}
+
+.device-badge.offline {
+    background-color: alpha(@warning_color, 0.22);
+    color: @warning_color;
+}
