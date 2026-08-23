@@ -28,7 +28,7 @@ class DeviceSettingsView(Gtk.Box):
         pref_page = Adw.PreferencesPage()
 
         # Group 1: Device Assignment & Diagnostics
-        grp_assign = Adw.PreferencesGroup(title="Active Audio Device Assignment & Custom Names")
+        grp_assign = Adw.PreferencesGroup(title="Active Audio Device Assignment &amp; Custom Names")
 
         # Input Device Selector
         self.input_row = Adw.ComboRow(title="Active Microphone / Audio Input", subtitle="Select hardware input for WaveController")
@@ -188,7 +188,7 @@ class DeviceSettingsView(Gtk.Box):
             alias = self.hardware_mgr.get_device_display_name(dev)
             real_name = dev.get("name", "")
             self.input_name_row.set_text(alias if alias != real_name else "")
-            self.input_name_row.set_placeholder_text(real_name or "Enter custom nickname...")
+            self.input_name_row.set_tooltip_text(f"Hardware device: {real_name}")
 
     def _refresh_output_nickname(self):
         dev = self._get_selected_output_device()
@@ -196,7 +196,7 @@ class DeviceSettingsView(Gtk.Box):
             alias = self.hardware_mgr.get_device_display_name(dev)
             real_name = dev.get("name", "")
             self.output_name_row.set_text(alias if alias != real_name else "")
-            self.output_name_row.set_placeholder_text(real_name or "Enter custom nickname...")
+            self.output_name_row.set_tooltip_text(f"Hardware device: {real_name}")
 
     def _on_input_nickname_applied(self, row, *args):
         dev = self._get_selected_input_device()
