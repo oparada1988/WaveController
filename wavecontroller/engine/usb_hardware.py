@@ -2,10 +2,13 @@ import subprocess
 import threading
 import time
 
+from .config_manager import config_manager
+
 class USBHardwareManager:
     """
     Hardware integration layer strictly managing Audio Input & Output devices.
     Filters out webcams, stream decks, video capture, and non-audio USB peripherals.
+    Supports persistent custom nicknames and output device mute controls.
     """
 
     def __init__(self):
@@ -15,18 +18,50 @@ class USBHardwareManager:
         self.output_devices = [] # [{"id": "...", "name": "...", "is_default": bool}]
         self.connected_audio_devices = [] # Sidebar list
         
-        self.hardware_gain_db = 45 # 0 to 75 dB
-        self.phantom_power_48v = False
-        self.clipguard_enabled = True
-        self.low_cut_filter = "80Hz" # 'Off', '80Hz', '120Hz'
+        # Load saved hardware settings from ConfigManager
+        hw_settings = config_manager.get("hardware_settings", {})
+        self.hardware_gain_db = hw_settings.get("gain_db", 45)
+        self.phantom_power_48v = hw_settings.get("phantom_power", False)
+        self.clipguard_enabled = hw_settings.get("clipguard", True)
+        self.low_cut_filter = hw_settings.get("low_cut", "80Hz")
         self.hardware_mute = False
         self.headphone_volume = 70
         self.mic_pc_crossfade = 50
         
         self.is_monitoring_mic = False
         self._loopback_proc = None
+        self.on_device_renamed_callback = None
 
         self.detect_connected_hardware()
+
+    def get_device_display_name(self, dev_info_or_name) -> str:
+        """Returns the custom nickname for a device if configured, else the original name."""
+        if isinstance(dev_info_or_name, dict):
+            name = dev_info_or_name.get("name", "")
+            dev_id = str(dev_info_or_name.get("id", ""))
+        else:
+            name = str(dev_info_or_name)
+            dev_id = ""
+
+        aliases = config_manager.get("device_aliases", {})
+        if dev_id and dev_id in aliases:
+            return aliases[dev_id]
+        if name in aliases:
+            return aliases[name]
+        return name
+
+    def set_device_custom_name(self, dev_name_or_id: str, custom_name: str):
+        """Sets a persistent custom nickname for an audio device."""
+        aliases = dict(config_manager.get("device_aliases", {}))
+        custom_name = custom_name.strip()
+        if custom_name:
+            aliases[dev_name_or_id] = custom_name
+        else:
+            aliases.pop(dev_name_or_id, None)
+        config_manager.set("device_aliases", aliases, immediate=True)
+
+        if self.on_device_renamed_callback:
+            self.on_device_renamed_callback(dev_name_or_id, custom_name)
 
     def detect_connected_hardware(self):
         """Discovers valid audio input and output devices using PipeWire wpctl."""
@@ -105,6 +140,33 @@ class USBHardwareManager:
                 self.device_type = "elgato" if "wave" in d["name"].lower() else "generic"
                 break
 
+    def get_output_mute(self, device_id: str = None) -> bool:
+        """Returns True if the specified or default output device is muted."""
+        target = str(device_id) if device_id else "@DEFAULT_AUDIO_SINK@"
+        try:
+            out = subprocess.check_output(["wpctl", "get-volume", target], text=True, stderr=subprocess.DEVNULL).strip()
+            return "[MUTED]" in out
+        except Exception:
+            return False
+
+    def toggle_output_mute(self, device_id: str = None) -> bool:
+        """Toggles mute on the specified or default output device."""
+        target = str(device_id) if device_id else "@DEFAULT_AUDIO_SINK@"
+        try:
+            subprocess.run(["wpctl", "set-mute", target, "toggle"], stderr=subprocess.DEVNULL)
+            return self.get_output_mute(device_id)
+        except Exception:
+            return False
+
+    def set_output_mute(self, device_id: str = None, muted: bool = True) -> bool:
+        """Sets mute on the specified or default output device."""
+        target = str(device_id) if device_id else "@DEFAULT_AUDIO_SINK@"
+        try:
+            subprocess.run(["wpctl", "set-mute", target, "1" if muted else "0"], stderr=subprocess.DEVNULL)
+            return muted
+        except Exception:
+            return False
+
     def set_active_input_device(self, device_id: str):
         """Sets the selected audio input device as default in PipeWire."""
         try:
@@ -116,6 +178,10 @@ class USBHardwareManager:
                     d["is_default"] = True
                 else:
                     d["is_default"] = False
+            
+            hw = dict(config_manager.get("hardware_settings", {}))
+            hw["selected_input_id"] = str(device_id)
+            config_manager.set("hardware_settings", hw)
         except Exception:
             pass
 
@@ -125,6 +191,10 @@ class USBHardwareManager:
             subprocess.run(["wpctl", "set-default", str(device_id)], stderr=subprocess.DEVNULL)
             for d in self.output_devices:
                 d["is_default"] = (d["id"] == device_id)
+
+            hw = dict(config_manager.get("hardware_settings", {}))
+            hw["selected_output_id"] = str(device_id)
+            config_manager.set("hardware_settings", hw)
         except Exception:
             pass
 
@@ -169,6 +239,10 @@ class USBHardwareManager:
 
     def set_gain(self, gain_db: int):
         self.hardware_gain_db = max(0, min(75, gain_db))
+        hw = dict(config_manager.get("hardware_settings", {}))
+        hw["gain_db"] = self.hardware_gain_db
+        config_manager.set("hardware_settings", hw)
+
         if self.device_type == "elgato":
             self._send_elgato_control(cmd=0x01, val=self.hardware_gain_db)
         else:
@@ -181,17 +255,26 @@ class USBHardwareManager:
     def toggle_phantom_power(self) -> bool:
         if self.device_type == "elgato":
             self.phantom_power_48v = not self.phantom_power_48v
+            hw = dict(config_manager.get("hardware_settings", {}))
+            hw["phantom_power"] = self.phantom_power_48v
+            config_manager.set("hardware_settings", hw)
             self._send_elgato_control(cmd=0x02, val=1 if self.phantom_power_48v else 0)
         return self.phantom_power_48v
 
     def set_low_cut(self, mode: str):
         self.low_cut_filter = mode
+        hw = dict(config_manager.get("hardware_settings", {}))
+        hw["low_cut"] = mode
+        config_manager.set("hardware_settings", hw)
         if self.device_type == "elgato":
             val = 0 if mode == "Off" else (1 if mode == "80Hz" else 2)
             self._send_elgato_control(cmd=0x03, val=val)
 
     def toggle_clipguard(self) -> bool:
         self.clipguard_enabled = not self.clipguard_enabled
+        hw = dict(config_manager.get("hardware_settings", {}))
+        hw["clipguard"] = self.clipguard_enabled
+        config_manager.set("hardware_settings", hw)
         if self.device_type == "elgato":
             self._send_elgato_control(cmd=0x04, val=1 if self.clipguard_enabled else 0)
         return self.clipguard_enabled

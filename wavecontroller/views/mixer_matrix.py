@@ -38,7 +38,7 @@ class MixerMatrixView(Gtk.Box):
 
         # Output Target Selector Dropdown
         out_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        out_names = [d["name"] for d in self.hardware_mgr.output_devices] or ["Default Output"]
+        out_names = [self.hardware_mgr.get_device_display_name(d) for d in self.hardware_mgr.output_devices] or ["Default Output"]
         self.out_dropdown = Gtk.DropDown.new_from_strings(out_names)
         self.out_dropdown.add_css_class("wave-output-dropdown")
         for idx, d in enumerate(self.hardware_mgr.output_devices):
@@ -48,18 +48,21 @@ class MixerMatrixView(Gtk.Box):
         self.out_dropdown.connect("notify::selected", self._on_output_dropdown_changed)
         out_box.append(self.out_dropdown)
 
-        test_btn = Gtk.Button.new_from_icon_name("audio-volume-high-symbolic")
-        test_btn.add_css_class("flat")
-        test_btn.add_css_class("wave-icon-btn")
-        test_btn.set_tooltip_text("Test Output (Play Chime)")
-        test_btn.connect("clicked", lambda b: self.hardware_mgr.test_output_chime())
-        out_box.append(test_btn)
+        # Output Mute Toggle Button
+        self.out_mute_btn = Gtk.Button.new_from_icon_name("audio-volume-high-symbolic")
+        self.out_mute_btn.add_css_class("flat")
+        self.out_mute_btn.add_css_class("wave-icon-btn")
+        self.out_mute_btn.set_tooltip_text("Mute Output")
+        self.out_mute_btn.connect("clicked", self._on_output_mute_clicked)
+        out_box.append(self.out_mute_btn)
 
-        popout_btn = Gtk.Button.new_from_icon_name("external-link-symbolic")
-        popout_btn.add_css_class("flat")
-        popout_btn.add_css_class("wave-icon-btn")
-        popout_btn.set_tooltip_text("Routing & Patchbay")
-        out_box.append(popout_btn)
+        # Output Test Chime Button
+        test_sound_btn = Gtk.Button.new_from_icon_name("media-playback-start-symbolic")
+        test_sound_btn.add_css_class("flat")
+        test_sound_btn.add_css_class("wave-icon-btn")
+        test_sound_btn.set_tooltip_text("Test Output (Play Chime)")
+        test_sound_btn.connect("clicked", lambda b: self.hardware_mgr.test_output_chime())
+        out_box.append(test_sound_btn)
 
         header_box.append(out_box)
         self.append(header_box)
@@ -492,15 +495,56 @@ class MixerMatrixView(Gtk.Box):
         if idx < len(self.hardware_mgr.output_devices):
             dev = self.hardware_mgr.output_devices[idx]
             self.hardware_mgr.set_active_output_device(dev["id"])
+            sink_id = dev["id"]
+            is_muted = self.hardware_mgr.get_output_mute(sink_id)
+            self._update_out_mute_btn(is_muted)
+
+    def _get_selected_output_sink_id(self):
+        idx = self.out_dropdown.get_selected()
+        if idx < len(self.hardware_mgr.output_devices):
+            return self.hardware_mgr.output_devices[idx]["id"]
+        return None
+
+    def _on_output_mute_clicked(self, btn):
+        sink_id = self._get_selected_output_sink_id()
+        is_muted = self.hardware_mgr.toggle_output_mute(sink_id)
+        self._update_out_mute_btn(is_muted)
+
+    def _update_out_mute_btn(self, is_muted: bool):
+        if is_muted:
+            self.out_mute_btn.set_icon_name("audio-volume-muted-symbolic")
+            self.out_mute_btn.add_css_class("muted")
+            self.out_mute_btn.set_tooltip_text("Unmute Output")
+        else:
+            self.out_mute_btn.set_icon_name("audio-volume-high-symbolic")
+            self.out_mute_btn.remove_css_class("muted")
+            self.out_mute_btn.set_tooltip_text("Mute Output")
+
+    def refresh_device_names(self):
+        out_names = [self.hardware_mgr.get_device_display_name(d) for d in self.hardware_mgr.output_devices] or ["Default Output"]
+        curr_selected = self.out_dropdown.get_selected()
+        self.out_dropdown.set_model(Gtk.StringList.new(out_names))
+        if curr_selected < len(out_names):
+            self.out_dropdown.set_selected(curr_selected)
+
+        for ch_id, card in self.channel_cards.items():
+            if hasattr(card, "refresh_name"):
+                card.refresh_name()
 
     def _on_ui_tick(self) -> bool:
-        # Push real-time stereo peaks to channel cards (left column)
+        # 1. Sync Output Mute Icon
+        sink_id = self._get_selected_output_sink_id()
+        is_muted = self.hardware_mgr.get_output_mute(sink_id)
+        self._update_out_mute_btn(is_muted)
+
+        # 2. Push real-time stereo peaks to channel cards (left column)
         for ch_id, card in self.channel_cards.items():
             peak_l, peak_r = self.peak_monitor.get_channel_stereo_peaks(ch_id)
             card.update_peaks(peak_l, peak_r)
 
-        # Push real-time stereo peaks to each sub-mix cell
+        # 3. Push real-time stereo peaks to each sub-mix cell
         for (channel_id, mix_id), cell in self.matrix_cells.items():
             peak_l, peak_r = self.peak_monitor.get_channel_stereo_peaks(channel_id)
             cell.update_peaks(peak_l, peak_r)
         return True
+

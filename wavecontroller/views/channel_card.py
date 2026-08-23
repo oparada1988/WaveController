@@ -40,7 +40,7 @@ class ChannelCard(Gtk.Box):
 
         display_name = channel_info.get("name", "Channel")
         if channel_info["id"] == "mic" and self.hardware_mgr:
-            display_name = self.hardware_mgr.device_name
+            display_name = self.hardware_mgr.get_device_display_name(self.hardware_mgr.device_name)
 
         self.title_lbl = Gtk.Label(label=display_name)
         self.title_lbl.add_css_class("channel-title")
@@ -301,3 +301,14 @@ class ChannelCard(Gtk.Box):
         else:
             self.link_btn.set_icon_name("mail-attachment-symbolic")
             self.link_btn.remove_css_class("active")
+
+    def refresh_name(self):
+        display_name = self.channel_info.get("name", "Channel")
+        if self.channel_info["id"] == "mic" and self.hardware_mgr:
+            display_name = self.hardware_mgr.get_device_display_name(self.hardware_mgr.device_name)
+        self.title_lbl.set_text(display_name)
+
+    def update_peaks(self, peak_l: float, peak_r: float):
+        if hasattr(self, "slider") and self.slider:
+            self.slider.set_peaks(peak_l, peak_r)
+

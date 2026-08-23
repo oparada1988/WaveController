@@ -5,12 +5,13 @@ from gi.repository import Gtk, Adw, GLib
 
 class DeviceSettingsView(Gtk.Box):
     """
-    Hardware DSP, Device Assignment, and Real-Time Audio Feedback view.
+    Hardware DSP, Device Assignment, Custom Device Naming, and Real-Time Audio Feedback view.
     """
-    def __init__(self, hardware_mgr, peak_monitor):
+    def __init__(self, hardware_mgr, peak_monitor, on_device_renamed=None):
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=16)
         self.hardware_mgr = hardware_mgr
         self.peak_monitor = peak_monitor
+        self.on_device_renamed = on_device_renamed
 
         self.set_margin_top(16)
         self.set_margin_bottom(16)
@@ -19,7 +20,7 @@ class DeviceSettingsView(Gtk.Box):
 
         # Title
         title_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
-        title_lbl = Gtk.Label(label=f"Hardware & Audio Diagnostics")
+        title_lbl = Gtk.Label(label="Hardware & Audio Diagnostics")
         title_lbl.add_css_class("wave-main-title")
         title_box.append(title_lbl)
         self.append(title_box)
@@ -27,7 +28,7 @@ class DeviceSettingsView(Gtk.Box):
         pref_page = Adw.PreferencesPage()
 
         # Group 1: Device Assignment & Diagnostics
-        grp_assign = Adw.PreferencesGroup(title="Active Audio Device Assignment")
+        grp_assign = Adw.PreferencesGroup(title="Active Audio Device Assignment & Custom Names")
 
         # Input Device Selector
         self.input_row = Adw.ComboRow(title="Active Microphone / Audio Input", subtitle="Select hardware input for WaveController")
@@ -43,6 +44,13 @@ class DeviceSettingsView(Gtk.Box):
         self.input_row.connect("notify::selected", self._on_input_device_changed)
         grp_assign.add(self.input_row)
 
+        # Input Custom Nickname
+        self.input_name_row = Adw.EntryRow(title="Microphone Nickname")
+        self._refresh_input_nickname()
+        self.input_name_row.connect("apply", self._on_input_nickname_applied)
+        self.input_name_row.connect("entry-activated", self._on_input_nickname_applied)
+        grp_assign.add(self.input_name_row)
+
         # Output Device Selector
         self.output_row = Adw.ComboRow(title="Monitor Output / Headphones", subtitle="Destination for Personal Mix monitoring")
         output_names = [d["name"] for d in self.hardware_mgr.output_devices]
@@ -53,6 +61,14 @@ class DeviceSettingsView(Gtk.Box):
                 self.output_row.set_selected(idx)
                 break
         self.output_row.connect("notify::selected", self._on_output_device_changed)
+        grp_assign.add(self.output_row)
+
+        # Output Custom Nickname
+        self.output_name_row = Adw.EntryRow(title="Output Device Nickname")
+        self._refresh_output_nickname()
+        self.output_name_row.connect("apply", self._on_output_nickname_applied)
+        self.output_name_row.connect("entry-activated", self._on_output_nickname_applied)
+        grp_assign.add(self.output_name_row)
 
         # Test Sound Button
         test_sound_btn = Gtk.Button(label="Test Output")
@@ -60,7 +76,6 @@ class DeviceSettingsView(Gtk.Box):
         test_sound_btn.set_valign(Gtk.Align.CENTER)
         test_sound_btn.connect("clicked", lambda b: self.hardware_mgr.test_output_chime())
         self.output_row.add_suffix(test_sound_btn)
-        grp_assign.add(self.output_row)
 
         pref_page.add(grp_assign)
 
@@ -146,12 +161,62 @@ class DeviceSettingsView(Gtk.Box):
         if idx < len(self.hardware_mgr.input_devices):
             dev = self.hardware_mgr.input_devices[idx]
             self.hardware_mgr.set_active_input_device(dev["id"])
+            self._refresh_input_nickname()
 
     def _on_output_device_changed(self, row, *args):
         idx = row.get_selected()
         if idx < len(self.hardware_mgr.output_devices):
             dev = self.hardware_mgr.output_devices[idx]
             self.hardware_mgr.set_active_output_device(dev["id"])
+            self._refresh_output_nickname()
+
+    def _get_selected_input_device(self):
+        idx = self.input_row.get_selected()
+        if idx < len(self.hardware_mgr.input_devices):
+            return self.hardware_mgr.input_devices[idx]
+        return None
+
+    def _get_selected_output_device(self):
+        idx = self.output_row.get_selected()
+        if idx < len(self.hardware_mgr.output_devices):
+            return self.hardware_mgr.output_devices[idx]
+        return None
+
+    def _refresh_input_nickname(self):
+        dev = self._get_selected_input_device()
+        if dev:
+            alias = self.hardware_mgr.get_device_display_name(dev)
+            real_name = dev.get("name", "")
+            self.input_name_row.set_text(alias if alias != real_name else "")
+            self.input_name_row.set_placeholder_text(real_name or "Enter custom nickname...")
+
+    def _refresh_output_nickname(self):
+        dev = self._get_selected_output_device()
+        if dev:
+            alias = self.hardware_mgr.get_device_display_name(dev)
+            real_name = dev.get("name", "")
+            self.output_name_row.set_text(alias if alias != real_name else "")
+            self.output_name_row.set_placeholder_text(real_name or "Enter custom nickname...")
+
+    def _on_input_nickname_applied(self, row, *args):
+        dev = self._get_selected_input_device()
+        if dev:
+            new_alias = self.input_name_row.get_text()
+            self.hardware_mgr.set_device_custom_name(dev["name"], new_alias)
+            if self.on_device_renamed:
+                self.on_device_renamed()
+
+    def _on_output_nickname_applied(self, row, *args):
+        dev = self._get_selected_output_device()
+        if dev:
+            new_alias = self.output_name_row.get_text()
+            self.hardware_mgr.set_device_custom_name(dev["name"], new_alias)
+            if self.on_device_renamed:
+                self.on_device_renamed()
+
+    def refresh_device_names(self):
+        self._refresh_input_nickname()
+        self._refresh_output_nickname()
 
     def _on_toggle_mic_listen(self, btn):
         active = self.hardware_mgr.toggle_mic_monitoring()
@@ -189,3 +254,4 @@ class DeviceSettingsView(Gtk.Box):
         idx = row.get_selected()
         mode = "Off" if idx == 0 else ("80Hz" if idx == 1 else "120Hz")
         self.hardware_mgr.set_low_cut(mode)
+

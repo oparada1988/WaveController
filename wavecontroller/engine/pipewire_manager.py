@@ -5,10 +5,13 @@ import threading
 import time
 from gi.repository import GLib
 
+from .config_manager import config_manager
+
 class PipeWireManager:
     """
     High-performance PipeWire manager with stream node caching, debounced
-    asynchronous volume dispatch, and bidirectional sync with Volume Controller Plus.
+    asynchronous volume dispatch, bidirectional sync with Volume Controller Plus,
+    and automatic configuration persistence to ~/.config/WaveController/config.json.
     """
     
     DEFAULT_CHANNELS = [
@@ -24,10 +27,15 @@ class PipeWireManager:
     }
 
     def __init__(self):
-        self.channels = list(self.DEFAULT_CHANNELS)
-        self.mixes = list(self.DEFAULT_MIXES)
-        self.channel_states = {} # {channel_id: {mix_id: {"volume": int, "muted": bool, "linked": bool}}}
-        self.assigned_apps = dict(self.DEFAULT_APP_MAPPINGS)
+        saved_channels = config_manager.get("channels")
+        saved_mixes = config_manager.get("mixes")
+        saved_apps = config_manager.get("assigned_apps")
+        saved_states = config_manager.get("channel_states")
+
+        self.channels = list(saved_channels) if saved_channels else list(self.DEFAULT_CHANNELS)
+        self.mixes = list(saved_mixes) if saved_mixes else list(self.DEFAULT_MIXES)
+        self.assigned_apps = dict(saved_apps) if saved_apps else dict(self.DEFAULT_APP_MAPPINGS)
+        self.channel_states = dict(saved_states) if saved_states else {}
         self.output_devices = []
         self.selected_monitor_device = None
         self.running = False
@@ -43,6 +51,17 @@ class PipeWireManager:
         self.on_external_change_callback = None
 
         self._init_default_states()
+
+    def _save_state_to_config(self, immediate: bool = False):
+        """Persists current channels, mixes, assigned apps, and channel states."""
+        with self._lock:
+            data = {
+                "channels": self.channels,
+                "mixes": self.mixes,
+                "assigned_apps": self.assigned_apps,
+                "channel_states": self.channel_states
+            }
+            config_manager.update(data, immediate=immediate)
         
     def _init_default_states(self):
         # Query real initial mic volume
@@ -52,16 +71,19 @@ class PipeWireManager:
 
         for ch in self.channels:
             ch_id = ch["id"]
-            self.channel_states[ch_id] = {}
+            if ch_id not in self.channel_states:
+                self.channel_states[ch_id] = {}
             if ch_id not in self.assigned_apps:
                 self.assigned_apps[ch_id] = []
             for mx in self.mixes:
                 mx_id = mx["id"]
-                self.channel_states[ch_id][mx_id] = {
-                    "volume": mic_vol if ch_id == "mic" else ch.get("default_vol", 80),
-                    "muted": mic_muted if ch_id == "mic" else False,
-                    "linked": True
-                }
+                if mx_id not in self.channel_states[ch_id]:
+                    self.channel_states[ch_id][mx_id] = {
+                        "volume": mic_vol if ch_id == "mic" else ch.get("default_vol", 80),
+                        "muted": mic_muted if ch_id == "mic" else False,
+                        "linked": True
+                    }
+        self._save_state_to_config(immediate=False)
 
     def _query_system_source_status(self):
         try:
@@ -307,6 +329,7 @@ class PipeWireManager:
                 
             state = self.channel_states.get(channel_id, {}).get("personal", {"volume": 80, "muted": False})
             self.set_channel_volume(channel_id, "personal", state["volume"])
+            self._save_state_to_config(immediate=True)
 
     def get_assigned_apps(self, channel_id: str) -> list:
         with self._lock:
@@ -327,6 +350,7 @@ class PipeWireManager:
                 # Enqueue debounced volume update
                 self._volume_queue[channel_id] = (state["volume"], state.get("muted", False))
                 self._volume_event.set()
+                self._save_state_to_config(immediate=False)
 
     def set_channel_mute(self, channel_id: str, mix_id: str, muted: bool):
         with self._lock:
@@ -335,6 +359,7 @@ class PipeWireManager:
                 state = self.channel_states[channel_id][mix_id]
                 self._volume_queue[channel_id] = (state["volume"], muted)
                 self._volume_event.set()
+                self._save_state_to_config(immediate=False)
 
     def toggle_channel_mute(self, channel_id: str, mix_id: str) -> bool:
         with self._lock:
@@ -345,6 +370,7 @@ class PipeWireManager:
                 state = self.channel_states[channel_id][mix_id]
                 self._volume_queue[channel_id] = (state["volume"], new_mute)
                 self._volume_event.set()
+                self._save_state_to_config(immediate=False)
                 return new_mute
         return False
 
@@ -405,6 +431,7 @@ class PipeWireManager:
                 new_val = not curr
                 for m_id in self.channel_states[channel_id]:
                     self.channel_states[channel_id][m_id]["linked"] = new_val
+                self._save_state_to_config(immediate=True)
                 return new_val
         return True
 
@@ -435,6 +462,7 @@ class PipeWireManager:
                 self.channel_states[ch_id][mx["id"]] = {"volume": 80, "muted": False, "linked": True}
 
             self._refresh_node_cache()
+            self._save_state_to_config(immediate=True)
             return new_ch
 
     def remove_channel(self, channel_id: str) -> bool:
@@ -447,6 +475,7 @@ class PipeWireManager:
             if channel_id in self.assigned_apps:
                 del self.assigned_apps[channel_id]
             self._refresh_node_cache()
+            self._save_state_to_config(immediate=True)
             return True
 
     def rename_channel(self, channel_id: str, new_name: str) -> bool:
@@ -454,6 +483,7 @@ class PipeWireManager:
             for ch in self.channels:
                 if ch["id"] == channel_id:
                     ch["name"] = new_name
+                    self._save_state_to_config(immediate=True)
                     return True
             return False
 
@@ -462,6 +492,7 @@ class PipeWireManager:
             for ch in self.channels:
                 if ch["id"] == channel_id:
                     ch["sync_meter"] = sync
+                    self._save_state_to_config(immediate=True)
                     break
 
     def get_channel_sync_meter(self, channel_id: str) -> bool:
@@ -490,6 +521,7 @@ class PipeWireManager:
                 if ch_id not in self.channel_states:
                     self.channel_states[ch_id] = {}
                 self.channel_states[ch_id][mix_id] = {"volume": 80, "muted": False, "linked": True}
+            self._save_state_to_config(immediate=True)
             return new_mix
 
     @staticmethod
