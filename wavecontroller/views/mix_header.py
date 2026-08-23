@@ -92,7 +92,7 @@ class MixHeaderCard(Gtk.Box):
         self.scale.set_draw_value(False)
         self.scale.set_hexpand(True)
         self.scale.add_css_class("wave-mix-master-fader")
-        self.scale.connect("value-changed", self._on_scale_value_changed)
+        self._scale_handler_id = self.scale.connect("value-changed", self._on_scale_value_changed)
         fader_box.append(self.scale)
 
         self.vol_lbl = Gtk.Label(label=f"{vol}%")
@@ -109,6 +109,30 @@ class MixHeaderCard(Gtk.Box):
         self.color_bar.add_css_class("mix-color-indicator")
         self._apply_indicator_color(mix_info.get("color", "#9146ff"))
         self.append(self.color_bar)
+
+    def update_ui_state(self):
+        if not self.pipewire_mgr:
+            return
+        vol = self.pipewire_mgr.get_mix_master_volume(self.mix_info["id"])
+        muted = self.pipewire_mgr.get_mix_master_mute(self.mix_info["id"])
+
+        if hasattr(self, "_scale_handler_id") and self._scale_handler_id:
+            self.scale.handler_block(self._scale_handler_id)
+            try:
+                self.scale.set_value(vol)
+            finally:
+                self.scale.handler_unblock(self._scale_handler_id)
+        else:
+            self.scale.set_value(vol)
+
+        self.vol_lbl.set_text(f"{int(vol)}%")
+
+        if muted:
+            self.mute_btn.set_icon_name("audio-volume-muted-symbolic")
+            self.mute_btn.add_css_class("muted")
+        else:
+            self.mute_btn.set_icon_name("audio-volume-high-symbolic")
+            self.mute_btn.remove_css_class("muted")
 
     def _on_mute_clicked(self, btn):
         if self.pipewire_mgr:

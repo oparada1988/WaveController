@@ -20,6 +20,7 @@ class MixerMatrixView(Gtk.Box):
         
         self.channel_cards = {}
         self.matrix_cells = {} # {(channel_id, mix_id): MatrixCell}
+        self.mix_headers = {} # {mix_id: MixHeaderCard}
         self.pipewire_mgr.on_external_change_callback = self._on_external_sync
         
         self.set_margin_top(16)
@@ -108,6 +109,7 @@ class MixerMatrixView(Gtk.Box):
                 on_remove_callback=lambda m_id: (self.pipewire_mgr.remove_mix(m_id), GLib.idle_add(self._rebuild_grid)),
                 on_edit_callback=None
             )
+            self.mix_headers[mix["id"]] = mix_header
             self.grid.attach(mix_header, col_idx, 0, 1, 1)
 
         # Create Mix (+) Button Card (Column N+1)
@@ -695,13 +697,12 @@ class MixerMatrixView(Gtk.Box):
                     cell.update_ui_state()
 
     def _on_external_sync(self):
-        for ch_id, card in self.channel_cards.items():
+        for card in self.channel_cards.values():
             card.update_ui_state()
-            if self.pipewire_mgr.is_channel_linked(ch_id):
-                for m in self.pipewire_mgr.mixes:
-                    cell = self.matrix_cells.get((ch_id, m["id"]))
-                    if cell:
-                        cell.update_ui_state()
+        for cell in self.matrix_cells.values():
+            cell.update_ui_state()
+        for header in self.mix_headers.values():
+            header.update_ui_state()
 
     def _on_link_toggled(self, channel_id: str, is_linked: bool):
         for m in self.pipewire_mgr.mixes:
@@ -714,6 +715,7 @@ class MixerMatrixView(Gtk.Box):
             self.grid.remove(self.grid.get_first_child())
         self.channel_cards.clear()
         self.matrix_cells.clear()
+        self.mix_headers.clear()
         self._build_grid()
 
     def _on_output_dropdown_changed(self, dropdown, *args):
