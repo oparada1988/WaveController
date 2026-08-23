@@ -748,6 +748,7 @@ class PipeWireManager:
 
         channels_to_sync = [c for c in channels_copy if channel_id is None or c["id"] == channel_id]
         mixes_to_sync = [m for m in mixes_copy if mix_id is None or m["id"] == mix_id]
+        links_map = self._get_pw_links_map()
 
         for ch in channels_to_sync:
             ch_id = ch["id"]
@@ -769,6 +770,17 @@ class PipeWireManager:
 
             if not ch_out_ports:
                 continue
+
+            if ch_id != "mic":
+                # Ensure assigned apps don't directly play out to physical hardware sinks (bypass isolation)
+                for src_p in ch_out_ports:
+                    src_links = links_map.get(src_p, set())
+                    for linked_dest in list(src_links):
+                        if linked_dest.startswith("alsa_output.") and ":playback_" in linked_dest:
+                            try:
+                                subprocess.run(["pw-link", "-d", src_p, linked_dest], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                            except Exception:
+                                pass
 
             for m in mixes_to_sync:
                 m_id = m["id"]
@@ -813,10 +825,40 @@ class PipeWireManager:
         # Synchronize physical output target devices for all Sink mixes
         self._sync_mix_physical_output_routing(mix_id, out_ports, in_ports)
 
+    def _get_pw_links_map(self) -> dict:
+        """Returns a dict mapping source_port -> set(destination_ports) from PipeWire."""
+        try:
+            out = subprocess.check_output(["pw-link", "-l"], text=True, stderr=subprocess.DEVNULL)
+            links = {}
+            curr_src = None
+            for line in out.splitlines():
+                if not line:
+                    continue
+                if not line.startswith(" "):
+                    curr_src = line.strip()
+                    if curr_src not in links:
+                        links[curr_src] = set()
+                else:
+                    line_str = line.strip()
+                    if line_str.startswith("|->") or line_str.startswith("->"):
+                        target = line_str.replace("|->", "").replace("->", "").strip()
+                        if curr_src:
+                            links[curr_src].add(target)
+                    elif line_str.startswith("|<-") or line_str.startswith("<-"):
+                        src = line_str.replace("|<-", "").replace("<-", "").strip()
+                        if src not in links:
+                            links[src] = set()
+                        if curr_src:
+                            links[src].add(curr_src)
+            return links
+        except Exception:
+            return {}
+
     def _sync_mix_physical_output_routing(self, mix_id: str = None, out_ports: list = None, in_ports: list = None):
         """
         Routes WaveController Sink mixes (e.g. Personal Mix, Guest Mix)
         to their designated physical output target devices via pw-link.
+        Also unlinks any obsolete or unassigned physical connections.
         """
         if out_ports is None:
             try:
@@ -831,6 +873,15 @@ class PipeWireManager:
                 in_ports = [l.strip() for l in in_ports_raw.splitlines() if l.strip()]
             except Exception:
                 in_ports = []
+
+        links_map = self._get_pw_links_map()
+
+        # Find default physical sink if needed
+        default_sink_name = ""
+        try:
+            default_sink_name = subprocess.check_output(["pactl", "get-default-sink"], text=True, stderr=subprocess.DEVNULL).strip()
+        except Exception:
+            pass
 
         with self._lock:
             mixes_copy = list(self.mixes)
@@ -848,40 +899,66 @@ class PipeWireManager:
             mon_fl = f"WaveController_{m_id}_Sink:monitor_FL"
             mon_fr = f"WaveController_{m_id}_Sink:monitor_FR"
 
-            phys_playback_fl = []
-            phys_playback_fr = []
+            desired_fl = set()
+            desired_fr = set()
 
             if target_dev and target_dev != "none":
+                clean_target = target_dev.replace("alsa_card.", "").replace("alsa_output.", "").replace("alsa_input.", "").strip().lower()
                 for p in in_ports:
                     if p.startswith("WaveController_"):
                         continue
-                    if ":playback_" in p:
-                        if target_dev == "default":
-                            if "_FL" in p or "_1" in p or "_l" in p.lower():
-                                phys_playback_fl.append(p)
-                            elif "_FR" in p or "_2" in p or "_r" in p.lower():
-                                phys_playback_fr.append(p)
-                        else:
-                            t_clean = target_dev.lower().replace("usb-", "").replace("-00", "").replace("_", "")
-                            p_clean = p.lower().replace("_", "").replace("-", "")
-                            if t_clean in p_clean:
-                                if "_FL" in p or "_1" in p or "_l" in p.lower():
-                                    phys_playback_fl.append(p)
-                                elif "_FR" in p or "_2" in p or "_r" in p.lower():
-                                    phys_playback_fr.append(p)
+                    if ":playback_" not in p:
+                        continue
+                    
+                    p_low = p.lower()
+                    matched = False
+                    if target_dev == "default":
+                        if default_sink_name and default_sink_name.lower() in p_low:
+                            matched = True
+                        elif not default_sink_name:
+                            matched = True
+                    else:
+                        if clean_target in p_low:
+                            matched = True
 
-            if mon_fl in out_ports and phys_playback_fl:
-                for dest in phys_playback_fl:
+                    if matched:
+                        suffix = p.split(":")[-1].lower()
+                        if "_fl" in suffix or suffix.endswith("_1") or suffix.endswith("_l") or suffix == "playback_0":
+                            desired_fl.add(p)
+                        elif "_fr" in suffix or suffix.endswith("_2") or suffix.endswith("_r") or suffix == "playback_1":
+                            desired_fr.add(p)
+
+            # Reconcile FL links
+            current_fl_links = links_map.get(mon_fl, set())
+            for linked_dest in list(current_fl_links):
+                if linked_dest.startswith("alsa_output.") and linked_dest not in desired_fl:
                     try:
-                        subprocess.run(["pw-link", mon_fl, dest], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                        subprocess.run(["pw-link", "-d", mon_fl, linked_dest], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                     except Exception:
                         pass
-            if mon_fr in out_ports and phys_playback_fr:
-                for dest in phys_playback_fr:
+            if mon_fl in out_ports:
+                for dest in desired_fl:
+                    if dest not in current_fl_links:
+                        try:
+                            subprocess.run(["pw-link", mon_fl, dest], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                        except Exception:
+                            pass
+
+            # Reconcile FR links
+            current_fr_links = links_map.get(mon_fr, set())
+            for linked_dest in list(current_fr_links):
+                if linked_dest.startswith("alsa_output.") and linked_dest not in desired_fr:
                     try:
-                        subprocess.run(["pw-link", mon_fr, dest], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                        subprocess.run(["pw-link", "-d", mon_fr, linked_dest], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                     except Exception:
                         pass
+            if mon_fr in out_ports:
+                for dest in desired_fr:
+                    if dest not in current_fr_links:
+                        try:
+                            subprocess.run(["pw-link", mon_fr, dest], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                        except Exception:
+                            pass
 
     def get_channel_state(self, channel_id: str, mix_id: str) -> dict:
         with self._lock:
