@@ -1,17 +1,18 @@
 import gi
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
-from gi.repository import Gtk, Adw, GLib
+from gi.repository import Gtk, Gdk, GObject, Adw, GLib
 
 from .stereo_slider import StereoSlider
 
 class ChannelCard(Gtk.Box):
     """
     Channel identifier card displayed on the left column of the matrix.
-    Contains the channel icon, title, settings popover (running app routing, mono/stereo sync toggle, delete),
+    Contains the drag grip handle, channel icon, title, settings popover,
     mute button, dual-track stereo volume slider with real-time VU meters, and link toggle.
+    Supports free-motion vertical drag-and-drop reordering.
     """
-    def __init__(self, channel_info: dict, pipewire_mgr, hardware_mgr=None, on_link_toggle_callback=None, on_sync_meter_callback=None, on_channel_removed_callback=None, on_channel_renamed_callback=None, on_move_up_callback=None, on_move_down_callback=None):
+    def __init__(self, channel_info: dict, pipewire_mgr, hardware_mgr=None, on_link_toggle_callback=None, on_sync_meter_callback=None, on_channel_removed_callback=None, on_channel_renamed_callback=None, on_reorder_callback=None, on_hover_row_callback=None):
         super().__init__(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         self.channel_info = channel_info
         self.pipewire_mgr = pipewire_mgr
@@ -20,37 +21,22 @@ class ChannelCard(Gtk.Box):
         self.on_sync_meter_callback = on_sync_meter_callback
         self.on_channel_removed_callback = on_channel_removed_callback
         self.on_channel_renamed_callback = on_channel_renamed_callback
-        self.on_move_up_callback = on_move_up_callback
-        self.on_move_down_callback = on_move_down_callback
+        self.on_reorder_callback = on_reorder_callback
+        self.on_hover_row_callback = on_hover_row_callback
         
         self.add_css_class("channel-row-card")
         self.set_valign(Gtk.Align.CENTER)
         self.set_hexpand(False)
         self.set_size_request(340, -1)
 
-        # Reorder Up / Down Controls
-        reorder_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
-        reorder_box.set_valign(Gtk.Align.CENTER)
-        
-        self.up_btn = Gtk.Button.new_from_icon_name("go-up-symbolic")
-        self.up_btn.add_css_class("flat")
-        self.up_btn.add_css_class("channel-reorder-btn")
-        self.up_btn.set_tooltip_text("Move Channel Up")
-        if self.on_move_up_callback:
-            self.up_btn.connect("clicked", lambda b: self.on_move_up_callback(self.channel_info["id"]))
-        reorder_box.append(self.up_btn)
+        # 1. Dedicated Vertical 6-Dots Drag Grip Handle
+        self.drag_grip = Gtk.Image.new_from_icon_name("view-more-symbolic")
+        self.drag_grip.set_pixel_size(14)
+        self.drag_grip.add_css_class("channel-drag-handle")
+        self.drag_grip.set_tooltip_text("Drag to reorder channel vertically")
+        self.append(self.drag_grip)
 
-        self.down_btn = Gtk.Button.new_from_icon_name("go-down-symbolic")
-        self.down_btn.add_css_class("flat")
-        self.down_btn.add_css_class("channel-reorder-btn")
-        self.down_btn.set_tooltip_text("Move Channel Down")
-        if self.on_move_down_callback:
-            self.down_btn.connect("clicked", lambda b: self.on_move_down_callback(self.channel_info["id"]))
-        reorder_box.append(self.down_btn)
-
-        self.append(reorder_box)
-
-        # Channel icon (Auto-resolve from assigned apps or channel name)
+        # 2. Channel icon (Auto-resolve from assigned apps or channel name)
         assigned = self.pipewire_mgr.get_assigned_apps(channel_info["id"])
         primary_app = assigned[0] if assigned else channel_info.get("name", "")
         icon_name = channel_info.get("icon") or self.pipewire_mgr.resolve_icon_for_app(primary_app)
@@ -58,10 +44,10 @@ class ChannelCard(Gtk.Box):
         self.icon_img.set_pixel_size(20)
         self.append(self.icon_img)
 
-        # Channel Title + Subtitle Box
+        # 3. Channel Title + Subtitle Box
         title_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=1)
         title_box.set_hexpand(False)
-        title_box.set_size_request(118, -1)
+        title_box.set_size_request(126, -1)
 
         display_name = channel_info.get("name", "Channel")
         if channel_info["id"] == "mic" and self.hardware_mgr:
@@ -121,6 +107,62 @@ class ChannelCard(Gtk.Box):
         self.link_btn.set_tooltip_text("Link volume across mixes")
         self.link_btn.connect("clicked", self._on_link_clicked)
         self.append(self.link_btn)
+
+        # -------------------------------------------------------------
+        # Vertical Drag & Drop Controller Setup
+        # -------------------------------------------------------------
+        self.drag_source = Gtk.DragSource.new()
+        self.drag_source.set_actions(Gdk.DragAction.MOVE)
+
+        def on_drag_prepare(src, x, y):
+            return Gdk.ContentProvider.new_for_value(self.channel_info["id"])
+
+        def on_drag_begin(src, drag):
+            paintable = Gtk.WidgetPaintable.new(self)
+            src.set_icon(paintable, int(x if 'x' in locals() else 10), int(y if 'y' in locals() else 10))
+            self.add_css_class("drag-source-active")
+
+        def on_drag_end(src, drag, delete_data):
+            self.remove_css_class("drag-source-active")
+            if self.on_hover_row_callback:
+                self.on_hover_row_callback(self.channel_info["id"], False)
+
+        self.drag_source.connect("prepare", on_drag_prepare)
+        self.drag_source.connect("drag-begin", on_drag_begin)
+        self.drag_source.connect("drag-end", on_drag_end)
+        self.add_controller(self.drag_source)
+
+        self.drop_target = Gtk.DropTarget.new(GObject.TYPE_STRING, Gdk.DragAction.MOVE)
+
+        def on_drop_enter(target, x, y):
+            if self.on_hover_row_callback:
+                self.on_hover_row_callback(self.channel_info["id"], True)
+            return Gdk.DragAction.MOVE
+
+        def on_drop_motion(target, x, y):
+            if self.on_hover_row_callback:
+                self.on_hover_row_callback(self.channel_info["id"], True)
+            return Gdk.DragAction.MOVE
+
+        def on_drop_leave(target):
+            if self.on_hover_row_callback:
+                self.on_hover_row_callback(self.channel_info["id"], False)
+
+        def on_drop(target, value, x, y):
+            if self.on_hover_row_callback:
+                self.on_hover_row_callback(self.channel_info["id"], False)
+            src_id = value
+            dest_id = self.channel_info["id"]
+            if src_id and src_id != dest_id and self.on_reorder_callback:
+                self.on_reorder_callback(src_id, dest_id)
+                return True
+            return False
+
+        self.drop_target.connect("enter", on_drop_enter)
+        self.drop_target.connect("motion", on_drop_motion)
+        self.drop_target.connect("leave", on_drop_leave)
+        self.drop_target.connect("drop", on_drop)
+        self.add_controller(self.drop_target)
 
         self.update_ui_state()
 

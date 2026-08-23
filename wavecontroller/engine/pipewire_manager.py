@@ -907,12 +907,14 @@ class PipeWireManager:
                 return True
         return False
 
-    def reorder_channels(self, from_idx: int, to_idx: int) -> bool:
-        """Reorders channels from from_idx to to_idx in the mixer matrix."""
+    def reorder_channels_by_id(self, src_channel_id: str, dest_channel_id: str) -> bool:
+        """Reorders channels by moving src_channel_id to the position of dest_channel_id."""
         with self._lock:
-            if 0 <= from_idx < len(self.channels) and 0 <= to_idx < len(self.channels) and from_idx != to_idx:
-                item = self.channels.pop(from_idx)
-                self.channels.insert(to_idx, item)
+            src_idx = next((i for i, c in enumerate(self.channels) if c["id"] == src_channel_id), -1)
+            dest_idx = next((i for i, c in enumerate(self.channels) if c["id"] == dest_channel_id), -1)
+            if src_idx >= 0 and dest_idx >= 0 and src_idx != dest_idx:
+                item = self.channels.pop(src_idx)
+                self.channels.insert(dest_idx, item)
                 self._save_state_to_config(immediate=True)
                 return True
         return False

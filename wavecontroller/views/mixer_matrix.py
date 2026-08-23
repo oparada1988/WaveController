@@ -137,8 +137,8 @@ class MixerMatrixView(Gtk.Box):
                 on_sync_meter_callback=self._on_sync_meter_toggled,
                 on_channel_removed_callback=lambda ch_id: GLib.idle_add(self._rebuild_grid),
                 on_channel_renamed_callback=lambda ch_id, name: GLib.idle_add(self._rebuild_grid),
-                on_move_up_callback=self._on_move_channel_up,
-                on_move_down_callback=self._on_move_channel_down
+                on_reorder_callback=self._on_reorder_channel,
+                on_hover_row_callback=self._on_hover_row
             )
             self.channel_cards[ch["id"]] = card
             self.grid.attach(card, 0, row_idx, 1, 1)
@@ -158,6 +158,25 @@ class MixerMatrixView(Gtk.Box):
         create_btn.set_size_request(340, -1)
         self._setup_create_channel_popover(create_btn)
         self.grid.attach(create_btn, 0, bottom_row, 1, 1)
+
+    def _on_hover_row(self, ch_id: str, is_hovered: bool):
+        card = self.channel_cards.get(ch_id)
+        if card:
+            if is_hovered:
+                card.add_css_class("drop-target-active")
+            else:
+                card.remove_css_class("drop-target-active")
+        for mix in self.pipewire_mgr.mixes:
+            cell = self.matrix_cells.get((ch_id, mix["id"]))
+            if cell:
+                if is_hovered:
+                    cell.add_css_class("drop-target-active")
+                else:
+                    cell.remove_css_class("drop-target-active")
+
+    def _on_reorder_channel(self, src_ch_id: str, dest_ch_id: str):
+        if self.pipewire_mgr.reorder_channels_by_id(src_ch_id, dest_ch_id):
+            self._rebuild_grid_with_highlight(src_ch_id)
 
     def _on_move_channel_up(self, ch_id: str):
         if self.pipewire_mgr.move_channel_up(ch_id):

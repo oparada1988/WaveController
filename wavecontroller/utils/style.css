@@ -179,31 +179,29 @@ window.theme-midnight .wave-create-channel-box {
 }
 
 /* Reorder Feedback & Drag Active Outline */
+.channel-drag-handle {
+    opacity: 0.35;
+    cursor: grab;
+    transition: all 120ms ease;
+    padding: 2px 0;
+}
+
+.channel-row-card:hover .channel-drag-handle {
+    opacity: 0.85;
+    color: @accent_bg_color;
+}
+
+.channel-row-card.drag-source-active {
+    opacity: 0.45;
+    border: 2px dashed @accent_bg_color;
+}
+
 .channel-row-card.drop-target-active,
 .matrix-cell-card.drop-target-active,
 .matrix-cell-empty.drop-target-active {
     border: 2px solid @accent_bg_color;
-    box-shadow: 0 0 14px alpha(@accent_bg_color, 0.55);
-    background-color: alpha(@accent_bg_color, 0.08);
-}
-
-.channel-reorder-btn {
-    opacity: 0.25;
-    padding: 1px 3px;
-    min-height: 14px;
-    min-width: 14px;
-    border-radius: 4px;
-    transition: all 120ms ease;
-}
-
-.channel-row-card:hover .channel-reorder-btn {
-    opacity: 0.75;
-}
-
-.channel-reorder-btn:hover {
-    opacity: 1.0;
-    color: @accent_bg_color;
-    background-color: alpha(@accent_bg_color, 0.15);
+    box-shadow: 0 0 16px alpha(@accent_bg_color, 0.6);
+    background-color: alpha(@accent_bg_color, 0.12);
 }
 
 .channel-title {
