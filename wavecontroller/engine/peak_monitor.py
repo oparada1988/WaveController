@@ -55,6 +55,62 @@ class MultiChannelPeakMonitor:
         except Exception:
             return None
 
+    def _link_mic_monitor(self):
+        """Discovers physical hardware microphone ports and links wave_mic_monitor to them directly."""
+        try:
+            # 1. Unlink any virtual sources (e.g. WaveController_chat_mix_Source) that WirePlumber auto-linked
+            try:
+                links_out = subprocess.check_output(['pw-link', '-l'], text=True, stderr=subprocess.DEVNULL)
+                current_node = None
+                for line in links_out.splitlines():
+                    line_str = line.strip()
+                    if not line.startswith(' ') and ':' in line_str:
+                        current_node = line_str
+                    elif '|<-' in line_str and current_node and 'wave_mic_monitor' in current_node:
+                        src_port = line_str.replace('|<-', '').strip()
+                        # Unlink if not an alsa_input physical hardware port
+                        if not src_port.startswith("alsa_input."):
+                            subprocess.run(['pw-link', '-d', src_port, current_node], stderr=subprocess.DEVNULL)
+            except Exception:
+                pass
+
+            # 2. Discover physical alsa_input capture ports
+            out = subprocess.check_output(['pw-link', '-o'], text=True, stderr=subprocess.DEVNULL)
+            mic_fl = None
+            mic_fr = None
+
+            candidate_mic_fls = []
+            candidate_mic_frs = []
+            for line in out.splitlines():
+                l = line.strip()
+                if l.startswith("alsa_input.") and ":capture_" in l:
+                    if l.endswith("FL") or l.endswith("1") or l.endswith("mono") or l.endswith("stereo"):
+                        candidate_mic_fls.append(l)
+                    if l.endswith("FR") or l.endswith("2") or l.endswith("stereo"):
+                        candidate_mic_frs.append(l)
+
+            # Prioritize usb mic (e.g. fifine / usb) then pci
+            for fl in candidate_mic_fls:
+                if 'usb' in fl.lower() or 'fifine' in fl.lower():
+                    mic_fl = fl
+                    break
+            if not mic_fl and candidate_mic_fls:
+                mic_fl = candidate_mic_fls[0]
+
+            for fr in candidate_mic_frs:
+                if 'usb' in fr.lower() or 'fifine' in fr.lower():
+                    mic_fr = fr
+                    break
+            if not mic_fr and candidate_mic_frs:
+                mic_fr = candidate_mic_frs[0]
+
+            if mic_fl:
+                subprocess.run(['pw-link', mic_fl, 'wave_mic_monitor:input_FL'], stderr=subprocess.DEVNULL)
+            if mic_fr:
+                subprocess.run(['pw-link', mic_fr, 'wave_mic_monitor:input_FR'], stderr=subprocess.DEVNULL)
+        except Exception:
+            pass
+
     def _link_sink_monitor(self):
         """Discovers active monitor output ports and links wave_sink_monitor to them."""
         try:
@@ -150,8 +206,10 @@ class MultiChannelPeakMonitor:
         return peak_l, peak_r
 
     def _run_capture_loop(self):
-        # 1. Open mic capture with unique node name
+        # 1. Open mic capture with unique node name and link to physical hardware mic
         self.mic_proc = self._open_pw_record('wave_mic_monitor')
+        time.sleep(0.1)
+        self._link_mic_monitor()
         
         # 2. Open playback capture with unique node name and link to active sink monitor
         time.sleep(0.1)
@@ -169,6 +227,7 @@ class MultiChannelPeakMonitor:
             # Re-spawn if exited
             if (not self.mic_proc or self.mic_proc.poll() is not None) and self.running:
                 self.mic_proc = self._open_pw_record('wave_mic_monitor')
+                self._link_mic_monitor()
             if (not self.sink_proc or self.sink_proc.poll() is not None) and self.running:
                 self.sink_proc = self._open_pw_record('wave_sink_monitor')
                 self._link_sink_monitor()
@@ -186,8 +245,10 @@ class MultiChannelPeakMonitor:
             s_r = 0.0 if sink_r < 0.005 else sink_r
 
             with self._lock:
-                # Microphone channel ONLY gets microphone level
+                # Physical microphone channels (mic, fefine, etc.) ONLY get physical microphone level
                 self.peaks["mic"] = {"left": m_l, "right": m_r, "peak": max(m_l, m_r)}
+                self.peaks["fefine"] = {"left": m_l, "right": m_r, "peak": max(m_l, m_r)}
+                self.peaks["microphone"] = {"left": m_l, "right": m_r, "peak": max(m_l, m_r)}
                 
                 # Application & System Playback channels (Spotify, Discord, Games, etc.) get sink monitor level
                 for ch in ["spotify", "music", "game", "chat", "browser", "system", "sfx", "master"]:
@@ -209,7 +270,7 @@ class MultiChannelPeakMonitor:
                 if k in ch_low or ch_low in k:
                     return p.get("left", 0.0), p.get("right", 0.0)
             # Default fallback for playback channels
-            if ch_low not in ("mic", "microphone", "input"):
+            if ch_low not in ("mic", "microphone", "fefine", "input"):
                 p = self.peaks.get("system", self.peaks.get("spotify", {}))
                 return p.get("left", 0.0), p.get("right", 0.0)
             return (0.0, 0.0)

@@ -104,6 +104,26 @@ class IPCServer:
                     return c["id"]
         return target_low
 
+    def _match_mix_id(self, target: str) -> str:
+        if not target:
+            with self.pipewire_mgr._lock:
+                return self.pipewire_mgr.mixes[0]["id"] if self.pipewire_mgr.mixes else "personal_mix"
+        target_low = str(target).lower().strip()
+        with self.pipewire_mgr._lock:
+            # 1. Exact match
+            for m in self.pipewire_mgr.mixes:
+                if m["id"].lower() == target_low or m["name"].lower() == target_low:
+                    return m["id"]
+            # 2. Suffix/prefix match (e.g. "personal" -> "personal_mix")
+            for m in self.pipewire_mgr.mixes:
+                m_id_low = m["id"].lower()
+                m_name_low = m["name"].lower()
+                if target_low in m_id_low or m_id_low in target_low:
+                    return m["id"]
+                if target_low in m_name_low or m_name_low in target_low:
+                    return m["id"]
+        return target_low
+
     def _process_command(self, req: dict) -> dict:
         cmd = req.get("command")
         res = {"status": "ok"}
@@ -118,7 +138,7 @@ class IPCServer:
         elif cmd == "get_volume":
             raw_target = req.get("channel_id") or req.get("target") or "mic"
             ch = self._match_channel_id(raw_target)
-            mx = req.get("mix_id")
+            mx = self._match_mix_id(req.get("mix_id")) if req.get("mix_id") else None
             if mx:
                 res["state"] = self.pipewire_mgr.get_channel_state(ch, mx)
             else:
@@ -129,7 +149,7 @@ class IPCServer:
         elif cmd in ["set_volume", "sync_volume"]:
             raw_target = req.get("channel_id") or req.get("target") or req.get("app_name") or "mic"
             ch = self._match_channel_id(raw_target)
-            mx = req.get("mix_id")
+            mx = self._match_mix_id(req.get("mix_id")) if req.get("mix_id") else None
             vol = req.get("volume")
             muted = req.get("muted")
             
@@ -154,11 +174,11 @@ class IPCServer:
                 GLib.idle_add(self.pipewire_mgr.on_external_change_callback)
                 
         elif cmd in ["get_mix_volume", "get_mix_master_volume"]:
-            mx = req.get("mix_id") or "personal"
+            mx = self._match_mix_id(req.get("mix_id"))
             res["volume"] = self.pipewire_mgr.get_mix_master_volume(mx)
             res["muted"] = self.pipewire_mgr.get_mix_master_mute(mx)
         elif cmd in ["set_mix_volume", "set_mix_master_volume"]:
-            mx = req.get("mix_id") or "personal"
+            mx = self._match_mix_id(req.get("mix_id"))
             vol = req.get("volume")
             muted = req.get("muted")
             if vol is not None:
@@ -168,13 +188,13 @@ class IPCServer:
             res["volume"] = self.pipewire_mgr.get_mix_master_volume(mx)
             res["muted"] = self.pipewire_mgr.get_mix_master_mute(mx)
         elif cmd in ["toggle_mix_mute", "toggle_mix_master_mute"]:
-            mx = req.get("mix_id") or "personal"
+            mx = self._match_mix_id(req.get("mix_id"))
             is_muted = self.pipewire_mgr.toggle_mix_master_mute(mx)
             res["muted"] = is_muted
         elif cmd == "toggle_mute":
             raw_target = req.get("channel_id") or req.get("target") or "mic"
             ch = self._match_channel_id(raw_target)
-            mx = req.get("mix_id")
+            mx = self._match_mix_id(req.get("mix_id")) if req.get("mix_id") else None
             if mx:
                 is_muted = self.pipewire_mgr.toggle_channel_mute(ch, mx)
             else:
@@ -195,7 +215,7 @@ class IPCServer:
             devices = self.hardware_mgr.get_tracked_output_devices() if self.hardware_mgr else []
             res["devices"] = devices
         elif cmd == "set_mix_target_device":
-            mx = req.get("mix_id") or "personal"
+            mx = self._match_mix_id(req.get("mix_id"))
             target_dev = req.get("target_device") or "none"
             self.pipewire_mgr.update_mix(mx, target_device=target_dev)
             res["target_device"] = target_dev
@@ -203,27 +223,27 @@ class IPCServer:
                 from gi.repository import GLib
                 GLib.idle_add(self.pipewire_mgr.on_external_change_callback)
         elif cmd == "cycle_mix_target_device":
-            mx = req.get("mix_id") or "personal"
+            mx = self._match_mix_id(req.get("mix_id"))
             devices = self.hardware_mgr.get_tracked_output_devices() if self.hardware_mgr else []
-            curr_target = "none"
-            for m in self.pipewire_mgr.mixes:
-                if m["id"] == mx:
-                    curr_target = m.get("target_device", "none")
-                    break
+            dev_ids = [d["name"] for d in devices if "name" in d]
+            if not dev_ids:
+                dev_ids = ["none"]
             
-            dev_ids = ["none"] + [d.get("name") for d in devices if d.get("name")]
-            try:
-                curr_idx = dev_ids.index(curr_target)
-                next_idx = (curr_idx + 1) % len(dev_ids)
-            except ValueError:
-                next_idx = 0
-            
-            new_target = dev_ids[next_idx]
-            self.pipewire_mgr.update_mix(mx, target_device=new_target)
-            res["target_device"] = new_target
-            if self.pipewire_mgr.on_external_change_callback:
-                from gi.repository import GLib
-                GLib.idle_add(self.pipewire_mgr.on_external_change_callback)
+            with self.pipewire_mgr._lock:
+                mix_obj = next((m for m in self.pipewire_mgr.mixes if m["id"] == mx), None)
+                curr_target = mix_obj.get("target_device", "none") if mix_obj else "none"
+                try:
+                    curr_idx = dev_ids.index(curr_target)
+                    next_idx = (curr_idx + 1) % len(dev_ids)
+                except ValueError:
+                    next_idx = 0
+                
+                new_target = dev_ids[next_idx]
+                self.pipewire_mgr.update_mix(mx, target_device=new_target)
+                res["target_device"] = new_target
+                if self.pipewire_mgr.on_external_change_callback:
+                    from gi.repository import GLib
+                    GLib.idle_add(self.pipewire_mgr.on_external_change_callback)
         else:
             res["status"] = "unknown_command"
 

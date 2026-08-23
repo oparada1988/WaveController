@@ -603,17 +603,38 @@ class PipeWireManager:
     # -------------------------------------------------------------
     # Mix Master Bus Control (for Discord, OBS, Headphones, etc.)
     # -------------------------------------------------------------
-    def _get_mix_node_ids(self, mix_id: str) -> list:
+    def _match_mix_id(self, mix_id: str) -> str:
+        if not mix_id:
+            with self._lock:
+                return self.mixes[0]["id"] if self.mixes else "personal_mix"
+        target_low = str(mix_id).lower().strip()
         with self._lock:
-            cached = self._mix_node_ids_cache.get(mix_id)
+            # 1. Exact match
+            for m in self.mixes:
+                if m["id"].lower() == target_low or m["name"].lower() == target_low:
+                    return m["id"]
+            # 2. Suffix/prefix match (e.g. "personal" -> "personal_mix")
+            for m in self.mixes:
+                m_id_low = m["id"].lower()
+                m_name_low = m["name"].lower()
+                if target_low in m_id_low or m_id_low in target_low:
+                    return m["id"]
+                if target_low in m_name_low or m_name_low in target_low:
+                    return m["id"]
+        return target_low
+
+    def _get_mix_node_ids(self, mix_id: str) -> list:
+        canon_mix = self._match_mix_id(mix_id)
+        with self._lock:
+            cached = self._mix_node_ids_cache.get(canon_mix)
             if cached:
                 return list(cached)
 
         ids = []
-        target_sink = f"wavecontroller_{mix_id.lower()}_sink"
-        target_src = f"wavecontroller_{mix_id.lower()}_source"
+        target_sink = f"wavecontroller_{canon_mix.lower()}_sink"
+        target_src = f"wavecontroller_{canon_mix.lower()}_source"
         with self._lock:
-            mix_obj = next((m for m in self.mixes if m["id"] == mix_id), None)
+            mix_obj = next((m for m in self.mixes if m["id"] == canon_mix), None)
             target_dev = mix_obj.get("target_device") if mix_obj else None
             m_type = mix_obj.get("type", "source") if mix_obj else "source"
 
@@ -629,7 +650,7 @@ class PipeWireManager:
                     
                     if target_sink in n_name or target_src in n_name:
                         ids.append(obj_id)
-                    elif (m_type == "sink" or "personal" in mix_id) and target_dev and target_dev != "none":
+                    elif (m_type == "sink" or "personal" in canon_mix) and target_dev and target_dev != "none":
                         clean_target = target_dev.replace("alsa_card.", "").replace("alsa_output.", "").replace("alsa_input.", "").strip().lower()
                         if media_class == "Audio/Sink" and (clean_target in n_name or clean_target in props.get("node.description", "").lower()):
                             ids.append(obj_id)
@@ -646,52 +667,58 @@ class PipeWireManager:
         unique_ids = list(set(ids))
         if unique_ids:
             with self._lock:
-                self._mix_node_ids_cache[mix_id] = unique_ids
+                self._mix_node_ids_cache[canon_mix] = unique_ids
         return unique_ids
 
     def get_mix_master_volume(self, mix_id: str) -> int:
+        canon_mix = self._match_mix_id(mix_id)
         with self._lock:
-            return self.mix_states.get(mix_id, {}).get("volume", 100)
+            return self.mix_states.get(canon_mix, {}).get("volume", 100)
 
     def get_mix_master_mute(self, mix_id: str) -> bool:
+        canon_mix = self._match_mix_id(mix_id)
         with self._lock:
-            return self.mix_states.get(mix_id, {}).get("muted", False)
+            return self.mix_states.get(canon_mix, {}).get("muted", False)
 
     def set_mix_master_volume(self, mix_id: str, volume: int):
+        canon_mix = self._match_mix_id(mix_id)
         with self._lock:
-            if mix_id not in self.mix_states:
-                self.mix_states[mix_id] = {"volume": 100, "muted": False}
+            if canon_mix not in self.mix_states:
+                self.mix_states[canon_mix] = {"volume": 100, "muted": False}
             vol = max(0, min(100, volume))
-            self.mix_states[mix_id]["volume"] = vol
-            self._mix_volume_queue[mix_id] = (vol, self.mix_states[mix_id].get("muted", False))
+            self.mix_states[canon_mix]["volume"] = vol
+            self._mix_volume_queue[canon_mix] = (vol, self.mix_states[canon_mix].get("muted", False))
             self._volume_event.set()
             self._save_state_to_config(immediate=False)
 
     def set_mix_master_mute(self, mix_id: str, muted: bool):
+        canon_mix = self._match_mix_id(mix_id)
         with self._lock:
-            if mix_id not in self.mix_states:
-                self.mix_states[mix_id] = {"volume": 100, "muted": False}
-            self.mix_states[mix_id]["muted"] = muted
-            self._mix_volume_queue[mix_id] = (self.mix_states[mix_id].get("volume", 100), muted)
+            if canon_mix not in self.mix_states:
+                self.mix_states[canon_mix] = {"volume": 100, "muted": False}
+            self.mix_states[canon_mix]["muted"] = muted
+            self._mix_volume_queue[canon_mix] = (self.mix_states[canon_mix].get("volume", 100), muted)
             self._volume_event.set()
             self._save_state_to_config(immediate=False)
 
     def toggle_mix_master_mute(self, mix_id: str) -> bool:
+        canon_mix = self._match_mix_id(mix_id)
         with self._lock:
-            if mix_id not in self.mix_states:
-                self.mix_states[mix_id] = {"volume": 100, "muted": False}
-            curr = self.mix_states[mix_id].get("muted", False)
+            if canon_mix not in self.mix_states:
+                self.mix_states[canon_mix] = {"volume": 100, "muted": False}
+            curr = self.mix_states[canon_mix].get("muted", False)
             new_mute = not curr
-            self.mix_states[mix_id]["muted"] = new_mute
-            self._mix_volume_queue[mix_id] = (self.mix_states[mix_id].get("volume", 100), new_mute)
+            self.mix_states[canon_mix]["muted"] = new_mute
+            self._mix_volume_queue[canon_mix] = (self.mix_states[canon_mix].get("volume", 100), new_mute)
             self._volume_event.set()
             self._save_state_to_config(immediate=False)
             return new_mute
 
     def _apply_submix_gain(self, ch_id: str, m_id: str, vol_pct: int, is_muted: bool):
         """Applies independent sub-mix attenuation to dedicated PipeWire loopback stream node."""
-        key = (ch_id, m_id)
-        node_name = f"WaveController_submix_{ch_id}_{m_id}"
+        canon_mix = self._match_mix_id(m_id)
+        key = (ch_id, canon_mix)
+        node_name = f"WaveController_submix_{ch_id}_{canon_mix}"
         vol_frac = max(0.0, min(1.5, vol_pct / 100.0))
         
         node_ids = self._submix_node_ids.get(key, [])
@@ -703,7 +730,7 @@ class PipeWireManager:
                 for obj in data:
                     if obj.get("type") == "PipeWire:Interface:Node":
                         props = obj.get("info", {}).get("props", {})
-                        if node_name in props.get("node.name", ""):
+                        if node_name.lower() in props.get("node.name", "").lower():
                             found.append(str(obj["id"]))
                 if found:
                     self._submix_node_ids[key] = found
@@ -720,8 +747,9 @@ class PipeWireManager:
 
     def _ensure_submix_loopback(self, ch_id: str, m_id: str, vol_pct: int, is_muted: bool):
         """Provisions an isolated, ultra-low latency sub-mix loopback stream with independent hardware DSP gain."""
-        key = (ch_id, m_id)
-        node_name = f"WaveController_submix_{ch_id}_{m_id}"
+        canon_mix = self._match_mix_id(m_id)
+        key = (ch_id, canon_mix)
+        node_name = f"WaveController_submix_{ch_id}_{canon_mix}"
         with self._lock:
             proc = self._submix_procs.get(key)
             if proc is None or proc.poll() is not None:
@@ -738,11 +766,12 @@ class PipeWireManager:
                     time.sleep(0.05)
                 except Exception:
                     pass
-        self._apply_submix_gain(ch_id, m_id, vol_pct, is_muted)
+        self._apply_submix_gain(ch_id, canon_mix, vol_pct, is_muted)
 
     def _stop_submix_loopback(self, ch_id: str, m_id: str):
         """Tears down the sub-mix loopback stream process cleanly."""
-        key = (ch_id, m_id)
+        canon_mix = self._match_mix_id(m_id)
+        key = (ch_id, canon_mix)
         with self._lock:
             self._submix_node_ids.pop(key, None)
             proc = self._submix_procs.pop(key, None)
@@ -755,6 +784,7 @@ class PipeWireManager:
 
     def set_channel_volume(self, channel_id: str, mix_id: str, volume: int):
         """Sets the sub-mix send level into a specific virtual mix bus."""
+        canon_mix = self._match_mix_id(mix_id)
         vol = max(0, min(100, volume))
         is_linked = self.is_channel_linked(channel_id)
         with self._lock:
@@ -765,20 +795,29 @@ class PipeWireManager:
                     if channel_id in self.channel_master_states:
                         self.channel_master_states[channel_id]["volume"] = vol
                 else:
-                    if mix_id in self.channel_states[channel_id]:
-                        self.channel_states[channel_id][mix_id]["volume"] = vol
+                    if canon_mix in self.channel_states[channel_id]:
+                        self.channel_states[channel_id][canon_mix]["volume"] = vol
+                    else:
+                        # Fallback for dynamically created mix state
+                        self.channel_states[channel_id][canon_mix] = {
+                            "volume": vol,
+                            "muted": False,
+                            "linked": False,
+                            "enabled": True
+                        }
                 self._save_state_to_config(immediate=False)
 
         if is_linked:
             self.set_channel_master_volume(channel_id, vol)
         else:
-            is_muted = self.channel_states.get(channel_id, {}).get(mix_id, {}).get("muted", False)
+            is_muted = self.channel_states.get(channel_id, {}).get(canon_mix, {}).get("muted", False)
             with self._lock:
-                self._submix_volume_queue[(channel_id, mix_id)] = (vol, is_muted)
+                self._submix_volume_queue[(channel_id, canon_mix)] = (vol, is_muted)
                 self._volume_event.set()
 
     def set_channel_mute(self, channel_id: str, mix_id: str, muted: bool):
         """Mutes or unmutes a channel within a specific virtual mix bus."""
+        canon_mix = self._match_mix_id(mix_id)
         is_linked = self.is_channel_linked(channel_id)
         with self._lock:
             if channel_id in self.channel_states:
@@ -788,23 +827,31 @@ class PipeWireManager:
                     if channel_id in self.channel_master_states:
                         self.channel_master_states[channel_id]["muted"] = muted
                 else:
-                    if mix_id in self.channel_states[channel_id]:
-                        self.channel_states[channel_id][mix_id]["muted"] = muted
+                    if canon_mix in self.channel_states[channel_id]:
+                        self.channel_states[channel_id][canon_mix]["muted"] = muted
+                    else:
+                        self.channel_states[channel_id][canon_mix] = {
+                            "volume": 80,
+                            "muted": muted,
+                            "linked": False,
+                            "enabled": True
+                        }
                 self._save_state_to_config(immediate=False)
 
         if is_linked:
             self.set_channel_master_mute(channel_id, muted)
         else:
-            vol = self.channel_states.get(channel_id, {}).get(mix_id, {}).get("volume", 80)
+            vol = self.channel_states.get(channel_id, {}).get(canon_mix, {}).get("volume", 80)
             with self._lock:
-                self._submix_volume_queue[(channel_id, mix_id)] = (vol, muted)
+                self._submix_volume_queue[(channel_id, canon_mix)] = (vol, muted)
                 self._volume_event.set()
 
     def toggle_channel_mute(self, channel_id: str, mix_id: str) -> bool:
         """Toggles mute state within a specific virtual mix bus."""
-        curr = self.channel_states.get(channel_id, {}).get(mix_id, {}).get("muted", False)
+        canon_mix = self._match_mix_id(mix_id)
+        curr = self.channel_states.get(channel_id, {}).get(canon_mix, {}).get("muted", False)
         new_mute = not curr
-        self.set_channel_mute(channel_id, mix_id, new_mute)
+        self.set_channel_mute(channel_id, canon_mix, new_mute)
         return new_mute
 
     def _volume_worker_loop(self):
@@ -998,14 +1045,15 @@ class PipeWireManager:
         for ch in channels_to_sync:
             ch_id = ch["id"]
             is_linked = self.is_channel_linked(ch_id)
+            is_source_channel = (ch.get("type") == "source") or ch_id in ("mic", "fefine", "microphone")
             
             # Find output ports for this channel
             ch_out_ports = []
-            if ch_id == "mic":
+            if is_source_channel:
                 for p in out_ports:
                     if p.startswith("output.WaveController_") or p.startswith("WaveController_"):
                         continue
-                    if ":capture_" in p:
+                    if ":capture_" in p and p.startswith("alsa_input."):
                         ch_out_ports.append(p)
             else:
                 assigned = self.get_assigned_apps(ch_id)
@@ -1018,7 +1066,7 @@ class PipeWireManager:
                         if (app_low in p_low or p_low.startswith(app_low)) and ":output_" in p:
                             ch_out_ports.append(p)
 
-            if ch_id != "mic" and ch_out_ports:
+            if not is_source_channel and ch_out_ports:
                 # Ensure assigned apps don't directly play out to physical hardware sinks (bypass isolation)
                 for src_p in ch_out_ports:
                     src_links = links_map.get(src_p, set())
