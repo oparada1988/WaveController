@@ -181,7 +181,6 @@ window.theme-midnight .wave-create-channel-box {
 /* Reorder Feedback & Drag Active Outline */
 .channel-drag-handle {
     opacity: 0.35;
-    cursor: grab;
     transition: all 120ms ease;
     padding: 2px 0;
 }

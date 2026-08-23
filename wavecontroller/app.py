@@ -120,12 +120,16 @@ class WaveControllerApp(Adw.Application):
         self.tray_mgr.notify_menu_updated()
 
     def _on_tray_quit(self):
-        win = self.props.active_window
-        if win:
+        for win in self.get_windows():
+            if hasattr(win, "save_window_state"):
+                win.save_window_state()
             win.destroy()
         self.quit()
 
     def do_shutdown(self):
+        for win in self.get_windows():
+            if hasattr(win, "save_window_state"):
+                win.save_window_state()
         self.tray_mgr.stop()
         self.ipc_server.stop()
         self.peak_monitor.stop()

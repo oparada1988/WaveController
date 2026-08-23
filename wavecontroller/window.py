@@ -26,7 +26,12 @@ class WaveMainWindow(Adw.ApplicationWindow):
 
         # Restore saved window size & maximized state
         win_state = config_manager.get("window_state", {"width": 1280, "height": 780, "maximized": False})
-        self.set_default_size(win_state.get("width", 1280), win_state.get("height", 780))
+        saved_w = max(int(win_state.get("width", 1280)), 800)
+        saved_h = max(int(win_state.get("height", 780)), 500)
+        self._last_unmaximized_width = saved_w
+        self._last_unmaximized_height = saved_h
+
+        self.set_default_size(saved_w, saved_h)
         if win_state.get("maximized", False):
             self.maximize()
 
@@ -34,6 +39,10 @@ class WaveMainWindow(Adw.ApplicationWindow):
         self.set_icon_name("com.oparada.WaveController")
         self._apply_theme()
         self.connect("close-request", self._on_close_request)
+        self.connect("notify::default-width", self._on_window_size_changed)
+        self.connect("notify::default-height", self._on_window_size_changed)
+        self.connect("notify::maximized", self._on_window_size_changed)
+        self.connect("notify::visible", self._on_window_size_changed)
 
         # Load Custom CSS
         css_path = os.path.join(os.path.dirname(__file__), "utils", "style.css")
@@ -99,12 +108,29 @@ class WaveMainWindow(Adw.ApplicationWindow):
         else:
             self.add_css_class("theme-midnight")
 
-    def _on_close_request(self, win):
+    def save_window_state(self):
+        """Persists current window geometry, unmaximized bounds, and maximized status."""
+        is_max = self.is_maximized()
+        w = self.get_width()
+        h = self.get_height()
+        if not is_max and w >= 400 and h >= 300:
+            self._last_unmaximized_width = w
+            self._last_unmaximized_height = h
+
+        target_w = self._last_unmaximized_width or 1280
+        target_h = self._last_unmaximized_height or 780
+
         config_manager.set("window_state", {
-            "width": self.get_width(),
-            "height": self.get_height(),
-            "maximized": self.is_maximized()
+            "width": target_w,
+            "height": target_h,
+            "maximized": is_max
         }, immediate=True)
+
+    def _on_window_size_changed(self, *args):
+        self.save_window_state()
+
+    def _on_close_request(self, win):
+        self.save_window_state()
         close_to_tray = config_manager.get("close_to_tray", True)
         if close_to_tray:
             self.set_visible(False)

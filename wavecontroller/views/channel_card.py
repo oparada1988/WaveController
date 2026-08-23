@@ -33,6 +33,7 @@ class ChannelCard(Gtk.Box):
         self.drag_grip = Gtk.Image.new_from_icon_name("list-drag-handle-symbolic")
         self.drag_grip.set_pixel_size(16)
         self.drag_grip.add_css_class("channel-drag-handle")
+        self.drag_grip.set_cursor_from_name("grab")
         self.drag_grip.set_tooltip_text("Click and hold to reorder channel vertically")
         self.append(self.drag_grip)
 
