@@ -100,6 +100,7 @@ class PipeWireManager:
     def start(self):
         self.running = True
         self.refresh_devices()
+        self._ensure_virtual_mix_nodes()
         self._refresh_node_cache()
         
         # 1. Volume dispatch worker
@@ -109,6 +110,45 @@ class PipeWireManager:
         # 2. External volume sync poller (Syncs Volume Controller Plus on Stream Deck +)
         self._sync_thread = threading.Thread(target=self._external_sync_loop, daemon=True)
         self._sync_thread.start()
+
+    def _ensure_virtual_mix_nodes(self):
+        """Creates PipeWire virtual audio sinks and virtual sources (microphones) for all mixes so they appear in Discord and OBS."""
+        try:
+            out = subprocess.check_output(["pw-dump"], text=True, stderr=subprocess.DEVNULL)
+            data = json.loads(out)
+            existing_node_names = set()
+            for obj in data:
+                props = obj.get("info", {}).get("props", {})
+                n_name = props.get("node.name")
+                if n_name:
+                    existing_node_names.add(n_name)
+        except Exception:
+            existing_node_names = set()
+
+        with self._lock:
+            mixes_copy = list(self.mixes)
+
+        for m in mixes_copy:
+            m_id = m["id"]
+            m_name = m["name"]
+            
+            # Virtual Sink (for audio output)
+            sink_name = f"WaveController_{m_id}_Sink"
+            if sink_name not in existing_node_names:
+                try:
+                    cmd = f'{{ factory.name=support.null-audio-sink node.name="{sink_name}" node.description="WaveController {m_name} (Sink)" media.class=Audio/Sink object.linger=true }}'
+                    subprocess.run(["pw-cli", "create-node", "adapter", cmd], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                except Exception:
+                    pass
+
+            # Virtual Source (Microphone device in Discord, OBS, Zoom, etc.)
+            source_name = f"WaveController_{m_id}_Source"
+            if source_name not in existing_node_names:
+                try:
+                    cmd = f'{{ factory.name=support.null-audio-sink node.name="{source_name}" node.description="WaveController {m_name}" media.class=Audio/Source/Virtual object.linger=true }}'
+                    subprocess.run(["pw-cli", "create-node", "adapter", cmd], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                except Exception:
+                    pass
 
     def stop(self):
         self.running = False
@@ -573,6 +613,7 @@ class PipeWireManager:
                     self.channel_states[ch_id] = {}
                 self.channel_states[ch_id][mix_id] = {"volume": 80, "muted": False, "linked": True}
             self._save_state_to_config(immediate=True)
+            self._ensure_virtual_mix_nodes()
             return new_mix
 
     @staticmethod
