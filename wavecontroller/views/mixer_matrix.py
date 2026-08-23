@@ -245,6 +245,46 @@ class MixerMatrixView(Gtk.Box):
         arrow_app = Gtk.Image.new_from_icon_name("go-next-symbolic")
         arrow_app.set_pixel_size(14)
         app_row.append(arrow_app)
+        app_cat_btn.set_child(app_row)
+        cat_box.append(app_cat_btn)
+
+        # Category 2: Input Device
+        dev_cat_btn = Gtk.Button()
+        dev_cat_btn.add_css_class("flat")
+        dev_cat_btn.add_css_class("wave-sidebar-row")
+
+        dev_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+        dev_icon = Gtk.Image.new_from_icon_name("audio-input-microphone-symbolic")
+        dev_icon.set_pixel_size(22)
+        dev_row.append(dev_icon)
+
+        dev_text_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=1)
+        dev_text_box.set_hexpand(True)
+        dev_title = Gtk.Label(label="Input Device")
+        dev_title.add_css_class("channel-title")
+        dev_title.set_halign(Gtk.Align.START)
+        dev_text_box.append(dev_title)
+
+        dev_desc = Gtk.Label(label="Route physical mic or line-in")
+        dev_desc.add_css_class("mix-header-subtitle")
+        dev_desc.set_halign(Gtk.Align.START)
+        dev_text_box.append(dev_desc)
+        dev_row.append(dev_text_box)
+
+        arrow_dev = Gtk.Image.new_from_icon_name("go-next-symbolic")
+        arrow_dev.set_pixel_size(14)
+        dev_row.append(arrow_dev)
+
+        dev_cat_btn.set_child(dev_row)
+        cat_box.append(dev_cat_btn)
+
+        stack.add_named(cat_box, "cat_page")
+
+        # Container for Dynamic App List
+        apps_list_container = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+
+        # Container for Dynamic Hardware Device List
+        dev_list_container = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
 
         # ==========================================
         # Dynamic Refresh Handlers
@@ -371,7 +411,6 @@ class MixerMatrixView(Gtk.Box):
         app_sub_lbl.set_halign(Gtk.Align.START)
         app_page_box.append(app_sub_lbl)
 
-        apps_list_container = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
         app_page_box.append(apps_list_container)
 
         # Custom Channel Entry
@@ -426,7 +465,6 @@ class MixerMatrixView(Gtk.Box):
         dev_sub_lbl.set_halign(Gtk.Align.START)
         dev_page_box.append(dev_sub_lbl)
 
-        dev_list_container = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
         dev_page_box.append(dev_list_container)
 
         stack.add_named(dev_page_box, "device_page")
