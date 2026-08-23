@@ -6,6 +6,7 @@ from gi.repository import Gtk, Adw, Gio, GLib
 
 from ..engine.config_manager import config_manager
 from ..utils.logger import get_log_file_path, get_log_dir_path, get_log_size_str, export_logs_to, clear_logs
+from .. import __version__, __github__, __issues__
 
 class SettingsView(Gtk.Box):
     """
@@ -182,13 +183,13 @@ class SettingsView(Gtk.Box):
         about_box.set_margin_top(12)
         about_box.set_margin_bottom(24)
 
-        app_title_lbl = Gtk.Label(label="WaveController v0.0.1")
+        app_title_lbl = Gtk.Label(label=f"WaveController v{__version__}")
         app_title_lbl.add_css_class("heading")
         app_title_lbl.set_halign(Gtk.Align.CENTER)
         about_box.append(app_title_lbl)
 
         github_link = Gtk.LinkButton(
-            uri="https://github.com/oparada1988/WaveController",
+            uri=__github__,
             label="GitHub"
         )
         github_link.add_css_class("flat")
@@ -196,7 +197,7 @@ class SettingsView(Gtk.Box):
         about_box.append(github_link)
 
         issues_link = Gtk.LinkButton(
-            uri="https://github.com/oparada1988/WaveController/issues",
+            uri=__issues__,
             label="Submit Issue"
         )
         issues_link.add_css_class("flat")
