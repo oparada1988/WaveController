@@ -561,11 +561,10 @@ class PipeWireManager:
     def _sync_channel_audio_routing(self, channel_id: str, mix_id: str):
         """Synchronizes audio routing with PipeWire volume/mute based on enablement."""
         st = self.get_channel_state(channel_id, mix_id)
-        if not st.get("enabled", True):
-            # If disabled/unrouted, ensure effective volume is zero for this mix
-            pass
-        else:
-            self._trigger_volume_dispatch(channel_id, st.get("volume", 80), st.get("muted", False))
+        if st.get("enabled", True):
+            with self._lock:
+                self._volume_queue[channel_id] = (st.get("volume", 80), st.get("muted", False))
+                self._volume_event.set()
 
     def get_channel_state(self, channel_id: str, mix_id: str) -> dict:
         with self._lock:
