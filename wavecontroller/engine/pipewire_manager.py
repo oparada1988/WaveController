@@ -887,6 +887,33 @@ class PipeWireManager:
                     return ch.get("sync_meter", False)
             return False
 
+    @staticmethod
+    def resolve_smart_mix_icon(name: str, mix_type: str = "source") -> str:
+        """Auto-resolves a minimal symbolic icon based on the mix name and intended use case."""
+        n = name.lower()
+        if any(k in n for k in ["record", "podcast", "track", "capture"]):
+            return "media-record-symbolic"
+        elif any(k in n for k in ["chat", "discord", "voice", "talk", "comms", "zoom", "teams", "skype"]):
+            return "user-available-symbolic"
+        elif any(k in n for k in ["stream", "obs", "broadcast", "twitch", "youtube", "live"]):
+            return "camera-web-symbolic"
+        elif any(k in n for k in ["game", "gaming", "play"]):
+            return "input-gaming-symbolic"
+        elif any(k in n for k in ["music", "spotify", "media", "song", "soundtrack"]):
+            return "applications-multimedia-symbolic"
+        elif any(k in n for k in ["headphone", "personal", "monitor", "ear", "iem"]):
+            return "audio-headphones-symbolic"
+        elif any(k in n for k in ["speaker", "studio", "main", "desk", "soundbar"]):
+            return "audio-speakers-symbolic"
+        elif any(k in n for k in ["browser", "web", "chrome", "firefox", "video"]):
+            return "applications-internet-symbolic"
+        elif any(k in n for k in ["system", "alert", "sfx", "notification", "soundboard"]):
+            return "preferences-system-symbolic"
+        elif mix_type == "sink":
+            return "audio-headphones-symbolic"
+        else:
+            return "audio-input-microphone-symbolic"
+
     def add_mix(self, name: str, subtitle: str = "Custom Mix", mix_type: str = "source", icon: str = None, color: str = "#3584e4") -> dict:
         with self._lock:
             mix_id = name.lower().replace(" ", "_")
@@ -895,7 +922,7 @@ class PipeWireManager:
                 mix_id = f"{mix_id}_{len(self.mixes)}"
             
             if not icon:
-                icon = "audio-input-microphone-symbolic" if mix_type == "source" else "audio-headphones-symbolic"
+                icon = self.resolve_smart_mix_icon(name, mix_type)
 
             new_mix = {
                 "id": mix_id,
@@ -920,8 +947,8 @@ class PipeWireManager:
             self._ensure_virtual_mix_nodes()
             return new_mix
 
-    def update_mix(self, mix_id: str, name: str = None, subtitle: str = None, color: str = None) -> bool:
-        """Updates metadata (name, subtitle, color) of a configured mix and syncs PipeWire node descriptions."""
+    def update_mix(self, mix_id: str, name: str = None, subtitle: str = None, color: str = None, icon: str = None) -> bool:
+        """Updates metadata (name, subtitle, color, icon) of a configured mix and syncs PipeWire node descriptions."""
         with self._lock:
             for m in self.mixes:
                 if m["id"] == mix_id:
@@ -931,6 +958,8 @@ class PipeWireManager:
                         m["subtitle"] = subtitle.strip()
                     if color:
                         m["color"] = color
+                    if icon:
+                        m["icon"] = icon
                     self._save_state_to_config(immediate=True)
                     self._ensure_virtual_mix_nodes()
                     return True

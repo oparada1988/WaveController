@@ -196,6 +196,44 @@ class MixerMatrixView(Gtk.Box):
         type_row.append(type_combo)
         box.append(type_row)
 
+        # Context-Aware Minimal Symbolic Icon Selector
+        MIX_ICONS = [
+            ("user-available-symbolic", "💬 Chat / Discord"),
+            ("camera-web-symbolic", "📡 Stream / OBS"),
+            ("input-gaming-symbolic", "🎮 Game / Gaming"),
+            ("applications-multimedia-symbolic", "🎵 Music / Media"),
+            ("audio-headphones-symbolic", "🎧 Headphones / Monitor"),
+            ("audio-input-microphone-symbolic", "🎙️ Microphone / Voice"),
+            ("audio-speakers-symbolic", "🔊 Speakers / Main"),
+            ("applications-internet-symbolic", "🌐 Browser / Web"),
+            ("preferences-system-symbolic", "🔔 System / Alerts / SFX"),
+            ("media-record-symbolic", "🔴 Recording / Studio")
+        ]
+
+        icon_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        icon_lbl = Gtk.Label(label="Icon:")
+        icon_lbl.add_css_class("mix-header-subtitle")
+        icon_lbl.set_size_request(45, -1)
+        icon_lbl.set_halign(Gtk.Align.START)
+        icon_row.append(icon_lbl)
+
+        icon_combo = Gtk.DropDown.new_from_strings([item[1] for item in MIX_ICONS])
+        icon_combo.set_hexpand(True)
+        icon_row.append(icon_combo)
+        box.append(icon_row)
+
+        def on_name_changed(entry):
+            txt = entry.get_text().strip()
+            if txt:
+                m_type = "source" if type_combo.get_selected() == 0 else "sink"
+                suggested_icon = self.pipewire_mgr.resolve_smart_mix_icon(txt, m_type)
+                for idx, (icon_name, _) in enumerate(MIX_ICONS):
+                    if icon_name == suggested_icon:
+                        icon_combo.set_selected(idx)
+                        break
+
+        name_entry.connect("changed", on_name_changed)
+
         color_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         color_lbl = Gtk.Label(label="Color:")
         color_lbl.add_css_class("mix-header-subtitle")
@@ -219,8 +257,11 @@ class MixerMatrixView(Gtk.Box):
                 c_idx = color_combo.get_selected()
                 c = colors[c_idx] if c_idx < len(colors) else "#9146ff"
                 
+                sel_icon_idx = icon_combo.get_selected()
+                selected_icon = MIX_ICONS[sel_icon_idx][0] if sel_icon_idx < len(MIX_ICONS) else None
+                
                 mix_type = "source" if type_combo.get_selected() == 0 else "sink"
-                self.pipewire_mgr.add_mix(name, subtitle=sub, mix_type=mix_type, color=c)
+                self.pipewire_mgr.add_mix(name, subtitle=sub, mix_type=mix_type, color=c, icon=selected_icon)
                 popover.popdown()
                 GLib.idle_add(self._rebuild_grid)
 

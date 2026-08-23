@@ -195,6 +195,39 @@ class MixHeaderCard(Gtk.Box):
         color_row.append(color_combo)
         box.append(color_row)
 
+        # Context-Aware Minimal Symbolic Icon Selector
+        MIX_ICONS = [
+            ("user-available-symbolic", "💬 Chat / Discord"),
+            ("camera-web-symbolic", "📡 Stream / OBS"),
+            ("input-gaming-symbolic", "🎮 Game / Gaming"),
+            ("applications-multimedia-symbolic", "🎵 Music / Media"),
+            ("audio-headphones-symbolic", "🎧 Headphones / Monitor"),
+            ("audio-input-microphone-symbolic", "🎙️ Microphone / Voice"),
+            ("audio-speakers-symbolic", "🔊 Speakers / Main"),
+            ("applications-internet-symbolic", "🌐 Browser / Web"),
+            ("preferences-system-symbolic", "🔔 System / Alerts / SFX"),
+            ("media-record-symbolic", "🔴 Recording / Studio")
+        ]
+
+        icon_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        icon_lbl = Gtk.Label(label="Icon:")
+        icon_lbl.add_css_class("mix-header-subtitle")
+        icon_lbl.set_size_request(45, -1)
+        icon_lbl.set_halign(Gtk.Align.START)
+        icon_row.append(icon_lbl)
+
+        icon_combo = Gtk.DropDown.new_from_strings([item[1] for item in MIX_ICONS])
+        curr_icon = self.mix_info.get("icon", "audio-headphones-symbolic")
+        sel_ic_idx = 0
+        for i, (ic_name, _) in enumerate(MIX_ICONS):
+            if ic_name == curr_icon:
+                sel_ic_idx = i
+                break
+        icon_combo.set_selected(sel_ic_idx)
+        icon_combo.set_hexpand(True)
+        icon_row.append(icon_combo)
+        box.append(icon_row)
+
         save_btn = Gtk.Button(label="Save Changes")
         save_btn.add_css_class("suggested-action")
         
@@ -203,11 +236,14 @@ class MixHeaderCard(Gtk.Box):
             new_sub = sub_entry.get_text().strip() or "Custom Mix"
             c_idx = color_combo.get_selected()
             new_color = colors_map[c_idx][0] if c_idx < len(colors_map) else "#9146ff"
+            new_icon = MIX_ICONS[icon_combo.get_selected()][0] if icon_combo.get_selected() < len(MIX_ICONS) else curr_icon
 
             if new_name:
-                self.pipewire_mgr.update_mix(self.mix_info["id"], name=new_name, subtitle=new_sub, color=new_color)
+                self.mix_info["icon"] = new_icon
+                self.pipewire_mgr.update_mix(self.mix_info["id"], name=new_name, subtitle=new_sub, color=new_color, icon=new_icon)
                 self.title_lbl.set_text(new_name)
                 self.subtitle_lbl.set_text(new_sub)
+                self.icon_img.set_from_icon_name(new_icon)
                 self._apply_indicator_color(new_color)
                 popover.popdown()
                 if self.on_edit_callback:
