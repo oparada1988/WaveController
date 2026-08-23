@@ -66,11 +66,64 @@ class MixHeaderCard(Gtk.Box):
 
         self.append(top_box)
 
+        # Master Mix Bus Volume Control Row
+        if self.pipewire_mgr:
+            bus_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+            bus_box.set_margin_top(2)
+            bus_box.set_margin_bottom(2)
+
+            # Master Mute Button
+            is_muted = self.pipewire_mgr.get_mix_master_mute(mix_info["id"])
+            self.mute_btn = Gtk.Button.new_from_icon_name("audio-volume-muted-symbolic" if is_muted else "audio-volume-high-symbolic")
+            self.mute_btn.add_css_class("flat")
+            self.mute_btn.add_css_class("wave-icon-btn")
+            if is_muted:
+                self.mute_btn.add_css_class("muted")
+            self.mute_btn.set_tooltip_text(f"Mute '{mix_info.get('name')}' Master Output")
+            self.mute_btn.connect("clicked", self._on_mute_clicked)
+            bus_box.append(self.mute_btn)
+
+            # Master Volume Slider
+            vol = self.pipewire_mgr.get_mix_master_volume(mix_info["id"])
+            self.slider = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 0, 100, 1)
+            self.slider.set_value(vol)
+            self.slider.set_hexpand(True)
+            self.slider.set_draw_value(False)
+            self.slider.add_css_class("wave-slider")
+            self.slider.set_tooltip_text(f"Mix Master Volume: {vol}%")
+            self.slider.connect("value-changed", self._on_slider_changed)
+            bus_box.append(self.slider)
+
+            # Volume percentage label
+            self.vol_lbl = Gtk.Label(label=f"{vol}%")
+            self.vol_lbl.add_css_class("mix-header-subtitle")
+            self.vol_lbl.set_size_request(32, -1)
+            bus_box.append(self.vol_lbl)
+
+            self.append(bus_box)
+
         # Active underline accent
         self.indicator = Gtk.Box()
         self.indicator.add_css_class("mix-header-indicator-active")
         self._apply_indicator_color(mix_info.get("color", "#9146ff"))
         self.append(self.indicator)
+
+    def _on_slider_changed(self, scale):
+        vol = int(scale.get_value())
+        self.vol_lbl.set_text(f"{vol}%")
+        self.slider.set_tooltip_text(f"Mix Master Volume: {vol}%")
+        if self.pipewire_mgr:
+            self.pipewire_mgr.set_mix_master_volume(self.mix_info["id"], vol)
+
+    def _on_mute_clicked(self, btn):
+        if self.pipewire_mgr:
+            is_muted = self.pipewire_mgr.toggle_mix_master_mute(self.mix_info["id"])
+            if is_muted:
+                self.mute_btn.set_icon_name("audio-volume-muted-symbolic")
+                self.mute_btn.add_css_class("muted")
+            else:
+                self.mute_btn.set_icon_name("audio-volume-high-symbolic")
+                self.mute_btn.remove_css_class("muted")
 
     def _apply_indicator_color(self, color: str):
         css_provider = Gtk.CssProvider()

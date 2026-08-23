@@ -378,16 +378,20 @@ class MixerMatrixView(Gtk.Box):
             while dev_list_container.get_first_child():
                 dev_list_container.remove(dev_list_container.get_first_child())
 
+            if self.hardware_mgr:
+                self.hardware_mgr.detect_connected_hardware()
+
             input_devs = self.hardware_mgr.input_devices if self.hardware_mgr else []
             if input_devs:
                 for dev_info in input_devs:
                     dev_name = self.hardware_mgr.get_device_display_name(dev_info)
+                    dev_icon = dev_info.get("icon", "audio-input-microphone-symbolic")
                     dev_item_btn = Gtk.Button()
                     dev_item_btn.add_css_class("flat")
                     dev_item_btn.add_css_class("wave-sidebar-row")
 
                     d_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-                    d_img = Gtk.Image.new_from_icon_name("audio-input-microphone-symbolic")
+                    d_img = Gtk.Image.new_from_icon_name(dev_icon)
                     d_img.set_pixel_size(18)
                     d_lbl = Gtk.Label(label=dev_name)
                     d_lbl.set_hexpand(True)
@@ -402,14 +406,14 @@ class MixerMatrixView(Gtk.Box):
                     d_row.append(d_add_ic)
                     dev_item_btn.set_child(d_row)
 
-                    def make_dev_click_handler(name):
+                    def make_dev_click_handler(name, icon):
                         def handler(btn):
-                            self.pipewire_mgr.add_channel(name, icon="audio-input-microphone-symbolic", ch_type="source")
+                            self.pipewire_mgr.add_channel(name, icon=icon, ch_type="source", assigned_apps=["System capture"])
                             popover.popdown()
                             GLib.idle_add(self._rebuild_grid)
                         return handler
 
-                    dev_item_btn.connect("clicked", make_dev_click_handler(dev_name))
+                    dev_item_btn.connect("clicked", make_dev_click_handler(dev_name, dev_icon))
                     dev_list_container.append(dev_item_btn)
             else:
                 no_devs = Gtk.Label(label="No hardware input devices found.")

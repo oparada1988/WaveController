@@ -135,6 +135,24 @@ class IPCServer:
                     from gi.repository import GLib
                     GLib.idle_add(self.pipewire_mgr.on_external_change_callback)
                     
+            elif cmd in ["get_mix_volume", "get_mix_master_volume"]:
+                mx = req.get("mix_id") or "personal"
+                res["volume"] = self.pipewire_mgr.get_mix_master_volume(mx)
+                res["muted"] = self.pipewire_mgr.get_mix_master_mute(mx)
+            elif cmd in ["set_mix_volume", "set_mix_master_volume"]:
+                mx = req.get("mix_id") or "personal"
+                vol = req.get("volume")
+                muted = req.get("muted")
+                if vol is not None:
+                    self.pipewire_mgr.set_mix_master_volume(mx, int(vol))
+                if muted is not None:
+                    self.pipewire_mgr.set_mix_master_mute(mx, bool(muted))
+                res["volume"] = self.pipewire_mgr.get_mix_master_volume(mx)
+                res["muted"] = self.pipewire_mgr.get_mix_master_mute(mx)
+            elif cmd in ["toggle_mix_mute", "toggle_mix_master_mute"]:
+                mx = req.get("mix_id") or "personal"
+                is_muted = self.pipewire_mgr.toggle_mix_master_mute(mx)
+                res["muted"] = is_muted
             elif cmd == "toggle_mute":
                 raw_target = req.get("channel_id") or req.get("target") or "mic"
                 ch = self._match_channel_id(raw_target)

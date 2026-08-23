@@ -32,12 +32,14 @@ class PipeWireManager:
         saved_apps = config_manager.get("assigned_apps")
         saved_states = config_manager.get("channel_states")
         saved_masters = config_manager.get("channel_master_states")
+        saved_mix_states = config_manager.get("mix_states")
 
         self.channels = list(saved_channels) if saved_channels else list(self.DEFAULT_CHANNELS)
         self.mixes = list(saved_mixes) if saved_mixes else list(self.DEFAULT_MIXES)
         self.assigned_apps = dict(saved_apps) if saved_apps else dict(self.DEFAULT_APP_MAPPINGS)
         self.channel_states = dict(saved_states) if saved_states else {}
         self.channel_master_states = dict(saved_masters) if saved_masters else {}
+        self.mix_states = dict(saved_mix_states) if saved_mix_states else {}
         self.output_devices = []
         self.selected_monitor_device = None
         self.running = False
@@ -62,7 +64,8 @@ class PipeWireManager:
                 "mixes": self.mixes,
                 "assigned_apps": self.assigned_apps,
                 "channel_states": self.channel_states,
-                "channel_master_states": self.channel_master_states
+                "channel_master_states": self.channel_master_states,
+                "mix_states": self.mix_states
             }
             config_manager.update(data, immediate=immediate)
         
@@ -71,6 +74,11 @@ class PipeWireManager:
         init_mic_vol, init_mic_muted = self._query_system_source_status()
         mic_vol = init_mic_vol if init_mic_vol is not None else 80
         mic_muted = init_mic_muted if init_mic_muted is not None else False
+
+        for mx in self.mixes:
+            mx_id = mx["id"]
+            if mx_id not in self.mix_states:
+                self.mix_states[mx_id] = {"volume": 100, "muted": False}
 
         for ch in self.channels:
             ch_id = ch["id"]
@@ -314,7 +322,7 @@ class PipeWireManager:
                     continue
                 props = obj.get("info", {}).get("props", {})
                 media_class = props.get("media.class", "")
-                if "Stream/Output/Audio" in media_class:
+                if "Stream/Output/Audio" in media_class or media_class.startswith("Audio/"):
                     node_id = str(obj["id"])
                     names = [
                         props.get("application.name", "").lower(),
@@ -518,6 +526,80 @@ class PipeWireManager:
             self._volume_event.set()
             self._save_state_to_config(immediate=False)
             return new_mute
+
+    # -------------------------------------------------------------
+    # Mix Master Bus Control (for Discord, OBS, Headphones, etc.)
+    # -------------------------------------------------------------
+    def _get_mix_node_ids(self, mix_id: str) -> list:
+        ids = []
+        target_sink = f"wavecontroller_{mix_id.lower()}_sink"
+        target_src = f"wavecontroller_{mix_id.lower()}_source"
+        with self._lock:
+            for name, node_ids in self._node_cache.items():
+                if target_sink in name or target_src in name:
+                    ids.extend(node_ids)
+        if not ids:
+            self._refresh_node_cache()
+            with self._lock:
+                for name, node_ids in self._node_cache.items():
+                    if target_sink in name or target_src in name:
+                        ids.extend(node_ids)
+        return list(set(ids))
+
+    def get_mix_master_volume(self, mix_id: str) -> int:
+        with self._lock:
+            return self.mix_states.get(mix_id, {}).get("volume", 100)
+
+    def get_mix_master_mute(self, mix_id: str) -> bool:
+        with self._lock:
+            return self.mix_states.get(mix_id, {}).get("muted", False)
+
+    def set_mix_master_volume(self, mix_id: str, volume: int):
+        with self._lock:
+            if mix_id not in self.mix_states:
+                self.mix_states[mix_id] = {"volume": 100, "muted": False}
+            vol = max(0, min(100, volume))
+            self.mix_states[mix_id]["volume"] = vol
+            self._save_state_to_config(immediate=False)
+            
+        vol_frac = vol / 100.0
+        node_ids = self._get_mix_node_ids(mix_id)
+        for n_id in node_ids:
+            try:
+                subprocess.run(["wpctl", "set-volume", str(n_id), f"{vol_frac:.2f}"], stderr=subprocess.DEVNULL)
+            except Exception:
+                pass
+
+    def set_mix_master_mute(self, mix_id: str, muted: bool):
+        with self._lock:
+            if mix_id not in self.mix_states:
+                self.mix_states[mix_id] = {"volume": 100, "muted": False}
+            self.mix_states[mix_id]["muted"] = muted
+            self._save_state_to_config(immediate=False)
+            
+        node_ids = self._get_mix_node_ids(mix_id)
+        for n_id in node_ids:
+            try:
+                subprocess.run(["wpctl", "set-mute", str(n_id), "1" if muted else "0"], stderr=subprocess.DEVNULL)
+            except Exception:
+                pass
+
+    def toggle_mix_master_mute(self, mix_id: str) -> bool:
+        with self._lock:
+            if mix_id not in self.mix_states:
+                self.mix_states[mix_id] = {"volume": 100, "muted": False}
+            curr = self.mix_states[mix_id].get("muted", False)
+            new_mute = not curr
+            self.mix_states[mix_id]["muted"] = new_mute
+            self._save_state_to_config(immediate=False)
+            
+        node_ids = self._get_mix_node_ids(mix_id)
+        for n_id in node_ids:
+            try:
+                subprocess.run(["wpctl", "set-mute", str(n_id), "1" if new_mute else "0"], stderr=subprocess.DEVNULL)
+            except Exception:
+                pass
+        return new_mute
 
     # -------------------------------------------------------------
     # Sub-Mix Send Levels (Virtual Mix Bus Faders in Matrix Grid)
@@ -738,14 +820,6 @@ class PipeWireManager:
                                 subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                             except Exception:
                                 pass
-
-        # Also trigger volume update
-        if channel_id:
-            st = self.get_channel_state(channel_id, mix_id or (mixes_copy[0]["id"] if mixes_copy else "personal"))
-            if st.get("enabled", True):
-                with self._lock:
-                    self._volume_queue[channel_id] = (st.get("volume", 80), st.get("muted", False))
-                    self._volume_event.set()
 
     def get_channel_state(self, channel_id: str, mix_id: str) -> dict:
         with self._lock:

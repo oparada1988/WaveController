@@ -168,6 +168,26 @@ class USBHardwareManager:
 
         self.discovered_devices = hw_map
 
+        # Legacy and direct list access
+        inputs = []
+        outputs = []
+        for k, d in hw_map.items():
+            if d.get("type") in ["duplex", "input"] or d.get("sources"):
+                inputs.append(d)
+            if d.get("type") in ["duplex", "output"] or d.get("sinks"):
+                outputs.append(d)
+        
+        self.input_devices = inputs
+        self.output_devices = outputs
+        self.connected_audio_devices = list(hw_map.values())
+
+        # Determine primary mic
+        for k, d in hw_map.items():
+            if d.get("type") in ["duplex", "input"]:
+                self.device_name = d["name"]
+                self.device_type = "elgato" if "wave" in d["name"].lower() else "generic"
+                break
+
     def _detect_smart_icon(self, name: str, form_factor: str = "", icon_name: str = "", dev_type: str = "duplex") -> str:
         """Smart icon selector matching physical hardware form factors accurately."""
         name_low = name.lower()
@@ -221,26 +241,6 @@ class USBHardwareManager:
         config_manager.set("device_icons", icons, immediate=True)
         if self.on_device_renamed_callback:
             self.on_device_renamed_callback(device_key, "")
-
-        # Legacy lists for backward compatibility
-        inputs = []
-        outputs = []
-        for k, d in hw_map.items():
-            for s in d.get("sources", []):
-                inputs.append({"id": str(s["id"]), "name": d["name"], "is_default": False, "type": "source", "device_key": k})
-            for s in d.get("sinks", []):
-                outputs.append({"id": str(s["id"]), "name": d["name"], "is_default": False, "type": "sink", "device_key": k})
-        
-        self.input_devices = inputs
-        self.output_devices = outputs
-        self.connected_audio_devices = list(hw_map.values())
-
-        # Determine primary mic
-        for k, d in hw_map.items():
-            if d.get("type") in ["duplex", "input"]:
-                self.device_name = d["name"]
-                self.device_type = "elgato" if "wave" in d["name"].lower() else "generic"
-                break
 
     def get_tracked_devices(self) -> list:
         """Returns the list of user-tracked devices hydrated with live state."""
