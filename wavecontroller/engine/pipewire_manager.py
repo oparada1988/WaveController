@@ -880,12 +880,35 @@ class PipeWireManager:
                     self._save_state_to_config(immediate=True)
                     break
 
-    def get_channel_sync_meter(self, channel_id: str) -> bool:
+    def move_channel_up(self, channel_id: str) -> bool:
+        """Moves a channel up by one position in the mixer matrix."""
         with self._lock:
-            for ch in self.channels:
-                if ch["id"] == channel_id:
-                    return ch.get("sync_meter", False)
-            return False
+            idx = next((i for i, c in enumerate(self.channels) if c["id"] == channel_id), -1)
+            if idx > 0:
+                self.channels[idx - 1], self.channels[idx] = self.channels[idx], self.channels[idx - 1]
+                self._save_state_to_config(immediate=True)
+                return True
+        return False
+
+    def move_channel_down(self, channel_id: str) -> bool:
+        """Moves a channel down by one position in the mixer matrix."""
+        with self._lock:
+            idx = next((i for i, c in enumerate(self.channels) if c["id"] == channel_id), -1)
+            if 0 <= idx < len(self.channels) - 1:
+                self.channels[idx + 1], self.channels[idx] = self.channels[idx], self.channels[idx + 1]
+                self._save_state_to_config(immediate=True)
+                return True
+        return False
+
+    def reorder_channels(self, from_idx: int, to_idx: int) -> bool:
+        """Reorders channels from from_idx to to_idx in the mixer matrix."""
+        with self._lock:
+            if 0 <= from_idx < len(self.channels) and 0 <= to_idx < len(self.channels) and from_idx != to_idx:
+                item = self.channels.pop(from_idx)
+                self.channels.insert(to_idx, item)
+                self._save_state_to_config(immediate=True)
+                return True
+        return False
 
     @staticmethod
     def resolve_smart_mix_icon(name: str, mix_type: str = "source") -> str:

@@ -136,7 +136,9 @@ class MixerMatrixView(Gtk.Box):
                 on_link_toggle_callback=self._on_link_toggled,
                 on_sync_meter_callback=self._on_sync_meter_toggled,
                 on_channel_removed_callback=lambda ch_id: GLib.idle_add(self._rebuild_grid),
-                on_channel_renamed_callback=lambda ch_id, name: GLib.idle_add(self._rebuild_grid)
+                on_channel_renamed_callback=lambda ch_id, name: GLib.idle_add(self._rebuild_grid),
+                on_move_up_callback=self._on_move_channel_up,
+                on_move_down_callback=self._on_move_channel_down
             )
             self.channel_cards[ch["id"]] = card
             self.grid.attach(card, 0, row_idx, 1, 1)
@@ -156,6 +158,35 @@ class MixerMatrixView(Gtk.Box):
         create_btn.set_size_request(340, -1)
         self._setup_create_channel_popover(create_btn)
         self.grid.attach(create_btn, 0, bottom_row, 1, 1)
+
+    def _on_move_channel_up(self, ch_id: str):
+        if self.pipewire_mgr.move_channel_up(ch_id):
+            self._rebuild_grid_with_highlight(ch_id)
+
+    def _on_move_channel_down(self, ch_id: str):
+        if self.pipewire_mgr.move_channel_down(ch_id):
+            self._rebuild_grid_with_highlight(ch_id)
+
+    def _rebuild_grid_with_highlight(self, highlight_ch_id: str = None):
+        self._rebuild_grid()
+        if highlight_ch_id:
+            card = self.channel_cards.get(highlight_ch_id)
+            if card:
+                card.add_css_class("drop-target-active")
+            for mix in self.pipewire_mgr.mixes:
+                cell = self.matrix_cells.get((highlight_ch_id, mix["id"]))
+                if cell:
+                    cell.add_css_class("drop-target-active")
+            
+            def remove_highlight():
+                if card:
+                    card.remove_css_class("drop-target-active")
+                for mix in self.pipewire_mgr.mixes:
+                    cell = self.matrix_cells.get((highlight_ch_id, mix["id"]))
+                    if cell:
+                        cell.remove_css_class("drop-target-active")
+                return False
+            GLib.timeout_add(450, remove_highlight)
 
     def _setup_create_mix_popover(self, menu_btn: Gtk.MenuButton):
         popover = Gtk.Popover()
@@ -198,16 +229,16 @@ class MixerMatrixView(Gtk.Box):
 
         # Context-Aware Minimal Symbolic Icon Selector
         MIX_ICONS = [
-            ("user-available-symbolic", "💬 Chat / Discord"),
-            ("camera-web-symbolic", "📡 Stream / OBS"),
-            ("input-gaming-symbolic", "🎮 Game / Gaming"),
-            ("applications-multimedia-symbolic", "🎵 Music / Media"),
-            ("audio-headphones-symbolic", "🎧 Headphones / Monitor"),
-            ("audio-input-microphone-symbolic", "🎙️ Microphone / Voice"),
-            ("audio-speakers-symbolic", "🔊 Speakers / Main"),
-            ("applications-internet-symbolic", "🌐 Browser / Web"),
-            ("preferences-system-symbolic", "🔔 System / Alerts / SFX"),
-            ("media-record-symbolic", "🔴 Recording / Studio")
+            ("user-available-symbolic", "Chat / Discord"),
+            ("camera-web-symbolic", "Stream / OBS"),
+            ("input-gaming-symbolic", "Game / Gaming"),
+            ("applications-multimedia-symbolic", "Music / Media"),
+            ("audio-headphones-symbolic", "Headphones / Monitor"),
+            ("audio-input-microphone-symbolic", "Microphone / Voice"),
+            ("audio-speakers-symbolic", "Speakers / Main"),
+            ("applications-internet-symbolic", "Browser / Web"),
+            ("preferences-system-symbolic", "System / Alerts / SFX"),
+            ("media-record-symbolic", "Recording / Studio")
         ]
 
         icon_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)

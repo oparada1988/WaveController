@@ -149,7 +149,7 @@ class MixHeaderCard(Gtk.Box):
 
         # Mix Type (Fixed on creation)
         m_type = self.mix_info.get("type", "source" if self.mix_info.get("id") != "personal" else "sink")
-        type_str = "🎙️ Source (Microphone / Input)" if m_type == "source" else "🎧 Sink (Speaker / Output)"
+        type_str = "Source (Microphone / Input)" if m_type == "source" else "Sink (Speaker / Output)"
         
         type_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         type_lbl = Gtk.Label(label=f"Type: {type_str}")
@@ -197,16 +197,16 @@ class MixHeaderCard(Gtk.Box):
 
         # Context-Aware Minimal Symbolic Icon Selector
         MIX_ICONS = [
-            ("user-available-symbolic", "💬 Chat / Discord"),
-            ("camera-web-symbolic", "📡 Stream / OBS"),
-            ("input-gaming-symbolic", "🎮 Game / Gaming"),
-            ("applications-multimedia-symbolic", "🎵 Music / Media"),
-            ("audio-headphones-symbolic", "🎧 Headphones / Monitor"),
-            ("audio-input-microphone-symbolic", "🎙️ Microphone / Voice"),
-            ("audio-speakers-symbolic", "🔊 Speakers / Main"),
-            ("applications-internet-symbolic", "🌐 Browser / Web"),
-            ("preferences-system-symbolic", "🔔 System / Alerts / SFX"),
-            ("media-record-symbolic", "🔴 Recording / Studio")
+            ("user-available-symbolic", "Chat / Discord"),
+            ("camera-web-symbolic", "Stream / OBS"),
+            ("input-gaming-symbolic", "Game / Gaming"),
+            ("applications-multimedia-symbolic", "Music / Media"),
+            ("audio-headphones-symbolic", "Headphones / Monitor"),
+            ("audio-input-microphone-symbolic", "Microphone / Voice"),
+            ("audio-speakers-symbolic", "Speakers / Main"),
+            ("applications-internet-symbolic", "Browser / Web"),
+            ("preferences-system-symbolic", "System / Alerts / SFX"),
+            ("media-record-symbolic", "Recording / Studio")
         ]
 
         icon_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)

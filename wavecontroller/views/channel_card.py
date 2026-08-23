@@ -11,7 +11,7 @@ class ChannelCard(Gtk.Box):
     Contains the channel icon, title, settings popover (running app routing, mono/stereo sync toggle, delete),
     mute button, dual-track stereo volume slider with real-time VU meters, and link toggle.
     """
-    def __init__(self, channel_info: dict, pipewire_mgr, hardware_mgr=None, on_link_toggle_callback=None, on_sync_meter_callback=None, on_channel_removed_callback=None, on_channel_renamed_callback=None):
+    def __init__(self, channel_info: dict, pipewire_mgr, hardware_mgr=None, on_link_toggle_callback=None, on_sync_meter_callback=None, on_channel_removed_callback=None, on_channel_renamed_callback=None, on_move_up_callback=None, on_move_down_callback=None):
         super().__init__(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         self.channel_info = channel_info
         self.pipewire_mgr = pipewire_mgr
@@ -20,11 +20,35 @@ class ChannelCard(Gtk.Box):
         self.on_sync_meter_callback = on_sync_meter_callback
         self.on_channel_removed_callback = on_channel_removed_callback
         self.on_channel_renamed_callback = on_channel_renamed_callback
+        self.on_move_up_callback = on_move_up_callback
+        self.on_move_down_callback = on_move_down_callback
         
         self.add_css_class("channel-row-card")
         self.set_valign(Gtk.Align.CENTER)
         self.set_hexpand(False)
         self.set_size_request(340, -1)
+
+        # Reorder Up / Down Controls
+        reorder_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        reorder_box.set_valign(Gtk.Align.CENTER)
+        
+        self.up_btn = Gtk.Button.new_from_icon_name("go-up-symbolic")
+        self.up_btn.add_css_class("flat")
+        self.up_btn.add_css_class("channel-reorder-btn")
+        self.up_btn.set_tooltip_text("Move Channel Up")
+        if self.on_move_up_callback:
+            self.up_btn.connect("clicked", lambda b: self.on_move_up_callback(self.channel_info["id"]))
+        reorder_box.append(self.up_btn)
+
+        self.down_btn = Gtk.Button.new_from_icon_name("go-down-symbolic")
+        self.down_btn.add_css_class("flat")
+        self.down_btn.add_css_class("channel-reorder-btn")
+        self.down_btn.set_tooltip_text("Move Channel Down")
+        if self.on_move_down_callback:
+            self.down_btn.connect("clicked", lambda b: self.on_move_down_callback(self.channel_info["id"]))
+        reorder_box.append(self.down_btn)
+
+        self.append(reorder_box)
 
         # Channel icon (Auto-resolve from assigned apps or channel name)
         assigned = self.pipewire_mgr.get_assigned_apps(channel_info["id"])
@@ -37,7 +61,7 @@ class ChannelCard(Gtk.Box):
         # Channel Title + Subtitle Box
         title_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=1)
         title_box.set_hexpand(False)
-        title_box.set_size_request(130, -1)
+        title_box.set_size_request(118, -1)
 
         display_name = channel_info.get("name", "Channel")
         if channel_info["id"] == "mic" and self.hardware_mgr:
