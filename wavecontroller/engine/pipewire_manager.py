@@ -50,11 +50,13 @@ class PipeWireManager:
         self._last_cache_time = 0.0
         self._volume_queue = {} # {channel_id: (volume_pct, is_muted)}
         self._submix_volume_queue = {} # {(channel_id, mix_id): (volume_pct, is_muted)}
+        self._mix_volume_queue = {} # {mix_id: (volume_pct, is_muted)}
         self._volume_event = threading.Event()
         self._worker_thread = None
         self._sync_thread = None
         self._submix_procs = {} # {(channel_id, mix_id): subprocess.Popen}
         self._submix_node_ids = {} # {(channel_id, mix_id): [node_id, ...]}
+        self._mix_node_ids_cache = {} # {mix_id: [node_id, ...]}
         self.on_external_change_callback = None
 
         self._init_default_states()
@@ -178,6 +180,9 @@ class PipeWireManager:
                 except Exception:
                     pass
 
+        with self._lock:
+            self._mix_node_ids_cache.clear()
+
         # Real-time synchronization of PipeWire port connections (pw-link)
         self._sync_channel_audio_routing()
 
@@ -234,6 +239,8 @@ class PipeWireManager:
             self._submix_procs.clear()
             self._submix_node_ids.clear()
             self._submix_volume_queue.clear()
+            self._mix_node_ids_cache.clear()
+            self._mix_volume_queue.clear()
 
     def get_application_volume_status(self, app_name: str) -> tuple:
         """Queries volume and mute status of an application from its PipeWire node."""
@@ -597,6 +604,11 @@ class PipeWireManager:
     # Mix Master Bus Control (for Discord, OBS, Headphones, etc.)
     # -------------------------------------------------------------
     def _get_mix_node_ids(self, mix_id: str) -> list:
+        with self._lock:
+            cached = self._mix_node_ids_cache.get(mix_id)
+            if cached:
+                return list(cached)
+
         ids = []
         target_sink = f"wavecontroller_{mix_id.lower()}_sink"
         target_src = f"wavecontroller_{mix_id.lower()}_source"
@@ -630,7 +642,12 @@ class PipeWireManager:
                 for name, node_ids in self._node_cache.items():
                     if target_sink in name or target_src in name:
                         ids.extend(node_ids)
-        return list(set(ids))
+
+        unique_ids = list(set(ids))
+        if unique_ids:
+            with self._lock:
+                self._mix_node_ids_cache[mix_id] = unique_ids
+        return unique_ids
 
     def get_mix_master_volume(self, mix_id: str) -> int:
         with self._lock:
@@ -646,29 +663,18 @@ class PipeWireManager:
                 self.mix_states[mix_id] = {"volume": 100, "muted": False}
             vol = max(0, min(100, volume))
             self.mix_states[mix_id]["volume"] = vol
+            self._mix_volume_queue[mix_id] = (vol, self.mix_states[mix_id].get("muted", False))
+            self._volume_event.set()
             self._save_state_to_config(immediate=False)
-            
-        vol_frac = vol / 100.0
-        node_ids = self._get_mix_node_ids(mix_id)
-        for n_id in node_ids:
-            try:
-                subprocess.run(["wpctl", "set-volume", str(n_id), f"{vol_frac:.2f}"], stderr=subprocess.DEVNULL)
-            except Exception:
-                pass
 
     def set_mix_master_mute(self, mix_id: str, muted: bool):
         with self._lock:
             if mix_id not in self.mix_states:
                 self.mix_states[mix_id] = {"volume": 100, "muted": False}
             self.mix_states[mix_id]["muted"] = muted
+            self._mix_volume_queue[mix_id] = (self.mix_states[mix_id].get("volume", 100), muted)
+            self._volume_event.set()
             self._save_state_to_config(immediate=False)
-            
-        node_ids = self._get_mix_node_ids(mix_id)
-        for n_id in node_ids:
-            try:
-                subprocess.run(["wpctl", "set-mute", str(n_id), "1" if muted else "0"], stderr=subprocess.DEVNULL)
-            except Exception:
-                pass
 
     def toggle_mix_master_mute(self, mix_id: str) -> bool:
         with self._lock:
@@ -677,15 +683,10 @@ class PipeWireManager:
             curr = self.mix_states[mix_id].get("muted", False)
             new_mute = not curr
             self.mix_states[mix_id]["muted"] = new_mute
+            self._mix_volume_queue[mix_id] = (self.mix_states[mix_id].get("volume", 100), new_mute)
+            self._volume_event.set()
             self._save_state_to_config(immediate=False)
-            
-        node_ids = self._get_mix_node_ids(mix_id)
-        for n_id in node_ids:
-            try:
-                subprocess.run(["wpctl", "set-mute", str(n_id), "1" if new_mute else "0"], stderr=subprocess.DEVNULL)
-            except Exception:
-                pass
-        return new_mute
+            return new_mute
 
     def _apply_submix_gain(self, ch_id: str, m_id: str, vol_pct: int, is_muted: bool):
         """Applies independent sub-mix attenuation to dedicated PipeWire loopback stream node."""
@@ -820,6 +821,8 @@ class PipeWireManager:
                 self._volume_queue.clear()
                 pending_submix = dict(self._submix_volume_queue)
                 self._submix_volume_queue.clear()
+                pending_mix = dict(self._mix_volume_queue)
+                self._mix_volume_queue.clear()
 
             # 1. Process Master Channel Volume Dispatches
             for channel_id, (volume_pct, is_muted) in pending_master.items():
@@ -881,6 +884,17 @@ class PipeWireManager:
             # 2. Process Independent Sub-Mix Gain Dispatches
             for (ch_id, m_id), (volume_pct, is_muted) in pending_submix.items():
                 self._apply_submix_gain(ch_id, m_id, volume_pct, is_muted)
+
+            # 3. Process Mix Master Bus Output Volume Dispatches
+            for mix_id, (volume_pct, is_muted) in pending_mix.items():
+                vol_frac = max(0.0, min(1.5, volume_pct / 100.0))
+                node_ids = self._get_mix_node_ids(mix_id)
+                for n_id in node_ids:
+                    try:
+                        subprocess.run(["wpctl", "set-volume", str(n_id), f"{vol_frac:.2f}"], stderr=subprocess.DEVNULL)
+                        subprocess.run(["wpctl", "set-mute", str(n_id), "1" if is_muted else "0"], stderr=subprocess.DEVNULL)
+                    except Exception:
+                        pass
 
     def toggle_channel_link(self, channel_id: str, mix_id: str) -> bool:
         with self._lock:
