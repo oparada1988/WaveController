@@ -98,7 +98,10 @@ class MixerMatrixView(Gtk.Box):
 
         # Mix Column Headers (Row 0, Columns 1..N)
         for col_idx, mix in enumerate(self.pipewire_mgr.mixes, start=1):
-            mix_header = MixHeaderCard(mix)
+            mix_header = MixHeaderCard(
+                mix,
+                on_remove_callback=lambda m_id: (self.pipewire_mgr.remove_mix(m_id), GLib.idle_add(self._rebuild_grid))
+            )
             self.grid.attach(mix_header, col_idx, 0, 1, 1)
 
         # Create Mix (+) Button Card (Column N+1)
@@ -112,7 +115,7 @@ class MixerMatrixView(Gtk.Box):
         plus_btn.set_icon_name("list-add-symbolic")
         plus_btn.add_css_class("flat")
         plus_btn.add_css_class("wave-icon-btn")
-        plus_btn.set_tooltip_text("Add Custom Mix Output")
+        plus_btn.set_tooltip_text("Add Custom Mix")
         self._setup_create_mix_popover(plus_btn)
         create_mix_card.append(plus_btn)
         self.grid.attach(create_mix_card, create_mix_col, 0, 1, 1)
@@ -155,25 +158,45 @@ class MixerMatrixView(Gtk.Box):
         box.set_margin_bottom(12)
         box.set_margin_start(12)
         box.set_margin_end(12)
-        box.set_size_request(240, -1)
+        box.set_size_request(260, -1)
 
-        head_lbl = Gtk.Label(label="Add Custom Output Mix")
+        head_lbl = Gtk.Label(label="Add Custom Audio Mix")
         head_lbl.add_css_class("mix-header-title")
         head_lbl.set_halign(Gtk.Align.START)
         box.append(head_lbl)
 
-        name_entry = Gtk.Entry(placeholder_text="Mix Name (e.g. Stream Mix, VOD Mix)")
+        name_entry = Gtk.Entry(placeholder_text="Mix Name (e.g. Stream Mix, Discord Mic)")
         box.append(name_entry)
 
-        sub_entry = Gtk.Entry(placeholder_text="Subtitle (e.g. OBS Studio / Headphones)")
+        sub_entry = Gtk.Entry(placeholder_text="Subtitle (e.g. Broadcast / Voice Chat)")
         box.append(sub_entry)
+
+        # Mix Device Type (Source/Mic vs Sink/Speaker)
+        type_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        type_lbl = Gtk.Label(label="Type:")
+        type_lbl.add_css_class("mix-header-subtitle")
+        type_lbl.set_size_request(45, -1)
+        type_lbl.set_halign(Gtk.Align.START)
+        type_row.append(type_lbl)
+
+        type_combo = Gtk.DropDown.new_from_strings([
+            "Source (Microphone / Input)",
+            "Sink (Speaker / Output)"
+        ])
+        type_combo.set_selected(0)
+        type_combo.set_hexpand(True)
+        type_row.append(type_combo)
+        box.append(type_row)
 
         color_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         color_lbl = Gtk.Label(label="Color:")
         color_lbl.add_css_class("mix-header-subtitle")
+        color_lbl.set_size_request(45, -1)
+        color_lbl.set_halign(Gtk.Align.START)
         color_row.append(color_lbl)
 
-        color_combo = Gtk.DropDown.new_from_strings(["Blue", "Green", "Red", "Purple", "Orange"])
+        color_combo = Gtk.DropDown.new_from_strings(["Purple", "Blue", "Green", "Orange", "Red"])
+        color_combo.set_hexpand(True)
         color_row.append(color_combo)
         box.append(color_row)
 
@@ -184,10 +207,12 @@ class MixerMatrixView(Gtk.Box):
             name = name_entry.get_text().strip()
             sub = sub_entry.get_text().strip() or "Custom Mix"
             if name:
-                colors = ["#3584e4", "#3db356", "#e05252", "#9146ff", "#ff7800"]
+                colors = ["#9146ff", "#3584e4", "#3db356", "#ff7800", "#e05252"]
                 c_idx = color_combo.get_selected()
-                c = colors[c_idx] if c_idx < len(colors) else "#3584e4"
-                self.pipewire_mgr.add_mix(name, subtitle=sub, color=c)
+                c = colors[c_idx] if c_idx < len(colors) else "#9146ff"
+                
+                mix_type = "source" if type_combo.get_selected() == 0 else "sink"
+                self.pipewire_mgr.add_mix(name, subtitle=sub, mix_type=mix_type, color=c)
                 popover.popdown()
                 GLib.idle_add(self._rebuild_grid)
 

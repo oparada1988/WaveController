@@ -7,9 +7,10 @@ class MixHeaderCard(Gtk.Box):
     """
     Column header card representing an output mix bus (e.g. Personal Mix / Record Mix).
     """
-    def __init__(self, mix_info: dict, is_active: bool = True):
+    def __init__(self, mix_info: dict, on_remove_callback=None):
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=4)
         self.mix_info = mix_info
+        self.on_remove_callback = on_remove_callback
         
         self.add_css_class("mix-header-card")
         self.set_hexpand(True)
@@ -38,11 +39,18 @@ class MixHeaderCard(Gtk.Box):
 
         top_box.append(title_box)
 
-        # Listen / Monitor indicator icon
+        # Listen / Monitor indicator icon or Delete button
         if mix_info.get("id") == "personal":
             self.listen_icon = Gtk.Image.new_from_icon_name("audio-headset-symbolic")
             self.listen_icon.set_tooltip_text("Listening on Monitor Output")
             top_box.append(self.listen_icon)
+        elif self.on_remove_callback:
+            del_btn = Gtk.Button.new_from_icon_name("user-trash-symbolic")
+            del_btn.add_css_class("flat")
+            del_btn.add_css_class("wave-icon-btn")
+            del_btn.set_tooltip_text("Delete Mix")
+            del_btn.connect("clicked", lambda b: self.on_remove_callback(mix_info["id"]))
+            top_box.append(del_btn)
 
         self.append(top_box)
 

@@ -112,40 +112,49 @@ class PipeWireManager:
         self._sync_thread.start()
 
     def _ensure_virtual_mix_nodes(self):
-        """Creates PipeWire virtual audio sinks and virtual sources (microphones) for all mixes so they appear in Discord and OBS."""
-        try:
-            out = subprocess.check_output(["pw-dump"], text=True, stderr=subprocess.DEVNULL)
-            data = json.loads(out)
-            existing_node_names = set()
-            for obj in data:
-                props = obj.get("info", {}).get("props", {})
-                n_name = props.get("node.name")
-                if n_name:
-                    existing_node_names.add(n_name)
-        except Exception:
-            existing_node_names = set()
-
+        """
+        Synchronizes PipeWire virtual audio nodes strictly with currently configured mixes.
+        Prunes any stale/orphan WaveController virtual devices and provisions only active Source/Sink nodes.
+        """
         with self._lock:
             mixes_copy = list(self.mixes)
 
+        needed_nodes = {}
         for m in mixes_copy:
             m_id = m["id"]
             m_name = m["name"]
-            
-            # Virtual Sink (for audio output)
-            sink_name = f"WaveController_{m_id}_Sink"
-            if sink_name not in existing_node_names:
-                try:
-                    cmd = f'{{ factory.name=support.null-audio-sink node.name="{sink_name}" node.description="WaveController {m_name} (Sink)" media.class=Audio/Sink object.linger=true }}'
-                    subprocess.run(["pw-cli", "create-node", "adapter", cmd], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                except Exception:
-                    pass
+            m_type = m.get("type", "source")
 
-            # Virtual Source (Microphone device in Discord, OBS, Zoom, etc.)
-            source_name = f"WaveController_{m_id}_Source"
-            if source_name not in existing_node_names:
+            if m_id == "personal" or m_type == "sink":
+                node_name = f"WaveController_{m_id}_Sink"
+                needed_nodes[node_name] = (f"WaveController {m_name} (Sink)", "Audio/Sink")
+            else:
+                node_name = f"WaveController_{m_id}_Source"
+                needed_nodes[node_name] = (f"WaveController {m_name}", "Audio/Source/Virtual")
+
+        existing_active_names = set()
+        try:
+            out = subprocess.check_output(["pw-dump"], text=True, stderr=subprocess.DEVNULL)
+            data = json.loads(out)
+            for obj in data:
+                props = obj.get("info", {}).get("props", {})
+                n_name = props.get("node.name", "")
+                n_desc = props.get("node.description", "")
+                if n_name.startswith("WaveController_") or n_desc.startswith("WaveController "):
+                    if n_name not in needed_nodes:
+                        obj_id = obj.get("id")
+                        if obj_id:
+                            subprocess.run(["pw-cli", "destroy", str(obj_id)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    else:
+                        existing_active_names.add(n_name)
+        except Exception:
+            pass
+
+        # Provision any missing needed nodes
+        for node_name, (desc, media_class) in needed_nodes.items():
+            if node_name not in existing_active_names:
                 try:
-                    cmd = f'{{ factory.name=support.null-audio-sink node.name="{source_name}" node.description="WaveController {m_name}" media.class=Audio/Source/Virtual object.linger=true }}'
+                    cmd = f'{{ factory.name=support.null-audio-sink node.name="{node_name}" node.description="{desc}" media.class={media_class} object.linger=true }}'
                     subprocess.run(["pw-cli", "create-node", "adapter", cmd], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 except Exception:
                     pass
@@ -593,16 +602,21 @@ class PipeWireManager:
                     return ch.get("sync_meter", False)
             return False
 
-    def add_mix(self, name: str, subtitle: str = "Custom Mix", icon: str = "audio-speakers-symbolic", color: str = "#3584e4") -> dict:
+    def add_mix(self, name: str, subtitle: str = "Custom Mix", mix_type: str = "source", icon: str = None, color: str = "#3584e4") -> dict:
         with self._lock:
             mix_id = name.lower().replace(" ", "_")
             existing_ids = [m["id"] for m in self.mixes]
             if mix_id in existing_ids:
                 mix_id = f"{mix_id}_{len(self.mixes)}"
+            
+            if not icon:
+                icon = "audio-input-microphone-symbolic" if mix_type == "source" else "audio-headphones-symbolic"
+
             new_mix = {
                 "id": mix_id,
                 "name": name,
                 "subtitle": subtitle,
+                "type": mix_type,
                 "icon": icon,
                 "color": color
             }
@@ -615,6 +629,17 @@ class PipeWireManager:
             self._save_state_to_config(immediate=True)
             self._ensure_virtual_mix_nodes()
             return new_mix
+
+    def remove_mix(self, mix_id: str):
+        """Removes a custom mix and tears down its PipeWire virtual audio device."""
+        if mix_id == "personal":
+            return # Protect default Personal Mix
+        with self._lock:
+            self.mixes = [m for m in self.mixes if m["id"] != mix_id]
+            for ch_id in self.channel_states:
+                self.channel_states[ch_id].pop(mix_id, None)
+            self._save_state_to_config(immediate=True)
+            self._ensure_virtual_mix_nodes()
 
     @staticmethod
     def resolve_icon_for_app(app_name: str) -> str:
