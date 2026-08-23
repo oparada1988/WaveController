@@ -31,6 +31,7 @@ class WaveMainWindow(Adw.ApplicationWindow):
             self.maximize()
 
         self.add_css_class("wave-window")
+        self.set_icon_name("com.oparada.WaveController")
         self._apply_theme()
         self.connect("close-request", self._on_close_request)
 
