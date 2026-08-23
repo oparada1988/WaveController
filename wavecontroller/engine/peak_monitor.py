@@ -192,18 +192,28 @@ class MultiChannelPeakMonitor:
         # Analyze the most recent audio window (up to last 8192 bytes ≈ 42ms)
         window = combined[-8192:] if len(combined) > 8192 else combined
         samples = array.array('h', window)
-        if len(samples) < 2:
+        n_samples = len(samples)
+        if n_samples < 2:
             return 0.0, 0.0
 
         lefts = samples[0::2]
         rights = samples[1::2]
-        max_l = max(max(lefts), -min(lefts)) / 32768.0 if lefts else 0.0
-        max_r = max(max(rights), -min(rights)) / 32768.0 if rights else 0.0
 
-        # Calibrated 1.5x gain boost matching Volume Controller Plus
-        peak_l = max(0.0, min(1.0, max_l * 1.5))
-        peak_r = max(0.0, min(1.0, max_r * 1.5))
-        return peak_l, peak_r
+        # 1. RMS Energy (perceived loudness power without waveform phase jitter)
+        sum_sq_l = sum(s * s for s in lefts)
+        sum_sq_r = sum(s * s for s in rights)
+        rms_l = math.sqrt(sum_sq_l / len(lefts)) / 32768.0 if lefts else 0.0
+        rms_r = math.sqrt(sum_sq_r / len(rights)) / 32768.0 if rights else 0.0
+
+        # 2. True Peak (dynamic transients and punch)
+        peak_raw_l = max(max(lefts), -min(lefts)) / 32768.0 if lefts else 0.0
+        peak_raw_r = max(max(rights), -min(rights)) / 32768.0 if rights else 0.0
+
+        # Calibrated 70% RMS + 30% Peak hybrid weighting
+        val_l = (rms_l * 2.2 * 0.70) + (peak_raw_l * 1.4 * 0.30)
+        val_r = (rms_r * 2.2 * 0.70) + (peak_raw_r * 1.4 * 0.30)
+
+        return max(0.0, min(1.0, val_l)), max(0.0, min(1.0, val_r))
 
     def _run_capture_loop(self):
         # 1. Open mic capture with unique node name and link to physical hardware mic
@@ -232,17 +242,32 @@ class MultiChannelPeakMonitor:
                 self.sink_proc = self._open_pw_record('wave_sink_monitor')
                 self._link_sink_monitor()
 
-            # Fast attack, slow release exponential smoothing for studio console VU ballistics
-            mic_l = raw_ml if raw_ml >= mic_l else max(raw_ml, mic_l * 0.85 - 0.002)
-            mic_r = raw_mr if raw_mr >= mic_r else max(raw_mr, mic_r * 0.85 - 0.002)
-            sink_l = raw_sl if raw_sl >= sink_l else max(raw_sl, sink_l * 0.85 - 0.002)
-            sink_r = raw_sr if raw_sr >= sink_r else max(raw_sr, sink_r * 0.85 - 0.002)
+            # Fast attack (instant punch on rise) + smooth exponential release & graceful fade-down to 0
+            if raw_ml > mic_l:
+                mic_l = mic_l + (raw_ml - mic_l) * 0.80
+            else:
+                mic_l = max(0.0, mic_l * 0.93 - 0.002)
 
-            # Noise floor clamp
-            m_l = 0.0 if mic_l < 0.005 else mic_l
-            m_r = 0.0 if mic_r < 0.005 else mic_r
-            s_l = 0.0 if sink_l < 0.005 else sink_l
-            s_r = 0.0 if sink_r < 0.005 else sink_r
+            if raw_mr > mic_r:
+                mic_r = mic_r + (raw_mr - mic_r) * 0.80
+            else:
+                mic_r = max(0.0, mic_r * 0.93 - 0.002)
+
+            if raw_sl > sink_l:
+                sink_l = sink_l + (raw_sl - sink_l) * 0.80
+            else:
+                sink_l = max(0.0, sink_l * 0.93 - 0.002)
+
+            if raw_sr > sink_r:
+                sink_r = sink_r + (raw_sr - sink_r) * 0.80
+            else:
+                sink_r = max(0.0, sink_r * 0.93 - 0.002)
+
+            # Gentle zero clamp only at true bottom
+            m_l = 0.0 if mic_l < 0.002 else mic_l
+            m_r = 0.0 if mic_r < 0.002 else mic_r
+            s_l = 0.0 if sink_l < 0.002 else sink_l
+            s_r = 0.0 if sink_r < 0.002 else sink_r
 
             with self._lock:
                 # Physical microphone channels (mic, fefine, etc.) ONLY get physical microphone level

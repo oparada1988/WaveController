@@ -48,12 +48,22 @@ class StereoSlider(Gtk.DrawingArea):
         else:
             target_l, target_r = peak_l, peak_r
 
-        diff_l = abs(self.peak_l - target_l)
-        diff_r = abs(self.peak_r - target_r)
-        if diff_l > 0.005 or diff_r > 0.005 or (target_l == 0.0 and self.peak_l > 0.0) or (target_r == 0.0 and self.peak_r > 0.0):
-            self.peak_l = max(0.0, min(1.0, target_l))
-            self.peak_r = max(0.0, min(1.0, target_r))
-            self.queue_draw()
+        # Smooth spring attack & graceful exponential fade-to-zero
+        if target_l > self.peak_l:
+            self.peak_l = min(1.0, self.peak_l + (target_l - self.peak_l) * 0.75)
+        else:
+            self.peak_l = max(0.0, self.peak_l * 0.92 - 0.002)
+            if self.peak_l < 0.002:
+                self.peak_l = 0.0
+
+        if target_r > self.peak_r:
+            self.peak_r = min(1.0, self.peak_r + (target_r - self.peak_r) * 0.75)
+        else:
+            self.peak_r = max(0.0, self.peak_r * 0.92 - 0.002)
+            if self.peak_r < 0.002:
+                self.peak_r = 0.0
+
+        self.queue_draw()
 
     def set_sync_peaks(self, sync: bool):
         if self.sync_peaks != sync:
