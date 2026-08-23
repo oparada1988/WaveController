@@ -172,21 +172,6 @@ class WaveMainWindow(Adw.ApplicationWindow):
         self.device_list_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
         sidebar.append(self.device_list_box)
 
-        # Add Audio Device Row Button
-        self.add_device_row_btn = Gtk.Button()
-        self.add_device_row_btn.add_css_class("flat")
-        self.add_device_row_btn.add_css_class("wave-sidebar-row")
-        add_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        add_icon = Gtk.Image.new_from_icon_name("list-add-symbolic")
-        add_lbl = Gtk.Label(label="Add Audio Device...")
-        add_lbl.set_halign(Gtk.Align.START)
-        add_lbl.set_hexpand(True)
-        add_box.append(add_icon)
-        add_box.append(add_lbl)
-        self.add_device_row_btn.set_child(add_box)
-        self.add_device_row_btn.connect("clicked", lambda b: self._open_add_device_dialog())
-        sidebar.append(self.add_device_row_btn)
-
         # Section 2: Mixes & Effects
         sec2_lbl = Gtk.Label(label="Mixes & Effects")
         sec2_lbl.add_css_class("wave-sidebar-section-title")
