@@ -1,3 +1,4 @@
+# WaveController Version Specification: public.beta.alpha
 __version__ = "0.0.1"
 __build__ = "0.0.1"
 __github__ = "https://github.com/oparada1988/WaveController"
