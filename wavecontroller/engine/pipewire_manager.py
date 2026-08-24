@@ -611,13 +611,12 @@ class PipeWireManager:
             self.channel_master_states[channel_id]["muted"] = muted
             vol = self.channel_master_states[channel_id].get("volume", 80)
 
-            # If Channel Link is enabled: sync master mute to all compatible mixes
-            if self.is_channel_linked(channel_id):
-                for mx in self.mixes:
-                    mx_id = mx["id"]
-                    if self.is_channel_mix_compatible(channel_id, mx_id):
-                        if channel_id in self.channel_states and mx_id in self.channel_states[channel_id]:
-                            self.channel_states[channel_id][mx_id]["muted"] = muted
+            # Master Channel Mute cascades to ALL compatible submixes unconditionally
+            for mx in self.mixes:
+                mx_id = mx["id"]
+                if self.is_channel_mix_compatible(channel_id, mx_id):
+                    if channel_id in self.channel_states and mx_id in self.channel_states[channel_id]:
+                        self.channel_states[channel_id][mx_id]["muted"] = muted
 
             # Enqueue physical stream volume dispatch
             self._volume_queue[channel_id] = (vol, muted)
@@ -638,12 +637,12 @@ class PipeWireManager:
             self.channel_master_states[channel_id]["muted"] = new_mute
             vol = self.channel_master_states[channel_id].get("volume", 80)
 
-            if self.is_channel_linked(channel_id):
-                for mx in self.mixes:
-                    mx_id = mx["id"]
-                    if self.is_channel_mix_compatible(channel_id, mx_id):
-                        if channel_id in self.channel_states and mx_id in self.channel_states[channel_id]:
-                            self.channel_states[channel_id][mx_id]["muted"] = new_mute
+            # Master Channel Mute cascades to ALL compatible submixes unconditionally
+            for mx in self.mixes:
+                mx_id = mx["id"]
+                if self.is_channel_mix_compatible(channel_id, mx_id):
+                    if channel_id in self.channel_states and mx_id in self.channel_states[channel_id]:
+                        self.channel_states[channel_id][mx_id]["muted"] = new_mute
 
             self._volume_queue[channel_id] = (vol, new_mute)
             self._volume_event.set()
@@ -764,6 +763,7 @@ class PipeWireManager:
             self._mix_volume_queue[canon_mix] = (self.mix_states[canon_mix].get("volume", 100), muted)
             self._volume_event.set()
             self._save_state_to_config(immediate=False)
+        self._sync_mix_physical_output_routing(canon_mix)
 
     def toggle_mix_master_mute(self, mix_id: str) -> bool:
         canon_mix = self._match_mix_id(mix_id)
@@ -776,7 +776,8 @@ class PipeWireManager:
             self._mix_volume_queue[canon_mix] = (self.mix_states[canon_mix].get("volume", 100), new_mute)
             self._volume_event.set()
             self._save_state_to_config(immediate=False)
-            return new_mute
+        self._sync_mix_physical_output_routing(canon_mix)
+        return new_mute
 
     def _apply_submix_gain(self, ch_id: str, m_id: str, vol_pct: int, is_muted: bool):
         """Applies independent sub-mix attenuation to dedicated PipeWire loopback stream node."""
@@ -880,36 +881,26 @@ class PipeWireManager:
                 self._volume_event.set()
 
     def set_channel_mute(self, channel_id: str, mix_id: str, muted: bool):
-        """Mutes or unmutes a channel within a specific virtual mix bus."""
+        """Mutes or unmutes a channel within a specific virtual mix bus (independent per-mix mute)."""
         canon_mix = self._match_mix_id(mix_id)
-        is_linked = self.is_channel_linked(channel_id)
         with self._lock:
             if channel_id in self.channel_states:
-                if is_linked:
-                    for m_id in self.channel_states[channel_id]:
-                        self.channel_states[channel_id][m_id]["muted"] = muted
-                    if channel_id in self.channel_master_states:
-                        self.channel_master_states[channel_id]["muted"] = muted
+                if canon_mix in self.channel_states[channel_id]:
+                    self.channel_states[channel_id][canon_mix]["muted"] = muted
                 else:
-                    if canon_mix in self.channel_states[channel_id]:
-                        self.channel_states[channel_id][canon_mix]["muted"] = muted
-                    else:
-                        self.channel_states[channel_id][canon_mix] = {
-                            "volume": 80,
-                            "muted": muted,
-                            "linked": False,
-                            "enabled": True
-                        }
+                    self.channel_states[channel_id][canon_mix] = {
+                        "volume": 80,
+                        "muted": muted,
+                        "linked": self.is_channel_linked(channel_id),
+                        "enabled": True
+                    }
                 self._save_state_to_config(immediate=False)
 
-        if is_linked:
-            self.set_channel_master_mute(channel_id, muted)
-        else:
-            vol = self.channel_states.get(channel_id, {}).get(canon_mix, {}).get("volume", 80)
-            with self._lock:
-                self._submix_volume_queue[(channel_id, canon_mix)] = (vol, muted)
-                self._volume_event.set()
-            self._sync_channel_audio_routing(channel_id)
+        vol = self.channel_states.get(channel_id, {}).get(canon_mix, {}).get("volume", 80)
+        with self._lock:
+            self._submix_volume_queue[(channel_id, canon_mix)] = (vol, muted)
+            self._volume_event.set()
+        self._sync_channel_audio_routing(channel_id)
 
     def toggle_channel_mute(self, channel_id: str, mix_id: str) -> bool:
         """Toggles mute state within a specific virtual mix bus."""
@@ -951,16 +942,16 @@ class PipeWireManager:
                             pass
                     continue
 
-                # If channel is an Elgato hardware device, bypass wpctl ALSA dispatch to avoid UAC2 hardware volume fights
-                if "elgato" in channel_id.lower() or "wave_xlr" in channel_id.lower() or (ch_name and "elgato" in ch_name.lower()):
-                    continue
-
                 assigned_app_names = self.get_assigned_apps(channel_id)
                 ch_name = ""
                 with self._lock:
                     ch_obj = next((c for c in self.channels if c["id"] == channel_id), None)
                     if ch_obj:
                         ch_name = ch_obj.get("name", "")
+
+                # If channel is an Elgato hardware device, bypass wpctl ALSA dispatch to avoid UAC2 hardware volume fights
+                if "elgato" in channel_id.lower() or "wave_xlr" in channel_id.lower() or (ch_name and "elgato" in ch_name.lower()):
+                    continue
 
                 search_keys = set([channel_id.lower()])
                 if ch_name:
@@ -1362,14 +1353,21 @@ class PipeWireManager:
                             pass
 
     def get_channel_state(self, channel_id: str, mix_id: str) -> dict:
+        canon_mix = self._match_mix_id(mix_id)
         with self._lock:
-            st = self.channel_states.get(channel_id, {}).get(mix_id, {})
+            st = self.channel_states.get(channel_id, {}).get(canon_mix, {})
             return {
                 "volume": st.get("volume", 80),
                 "muted": st.get("muted", False),
                 "linked": st.get("linked", True),
                 "enabled": st.get("enabled", True)
             }
+
+    def get_channel_mute(self, channel_id: str, mix_id: str) -> bool:
+        return self.get_channel_state(channel_id, mix_id).get("muted", False)
+
+    def get_channel_volume(self, channel_id: str, mix_id: str) -> int:
+        return self.get_channel_state(channel_id, mix_id).get("volume", 80)
 
     def add_channel(self, name: str, icon: str = None, ch_type: str = "sink", assigned_apps: list = None, sync_meter: bool = False) -> dict:
         with self._lock:

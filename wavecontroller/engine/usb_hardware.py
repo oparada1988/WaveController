@@ -130,6 +130,10 @@ class USBHardwareManager:
                     subprocess.Popen(["wpctl", "set-mute", target, "1" if self.hardware_mute else "0"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 except Exception:
                     pass
+                if getattr(self, "pipewire_mgr", None):
+                    for m_key in ("personal_mix", "personal", "beta"):
+                        if m_key in self.pipewire_mgr.mix_states:
+                            self.pipewire_mgr.set_mix_master_mute(m_key, self.hardware_mute)
             self.notify_hardware_listeners({"mute": self.hardware_mute}, {"mute": self.hardware_mute})
 
         if "gain_db" in changed:
