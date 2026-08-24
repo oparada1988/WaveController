@@ -588,6 +588,17 @@ class USBHardwareManager:
             elgato_dev.set_led_colors(self.led_colors)
         self.notify_hardware_listeners({"led_colors": self.led_colors}, {"led_colors": self.led_colors})
 
+    def get_mode_mute(self, mode: str) -> bool:
+        elgato_dev = elgato_manager.get_device()
+        if elgato_dev:
+            return elgato_dev.get_mode_mute(mode)
+        return False
+
+    def set_mode_mute(self, mode: str, muted: bool):
+        elgato_dev = elgato_manager.get_device()
+        if elgato_dev:
+            elgato_dev.set_mode_mute(mode, muted)
+
     def get_output_mute(self, sink_id_or_key: str = None) -> bool:
         target = self._resolve_sink_target(sink_id_or_key)
         try:
@@ -600,7 +611,9 @@ class USBHardwareManager:
         target = self._resolve_sink_target(sink_id_or_key)
         try:
             subprocess.run(["wpctl", "set-mute", target, "toggle"], stderr=subprocess.DEVNULL)
-            return self.get_output_mute(sink_id_or_key)
+            is_muted = self.get_output_mute(sink_id_or_key)
+            self.set_mode_mute("hp", is_muted)
+            return is_muted
         except Exception:
             return False
 
@@ -709,9 +722,7 @@ class USBHardwareManager:
         except Exception:
             pass
         
-        elgato_dev = elgato_manager.get_device()
-        if elgato_dev and self._is_target_elgato(source_id_or_key):
-            elgato_dev.set_mute(self.hardware_mute)
+        self.set_mode_mute("gain", self.hardware_mute)
         return self.hardware_mute
 
     def get_elgato_device_info(self) -> dict:

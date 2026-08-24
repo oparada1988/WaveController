@@ -151,6 +151,10 @@ class MixHeaderCard(Gtk.Box):
     def _on_mute_clicked(self, btn):
         if self.pipewire_mgr:
             new_mute = self.pipewire_mgr.toggle_mix_master_mute(self.mix_info["id"])
+            if self.hardware_mgr and (self.mix_info.get("type") == "sink" or "personal" in self.mix_info.get("id", "")):
+                target = self.mix_info.get("target_device", "")
+                if "wave" in str(target).lower() or "elgato" in str(target).lower() or target in ("default", ""):
+                    self.hardware_mgr.set_mode_mute("hp", new_mute)
             if new_mute:
                 self.mute_btn.set_icon_name("audio-volume-muted-symbolic")
                 self.mute_btn.add_css_class("muted")
