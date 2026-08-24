@@ -26,7 +26,7 @@ RT_CLASS_OUT = 0x21
 # libusb C API initialization
 _lib = None
 _lib_ctx = None
-_lib_lock = threading.Lock()
+_lib_lock = threading.RLock()
 
 def _init_libusb():
     global _lib, _lib_ctx
@@ -161,7 +161,7 @@ class ElgatoWaveDevice:
     def __init__(self, profile: ElgatoProfile):
         self.profile = profile
         self._handle = None
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self._last_state: Dict[str, Any] = {}
         self.dev_info: Dict[str, str] = {}
 
