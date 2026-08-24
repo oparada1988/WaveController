@@ -99,7 +99,7 @@ class MixerMatrixView(Gtk.Box):
         # Top-left empty header cell
         spacer = Gtk.Box()
         spacer.set_hexpand(False)
-        spacer.set_size_request(340, 48)
+        spacer.set_size_request(370, 48)
         self.grid.attach(spacer, 0, 0, 1, 1)
 
         # Mix Column Headers (Row 0, Columns 1..N)

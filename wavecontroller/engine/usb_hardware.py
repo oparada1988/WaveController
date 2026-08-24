@@ -296,13 +296,21 @@ class USBHardwareManager:
             return "audio-speakers-symbolic"
         return "audio-input-microphone-symbolic"
 
-    def get_device_icon(self, device_key: str) -> str:
+    def get_device_icon(self, dev_key_or_name: str) -> str:
         """Returns the custom icon if set by user, else the smart detected icon."""
+        if not dev_key_or_name:
+            return "elgato-wave-xlr-symbolic" if self.device_type == "elgato" else "audio-input-microphone-symbolic"
+        k_str = str(dev_key_or_name)
         custom_icons = config_manager.get("device_icons", {})
-        if device_key in custom_icons and custom_icons[device_key]:
-            return custom_icons[device_key]
-        if device_key in self.discovered_devices:
-            return self.discovered_devices[device_key].get("icon", "audio-input-microphone-symbolic")
+        if k_str in custom_icons and custom_icons[k_str]:
+            return custom_icons[k_str]
+        if k_str in self.discovered_devices:
+            return self.discovered_devices[k_str].get("icon", "audio-input-microphone-symbolic")
+        for k, dev in self.discovered_devices.items():
+            if dev.get("name") == k_str or k_str.lower() in dev.get("name", "").lower():
+                return dev.get("icon", "audio-input-microphone-symbolic")
+        if "wave xlr" in k_str.lower() or "wave" in k_str.lower() or (k_str == self.device_name and self.device_type == "elgato"):
+            return "elgato-wave-xlr-symbolic"
         return "audio-input-microphone-symbolic"
 
     def set_device_custom_icon(self, device_key: str, icon_name: str):

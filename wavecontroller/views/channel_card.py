@@ -27,7 +27,7 @@ class ChannelCard(Gtk.Box):
         self.add_css_class("channel-row-card")
         self.set_valign(Gtk.Align.CENTER)
         self.set_hexpand(False)
-        self.set_size_request(340, -1)
+        self.set_size_request(370, -1)
 
         # 1. Dedicated Vertical 6-Dots Drag Grip Handle (list-drag-handle-symbolic)
         self.drag_grip = Gtk.Image.new_from_icon_name("list-drag-handle-symbolic")
@@ -177,8 +177,10 @@ class ChannelCard(Gtk.Box):
     def _resolve_icon(self) -> str:
         if self.channel_info["id"] == "mic" and self.hardware_mgr:
             dev_icon = self.hardware_mgr.get_device_icon(self.hardware_mgr.device_name)
-            if dev_icon:
+            if dev_icon and dev_icon != "audio-input-microphone-symbolic":
                 return dev_icon
+            if getattr(self.hardware_mgr, "is_elgato", False) or getattr(self.hardware_mgr, "device_type", "") == "elgato" or "wave" in str(self.hardware_mgr.device_name).lower():
+                return "elgato-wave-xlr-symbolic"
         assigned = self.pipewire_mgr.get_assigned_apps(self.channel_info["id"])
         primary_app = assigned[0] if assigned else self.channel_info.get("name", "")
         return self.channel_info.get("icon") or self.pipewire_mgr.resolve_icon_for_app(primary_app)
