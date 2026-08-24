@@ -28,10 +28,18 @@
   * Adjust any sub-mix channel directly from Stream Deck Plus physical dials.
   * Live audio VU meters on Stream Deck Plus LCD screens.
 
+### 🔌 Hardware Permissions (udev rules)
+
+To allow non-root access to Elgato Wave hardware controls (Gain, 48V Phantom Power, LED colors, and Mute sensors), install the udev rules with this one-line command:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/oparada1988/WaveController/main/data/99-elgato-wave.rules | sudo tee /etc/udev/rules.d/99-elgato-wave.rules > /dev/null && sudo udevadm control --reload-rules && sudo udevadm trigger && echo "✔ Elgato Wave udev rules successfully installed and activated!"
+```
+
 ---
 
 ### 🚀 Running WaveController
 
 ```bash
-python3 "/home/oscar/Github Projects/WaveController/main.py"
+python3 main.py
 ```
