@@ -175,6 +175,114 @@ class SettingsView(Gtk.Box):
 
         pref_page.add(grp_diag)
 
+        # Group 5: Configuration Backup & Data Management
+        grp_backup = Adw.PreferencesGroup(title="Configuration Backup &amp; Data Management")
+
+        # Row 1: Export Backup
+        backup_export_row = Adw.ActionRow(
+            title="Export Configuration Backup",
+            subtitle="Save your channels, mixes, hardware parameters, and LED colors to a JSON file"
+        )
+        backup_export_btn = Gtk.Button(label="Export Backup...")
+        backup_export_btn.set_icon_name("document-save-as-symbolic")
+        backup_export_btn.add_css_class("suggested-action")
+        backup_export_btn.set_valign(Gtk.Align.CENTER)
+
+        def on_backup_export_clicked(btn):
+            dialog = Gtk.FileChooserNative.new(
+                "Export Configuration Backup",
+                self.get_root(),
+                Gtk.FileChooserAction.SAVE,
+                "Export",
+                "Cancel"
+            )
+            date_str = datetime.now().strftime("%Y-%m-%d")
+            dialog.set_current_name(f"WaveController_Backup_{date_str}.json")
+            
+            # JSON Filter
+            json_filter = Gtk.FileFilter()
+            json_filter.set_name("JSON Configuration (*.json)")
+            json_filter.add_pattern("*.json")
+            dialog.add_filter(json_filter)
+
+            def on_export_resp(dlg, response_id):
+                if response_id == Gtk.ResponseType.ACCEPT:
+                    target_file = dlg.get_file()
+                    if target_file:
+                        dest_path = target_file.get_path()
+                        if config_manager.export_backup(dest_path):
+                            backup_export_btn.set_label("Exported!")
+                            GLib.timeout_add(2000, lambda: (backup_export_btn.set_label("Export Backup..."), False))
+                dlg.destroy()
+
+            dialog.connect("response", on_export_resp)
+            dialog.show()
+
+        backup_export_btn.connect("clicked", on_backup_export_clicked)
+        backup_export_row.add_suffix(backup_export_btn)
+        grp_backup.add(backup_export_row)
+
+        # Row 2: Import Backup
+        backup_import_row = Adw.ActionRow(
+            title="Restore from Backup",
+            subtitle="Import a previously saved WaveController backup JSON file"
+        )
+        backup_import_btn = Gtk.Button(label="Restore Backup...")
+        backup_import_btn.set_icon_name("document-open-symbolic")
+        backup_import_btn.add_css_class("flat")
+        backup_import_btn.set_valign(Gtk.Align.CENTER)
+
+        def on_backup_import_clicked(btn):
+            dialog = Gtk.FileChooserNative.new(
+                "Restore Configuration from Backup",
+                self.get_root(),
+                Gtk.FileChooserAction.OPEN,
+                "Restore",
+                "Cancel"
+            )
+            json_filter = Gtk.FileFilter()
+            json_filter.set_name("JSON Configuration (*.json)")
+            json_filter.add_pattern("*.json")
+            dialog.add_filter(json_filter)
+
+            def on_import_resp(dlg, response_id):
+                if response_id == Gtk.ResponseType.ACCEPT:
+                    src_file = dlg.get_file()
+                    if src_file:
+                        src_path = src_file.get_path()
+                        if config_manager.import_backup(src_path):
+                            backup_import_btn.set_label("Restored!")
+                            GLib.timeout_add(2000, lambda: (backup_import_btn.set_label("Restore Backup..."), False))
+                dlg.destroy()
+
+            dialog.connect("response", on_import_resp)
+            dialog.show()
+
+        backup_import_btn.connect("clicked", on_backup_import_clicked)
+        backup_import_row.add_suffix(backup_import_btn)
+        grp_backup.add(backup_import_row)
+
+        # Row 3: Factory Reset
+        reset_row = Adw.ActionRow(
+            title="Reset to Factory Defaults",
+            subtitle="Restore all channel assignments, mixes, and hardware settings to defaults"
+        )
+        reset_btn = Gtk.Button(label="Reset Defaults")
+        reset_btn.set_icon_name("edit-clear-all-symbolic")
+        reset_btn.add_css_class("destructive-action")
+        reset_btn.set_valign(Gtk.Align.CENTER)
+
+        def on_reset_clicked(btn):
+            if config_manager.reset_to_defaults():
+                reset_btn.set_label("Reset!")
+                GLib.timeout_add(2000, lambda: (reset_btn.set_label("Reset Defaults"), False))
+
+        reset_btn.connect("clicked", on_reset_clicked)
+        reset_row.add_suffix(reset_btn)
+        grp_backup.add(reset_row)
+
+        pref_page.add(grp_backup)
+
         self.append(pref_page)
 
         # Center-Aligned About Footer (Zero emojis, clean typography & links)

@@ -28,6 +28,8 @@ class USBHardwareManager:
             "mute": "#FF0000"
         }))
         self.vu_meter_enabled: Dict[str, bool] = dict(config_manager.get("hardware_settings", {}).get("vu_meter_enabled", {"gain": True, "hp": True}))
+        self.exclusive_mic_lock: bool = bool(config_manager.get("hardware_settings", {}).get("exclusive_mic_lock", True))
+        self.exclusive_output_lock: bool = bool(config_manager.get("hardware_settings", {}).get("exclusive_output_lock", True))
         self.discovered_devices: Dict[str, dict] = {} # {device_key: dev_info_dict}
         self.input_devices = [] # Legacy compatibility
         self.output_devices = [] # Legacy compatibility
@@ -622,6 +624,26 @@ class USBHardwareManager:
         if elgato_dev:
             return elgato_dev.get_mode_mute(mode)
         return False
+
+    def get_exclusive_mic_lock(self) -> bool:
+        return bool(self.exclusive_mic_lock)
+
+    def set_exclusive_mic_lock(self, enabled: bool):
+        self.exclusive_mic_lock = bool(enabled)
+        hw = dict(config_manager.get("hardware_settings", {}))
+        hw["exclusive_mic_lock"] = self.exclusive_mic_lock
+        config_manager.set("hardware_settings", hw, immediate=True)
+        self.notify_hardware_listeners({"exclusive_mic_lock": self.exclusive_mic_lock}, {"exclusive_mic_lock": self.exclusive_mic_lock})
+
+    def get_exclusive_output_lock(self) -> bool:
+        return bool(self.exclusive_output_lock)
+
+    def set_exclusive_output_lock(self, enabled: bool):
+        self.exclusive_output_lock = bool(enabled)
+        hw = dict(config_manager.get("hardware_settings", {}))
+        hw["exclusive_output_lock"] = self.exclusive_output_lock
+        config_manager.set("hardware_settings", hw, immediate=True)
+        self.notify_hardware_listeners({"exclusive_output_lock": self.exclusive_output_lock}, {"exclusive_output_lock": self.exclusive_output_lock})
 
     def set_mode_mute(self, mode: str, muted: bool):
         elgato_dev = elgato_manager.get_device()

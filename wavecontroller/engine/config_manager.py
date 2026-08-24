@@ -44,7 +44,9 @@ class ConfigManager:
             "vu_meter_enabled": {
                 "gain": True,
                 "hp": True
-            }
+            },
+            "exclusive_mic_lock": True,
+            "exclusive_output_lock": True
         }
     }
 
@@ -120,5 +122,58 @@ class ConfigManager:
                 os.replace(tmp_file, self.config_file)
             except Exception as e:
                 print(f"[ConfigManager] Failed to write config to {self.config_file}: {e}")
+
+    def export_backup(self, target_path: str) -> bool:
+        """Exports current full configuration to an external JSON backup file."""
+        with self._lock:
+            try:
+                export_data = dict(self._data)
+                export_data["_backup_metadata"] = {
+                    "app": "WaveController",
+                    "version": export_data.get("version", 1)
+                }
+                os.makedirs(os.path.dirname(os.path.abspath(target_path)), exist_ok=True)
+                with open(target_path, "w", encoding="utf-8") as f:
+                    json.dump(export_data, f, indent=2, ensure_ascii=False)
+                return True
+            except Exception as e:
+                print(f"[ConfigManager] Export backup failed: {e}")
+                return False
+
+    def import_backup(self, source_path: str) -> bool:
+        """Validates and imports an external configuration backup JSON file."""
+        with self._lock:
+            try:
+                if not os.path.exists(source_path):
+                    return False
+                with open(source_path, "r", encoding="utf-8") as f:
+                    imported = json.load(f)
+                if not isinstance(imported, dict):
+                    return False
+                
+                # Verify required structure
+                if "channels" not in imported and "mixes" not in imported:
+                    return False
+                
+                clean_data = dict(self.DEFAULT_CONFIG)
+                clean_data.update(imported)
+                clean_data.pop("_backup_metadata", None)
+                self._data = clean_data
+                self.save_now()
+                return True
+            except Exception as e:
+                print(f"[ConfigManager] Import backup failed: {e}")
+                return False
+
+    def reset_to_defaults(self) -> bool:
+        """Resets current configuration completely to default schema."""
+        with self._lock:
+            try:
+                self._data = dict(self.DEFAULT_CONFIG)
+                self.save_now()
+                return True
+            except Exception as e:
+                print(f"[ConfigManager] Reset to defaults failed: {e}")
+                return False
 
 config_manager = ConfigManager()
