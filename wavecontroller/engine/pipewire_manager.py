@@ -436,17 +436,31 @@ class PipeWireManager:
                 props = obj.get("info", {}).get("props", {})
                 media_class = props.get("media.class", "")
                 media_type = props.get("media.type", "")
+                node_name = props.get("node.name", "")
+                app_id = props.get("application.id", "")
                 
-                if "Stream/Output/Audio" in media_class or media_type == "Audio":
-                    name = props.get("application.name") or props.get("node.description") or props.get("node.name")
-                    binary = props.get("application.process.binary")
+                # Only include genuine client audio playback streams (not sinks, sources, or internal loopbacks)
+                if media_class == "Stream/Output/Audio" or (media_type == "Audio" and not media_class.startswith("Audio/")):
+                    name = props.get("application.name") or props.get("node.description") or props.get("media.name") or node_name
+                    binary = props.get("application.process.binary", "")
                     icon = props.get("application.icon-name") or props.get("application.icon_name")
                     node_id = obj.get("id")
                     
                     if not name:
                         continue
-                    name_low = name.lower()
-                    if any(x in name_low for x in ["wave_sink", "wave_mic", "vcp_monitor", "pw-record", "parecord", "pipewire", "wireplumber", "easyeffects", "wpctl", "system_capture", "system capture"]):
+                    name_low = str(name).lower()
+                    bin_low = str(binary).lower()
+                    node_low = str(node_name).lower()
+                    app_id_low = str(app_id).lower()
+                    
+                    # Exclude internal virtual submixes, loopbacks, meters, and system utilities
+                    internal_keywords = [
+                        "wavecontroller", "submix", "loopback", "wave_sink", "wave_mic",
+                        "vcp_monitor", "pw-record", "parecord", "pipewire", "wireplumber",
+                        "easyeffects", "wpctl", "system_capture", "system capture",
+                        "speech-dispatcher", "null-sink", "pw-loopback", "monitor"
+                    ]
+                    if any(kw in name_low or kw in bin_low or kw in node_low or kw in app_id_low for kw in internal_keywords):
                         continue
                         
                     if name not in seen and name.lower() not in seen:

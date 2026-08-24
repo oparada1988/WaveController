@@ -107,7 +107,7 @@ class MultiChannelPeakMonitor:
             pass
 
     def _link_sink_monitor(self):
-        """Discovers active monitor output ports and links wave_sink_monitor to them."""
+        """Discovers active monitor output ports (virtual mix sinks + hardware outputs) and links wave_sink_monitor to them."""
         try:
             # 1. Unlink any default microphone capture ports that WirePlumber auto-linked to wave_sink_monitor
             try:
@@ -119,44 +119,47 @@ class MultiChannelPeakMonitor:
                         current_node = line_str
                     elif '|<-' in line_str and current_node and 'wave_sink_monitor' in current_node:
                         src_port = line_str.replace('|<-', '').strip()
-                        if 'capture' in src_port.lower():
+                        if 'capture' in src_port.lower() and 'wavecontroller' not in src_port.lower():
                             subprocess.run(['pw-link', '-d', src_port, current_node], stderr=subprocess.DEVNULL)
             except Exception:
                 pass
 
             # 2. Discover active monitor output ports from sound cards and virtual mixes
             out = subprocess.check_output(['pw-link', '-o'], text=True, stderr=subprocess.DEVNULL)
-            mon_fl = None
-            mon_fr = None
-            
-            # Find matching monitor ports (USB IEC958, PCI analog, or virtual mix sinks)
-            candidate_fls = []
-            candidate_frs = []
-            for line in out.splitlines():
-                l = line.strip()
-                if l.endswith(':monitor_FL'):
-                    candidate_fls.append(l)
-                elif l.endswith(':monitor_FR'):
-                    candidate_frs.append(l)
+            ports = [l.strip() for l in out.splitlines() if l.strip()]
 
-            # Prioritize: 1. Active hardware sink (iec958 / usb / pci) 2. WaveController personal mix
-            for fl in candidate_fls:
-                if 'iec958' in fl.lower() or 'usb' in fl.lower() or 'analog' in fl.lower() or 'pci' in fl.lower():
-                    mon_fl = fl
-                    break
-            if not mon_fl and candidate_fls:
-                mon_fl = candidate_fls[0]
+            # Find matching monitor ports
+            mon_fls = [p for p in ports if p.endswith(':monitor_FL')]
+            mon_frs = [p for p in ports if p.endswith(':monitor_FR')]
 
-            for fr in candidate_frs:
-                if 'iec958' in fr.lower() or 'usb' in fr.lower() or 'analog' in fr.lower() or 'pci' in fr.lower():
-                    mon_fr = fr
-                    break
-            if not mon_fr and candidate_frs:
-                mon_fr = candidate_frs[0]
+            # Prioritize: 1. WaveController Virtual Mix Sinks 2. Elgato Wave XLR / USB 3. PCI / Default Output
+            target_fls = []
+            target_frs = []
 
-            if mon_fl and mon_fr:
-                subprocess.run(['pw-link', mon_fl, 'wave_sink_monitor:input_FL'], stderr=subprocess.DEVNULL)
-                subprocess.run(['pw-link', mon_fr, 'wave_sink_monitor:input_FR'], stderr=subprocess.DEVNULL)
+            for fl in mon_fls:
+                if 'wavecontroller' in fl.lower() and 'sink' in fl.lower():
+                    target_fls.append(fl)
+                elif 'wave' in fl.lower() or '0fd9' in fl.lower() or 'elgato' in fl.lower():
+                    target_fls.append(fl)
+                elif 'usb' in fl.lower() or 'analog' in fl.lower() or 'pci' in fl.lower():
+                    target_fls.append(fl)
+
+            for fr in mon_frs:
+                if 'wavecontroller' in fr.lower() and 'sink' in fr.lower():
+                    target_frs.append(fr)
+                elif 'wave' in fr.lower() or '0fd9' in fr.lower() or 'elgato' in fr.lower():
+                    target_frs.append(fr)
+                elif 'usb' in fr.lower() or 'analog' in fr.lower() or 'pci' in fr.lower():
+                    target_frs.append(fr)
+
+            # Link primary virtual mix sinks or primary hardware outputs
+            for fl in target_fls:
+                if 'wave_sink_monitor' not in fl and 'wave_mic_monitor' not in fl:
+                    subprocess.run(['pw-link', fl, 'wave_sink_monitor:input_FL'], stderr=subprocess.DEVNULL)
+
+            for fr in target_frs:
+                if 'wave_sink_monitor' not in fr and 'wave_mic_monitor' not in fr:
+                    subprocess.run(['pw-link', fr, 'wave_sink_monitor:input_FR'], stderr=subprocess.DEVNULL)
         except Exception:
             pass
 
@@ -224,11 +227,17 @@ class MultiChannelPeakMonitor:
 
         mic_l, mic_r = 0.0, 0.0
         sink_l, sink_r = 0.0, 0.0
+        tick_counter = 0
 
         while self.running:
             try:
                 raw_ml, raw_mr = self._drain_and_calc_peaks(self.mic_proc)
                 raw_sl, raw_sr = self._drain_and_calc_peaks(self.sink_proc)
+
+                tick_counter += 1
+                if tick_counter % 80 == 0: # Check and refresh links periodically (~2 seconds)
+                    self._link_mic_monitor()
+                    self._link_sink_monitor()
 
                 # Re-spawn if exited
                 if (not self.mic_proc or self.mic_proc.poll() is not None) and self.running:

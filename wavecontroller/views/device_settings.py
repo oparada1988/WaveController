@@ -260,14 +260,15 @@ class UnifiedDeviceSettingsView(Gtk.Box):
         self.append(btn_box)
 
         # Hook live state changes from physical hardware
-        self.hardware_mgr.on_hardware_state_changed_callback = lambda curr, changed: GLib.idle_add(self._on_hardware_synced, curr, changed)
+        if self.hardware_mgr and hasattr(self.hardware_mgr, "add_hardware_listener"):
+            self.hardware_mgr.add_hardware_listener(lambda curr, changed: GLib.idle_add(self._on_hardware_synced, curr, changed))
 
         # Start live meter timer if mic is available
         if self.device_type in ["duplex", "input"]:
             GLib.timeout_add(25, self._on_meter_tick)
 
     def _on_hardware_synced(self, curr: dict, changed: dict):
-        """Called when physical rotary dial or touch mute is adjusted on the hardware."""
+        """Called when physical rotary dial, 48V, or touch mute is adjusted on the hardware."""
         if not self.get_mapped():
             return
         if "gain_db" in changed and hasattr(self, "gain_adj"):
@@ -278,30 +279,45 @@ class UnifiedDeviceSettingsView(Gtk.Box):
             self.vol_adj.set_value(changed["hp_volume_pct"])
         if "dial_mode" in changed and hasattr(self, "dial_mode_row"):
             self.dial_mode_row.set_subtitle(f"Active Mode: {str(changed['dial_mode']).capitalize()}")
+        if "phantom_power" in changed and hasattr(self, "phantom_row"):
+            if self.phantom_row.get_active() != bool(changed["phantom_power"]):
+                self.phantom_row.set_active(bool(changed["phantom_power"]))
+        if "clipguard" in changed and hasattr(self, "clipguard_row"):
+            if self.clipguard_row.get_active() != bool(changed["clipguard"]):
+                self.clipguard_row.set_active(bool(changed["clipguard"]))
+        if "low_cut" in changed and hasattr(self, "low_cut_row"):
+            mode = str(changed["low_cut"])
+            sel = 1 if mode == "80Hz" else (2 if mode == "120Hz" else 0)
+            if self.low_cut_row.get_selected() != sel:
+                self.low_cut_row.set_selected(sel)
+        if "low_impedance" in changed and hasattr(self, "low_z_row"):
+            if self.low_z_row.get_active() != bool(changed["low_impedance"]):
+                self.low_z_row.set_active(bool(changed["low_impedance"]))
 
     def _on_phantom_toggled(self, row, *args):
         is_active = self.phantom_row.get_active()
-        if is_active:
-            dialog = Adw.MessageDialog(
-                transient_for=self.get_root() if isinstance(self.get_root(), Gtk.Window) else None,
-                heading="Enable 48V Phantom Power?",
-                body="48V Phantom Power provides voltage to XLR condenser microphones. Ensure your microphone requires 48V power. Do NOT enable 48V for ribbon microphones or line-level inputs."
-            )
-            dialog.add_response("cancel", "Cancel")
-            dialog.add_response("enable", "Enable 48V")
-            dialog.set_response_appearance("enable", Adw.ResponseAppearance.DESTRUCTIVE)
-            dialog.set_default_response("cancel")
+        if is_active != self.hardware_mgr.phantom_power_48v:
+            if is_active:
+                dialog = Adw.MessageDialog(
+                    transient_for=self.get_root() if isinstance(self.get_root(), Gtk.Window) else None,
+                    heading="Enable 48V Phantom Power?",
+                    body="48V Phantom Power provides voltage to XLR condenser microphones. Ensure your microphone requires 48V power. Do NOT enable 48V for ribbon microphones or line-level inputs."
+                )
+                dialog.add_response("cancel", "Cancel")
+                dialog.add_response("enable", "Enable 48V")
+                dialog.set_response_appearance("enable", Adw.ResponseAppearance.DESTRUCTIVE)
+                dialog.set_default_response("cancel")
 
-            def _on_response(d, resp):
-                if resp == "enable":
-                    self.hardware_mgr.toggle_phantom_power()
-                else:
-                    self.phantom_row.set_active(False)
+                def _on_response(d, resp):
+                    if resp == "enable":
+                        self.hardware_mgr.set_phantom_power(True)
+                    else:
+                        self.phantom_row.set_active(False)
 
-            dialog.connect("response", _on_response)
-            dialog.present()
-        else:
-            self.hardware_mgr.toggle_phantom_power()
+                dialog.connect("response", _on_response)
+                dialog.present()
+            else:
+                self.hardware_mgr.set_phantom_power(False)
 
     def _on_check_firmware_updates(self, btn):
         dialog = Adw.MessageDialog(

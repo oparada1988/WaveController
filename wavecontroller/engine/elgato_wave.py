@@ -498,7 +498,11 @@ class ElgatoManager:
                 curr = dev.get_all_state()
                 if not curr.get("connected"):
                     continue
-                if last_state:
+                if not last_state:
+                    # Broadcast initial full state snapshot immediately on connection
+                    if self.on_state_changed:
+                        self.on_state_changed(curr, dict(curr))
+                else:
                     changed = {}
                     for k, v in curr.items():
                         if k in last_state and last_state[k] != v:

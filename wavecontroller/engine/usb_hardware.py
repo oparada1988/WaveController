@@ -39,7 +39,7 @@ class USBHardwareManager:
         self.on_device_renamed_callback = None
         self.on_devices_changed_callback = None
         self.on_new_device_detected_callback = None
-        self.on_hardware_state_changed_callback = None
+        self._hardware_listeners = []
 
         # Hook Elgato hardware dial & capacitive mute sync
         elgato_manager.on_state_changed = self._on_elgato_hardware_sync
@@ -47,6 +47,33 @@ class USBHardwareManager:
         self.detect_connected_hardware()
         self._ensure_default_tracked_devices()
         self._start_hotplug_monitor()
+
+    def add_hardware_listener(self, callback):
+        """Registers a listener callback (curr, changed) for physical hardware events."""
+        if callback and callback not in self._hardware_listeners:
+            self._hardware_listeners.append(callback)
+
+    def remove_hardware_listener(self, callback):
+        """Unregisters a hardware listener callback."""
+        if callback in self._hardware_listeners:
+            self._hardware_listeners.remove(callback)
+
+    def notify_hardware_listeners(self, curr: dict, changed: dict):
+        """Dispatches hardware state updates to all registered listeners safely."""
+        for cb in list(self._hardware_listeners):
+            try:
+                cb(curr, changed)
+            except Exception:
+                pass
+
+    @property
+    def on_hardware_state_changed_callback(self):
+        return None
+
+    @on_hardware_state_changed_callback.setter
+    def on_hardware_state_changed_callback(self, cb):
+        if cb:
+            self.add_hardware_listener(cb)
 
     def _ensure_default_tracked_devices(self):
         """Initializes tracked devices list strictly on first install if config key is None."""
@@ -63,13 +90,13 @@ class USBHardwareManager:
     def _on_elgato_hardware_sync(self, curr: dict, changed: dict):
         """Dispatched when physical dial, 2-sec 48V hold, or capacitive mute sensor changes on Elgato hardware."""
         if "phantom_power" in changed:
-            self.phantom_power_48v = changed["phantom_power"]
+            self.phantom_power_48v = bool(changed["phantom_power"])
             hw = dict(config_manager.get("hardware_settings", {}))
             hw["phantom_power"] = self.phantom_power_48v
             config_manager.set("hardware_settings", hw)
 
         if "mute" in changed:
-            self.hardware_mute = changed["mute"]
+            self.hardware_mute = bool(changed["mute"])
             target = self._resolve_source_target()
             subprocess.run(["wpctl", "set-mute", target, "1" if self.hardware_mute else "0"], stderr=subprocess.DEVNULL)
 
@@ -80,10 +107,18 @@ class USBHardwareManager:
             config_manager.set("hardware_settings", hw)
 
         if "hp_volume_pct" in changed:
-            self.headphone_volume = changed["hp_volume_pct"]
+            self.headphone_volume = int(round(changed["hp_volume_pct"]))
 
-        if self.on_hardware_state_changed_callback:
-            self.on_hardware_state_changed_callback(curr, changed)
+        if "clipguard" in changed:
+            self.clipguard_enabled = bool(changed["clipguard"])
+
+        if "low_cut" in changed:
+            self.low_cut_filter = str(changed["low_cut"])
+
+        if "low_impedance" in changed:
+            self.low_impedance_mode = bool(changed["low_impedance"])
+
+        self.notify_hardware_listeners(curr, changed)
 
     def detect_connected_hardware(self):
         """
@@ -231,7 +266,20 @@ class USBHardwareManager:
                 break
 
         if has_elgato:
-            elgato_manager.get_device()
+            dev = elgato_manager.get_device()
+            if dev and dev.is_connected():
+                try:
+                    init_st = dev.get_all_state()
+                    if init_st.get("connected"):
+                        self.phantom_power_48v = bool(init_st.get("phantom_power", self.phantom_power_48v))
+                        self.hardware_gain_db = int(round(init_st.get("gain_db", self.hardware_gain_db)))
+                        self.headphone_volume = int(round(init_st.get("hp_volume_pct", self.headphone_volume)))
+                        self.clipguard_enabled = bool(init_st.get("clipguard", self.clipguard_enabled))
+                        self.low_cut_filter = str(init_st.get("low_cut", self.low_cut_filter))
+                        self.low_impedance_mode = bool(init_st.get("low_impedance", self.low_impedance_mode))
+                        self.hardware_mute = bool(init_st.get("mute", self.hardware_mute))
+                except Exception:
+                    pass
         else:
             self.device_type = "generic"
 
@@ -553,16 +601,21 @@ class USBHardwareManager:
                 subprocess.run(["wpctl", "set-volume", target, f"{vol_pct:.2f}"], stderr=subprocess.DEVNULL)
             except Exception:
                 pass
+        self.notify_hardware_listeners({"gain_db": self.hardware_gain_db}, {"gain_db": self.hardware_gain_db})
 
-    def toggle_phantom_power(self) -> bool:
-        self.phantom_power_48v = not self.phantom_power_48v
+    def set_phantom_power(self, enabled: bool) -> bool:
+        self.phantom_power_48v = bool(enabled)
         hw = dict(config_manager.get("hardware_settings", {}))
         hw["phantom_power"] = self.phantom_power_48v
         config_manager.set("hardware_settings", hw)
         elgato_dev = elgato_manager.get_device()
         if elgato_dev:
             elgato_dev.set_phantom_power(self.phantom_power_48v)
+        self.notify_hardware_listeners({"phantom_power": self.phantom_power_48v}, {"phantom_power": self.phantom_power_48v})
         return self.phantom_power_48v
+
+    def toggle_phantom_power(self) -> bool:
+        return self.set_phantom_power(not self.phantom_power_48v)
 
     def set_low_cut(self, mode: str):
         self.low_cut_filter = mode
@@ -572,6 +625,7 @@ class USBHardwareManager:
         elgato_dev = elgato_manager.get_device()
         if elgato_dev:
             elgato_dev.set_low_cut(mode)
+        self.notify_hardware_listeners({"low_cut": self.low_cut_filter}, {"low_cut": self.low_cut_filter})
 
     def toggle_clipguard(self) -> bool:
         self.clipguard_enabled = not self.clipguard_enabled
@@ -581,6 +635,7 @@ class USBHardwareManager:
         elgato_dev = elgato_manager.get_device()
         if elgato_dev:
             elgato_dev.set_clipguard(self.clipguard_enabled)
+        self.notify_hardware_listeners({"clipguard": self.clipguard_enabled}, {"clipguard": self.clipguard_enabled})
         return self.clipguard_enabled
 
     def toggle_low_impedance(self) -> bool:
@@ -591,6 +646,7 @@ class USBHardwareManager:
         elgato_dev = elgato_manager.get_device()
         if elgato_dev:
             elgato_dev.set_low_impedance(self.low_impedance_mode)
+        self.notify_hardware_listeners({"low_impedance": self.low_impedance_mode}, {"low_impedance": self.low_impedance_mode})
         return self.low_impedance_mode
 
     def toggle_mute(self, source_id_or_key: str = None) -> bool:

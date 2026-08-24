@@ -88,6 +88,10 @@ class ChannelCard(Gtk.Box):
             self.update_phantom_state(self.hardware_mgr.phantom_power_48v)
             self.append(self.phantom_btn)
 
+        # Connect hardware listener for live knob, mute, and 48V sync
+        if self.hardware_mgr and hasattr(self.hardware_mgr, "add_hardware_listener"):
+            self.hardware_mgr.add_hardware_listener(lambda curr, changed: GLib.idle_add(self._on_hardware_state_sync, curr, changed))
+
         # 5. Channel settings gear popover button
         self.settings_btn = Gtk.MenuButton()
         self.settings_btn.set_icon_name("emblem-system-symbolic")
@@ -211,14 +215,24 @@ class ChannelCard(Gtk.Box):
 
             def _on_response(d, resp):
                 if resp == "enable":
-                    new_val = self.hardware_mgr.toggle_phantom_power()
+                    new_val = self.hardware_mgr.set_phantom_power(True)
                     self.update_phantom_state(new_val)
 
             dialog.connect("response", _on_response)
             dialog.present()
         else:
-            new_val = self.hardware_mgr.toggle_phantom_power()
+            new_val = self.hardware_mgr.set_phantom_power(False)
             self.update_phantom_state(new_val)
+
+    def _on_hardware_state_sync(self, curr: dict, changed: dict):
+        if self.is_wave_channel:
+            if "phantom_power" in changed:
+                self.update_phantom_state(bool(changed["phantom_power"]))
+            if "mute" in changed:
+                self.set_muted(bool(changed["mute"]))
+            if "gain_db" in changed:
+                vol_pct = max(0, min(100, int(round((float(changed["gain_db"]) / 75.0) * 100))))
+                self.set_master_volume(vol_pct, self.pipewire_mgr.get_channel_master_mute(self.channel_info["id"]))
 
     def update_phantom_state(self, is_active: bool):
         if hasattr(self, "phantom_btn") and self.phantom_btn:
@@ -302,6 +316,9 @@ class ChannelCard(Gtk.Box):
     def _on_slider_volume_changed(self, new_vol):
         ch_id = self.channel_info["id"]
         self.pipewire_mgr.set_channel_master_volume(ch_id, new_vol)
+        if self.is_wave_channel and self.hardware_mgr:
+            gain_db = int(round((new_vol / 100.0) * 75.0))
+            self.hardware_mgr.set_gain(gain_db)
         if self.pipewire_mgr.is_channel_linked(ch_id) and self.on_link_toggle_callback:
             self.on_link_toggle_callback(ch_id, True)
 

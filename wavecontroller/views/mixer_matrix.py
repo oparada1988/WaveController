@@ -22,8 +22,8 @@ class MixerMatrixView(Gtk.Box):
         self.matrix_cells = {} # {(channel_id, mix_id): MatrixCell}
         self.mix_headers = {} # {mix_id: MixHeaderCard}
         self.pipewire_mgr.on_external_change_callback = self._on_external_sync
-        if self.hardware_mgr:
-            self.hardware_mgr.on_hardware_state_changed_callback = lambda curr, changed: GLib.idle_add(self._on_hardware_sync, curr, changed)
+        if self.hardware_mgr and hasattr(self.hardware_mgr, "add_hardware_listener"):
+            self.hardware_mgr.add_hardware_listener(lambda curr, changed: GLib.idle_add(self._on_hardware_sync, curr, changed))
         
         self.set_margin_top(16)
         self.set_margin_bottom(16)
