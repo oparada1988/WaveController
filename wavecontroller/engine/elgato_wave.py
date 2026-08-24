@@ -43,6 +43,10 @@ def _init_libusb():
             _lib.libusb_open_device_with_vid_pid.restype = ctypes.c_void_p
             _lib.libusb_close.argtypes = [ctypes.c_void_p]
             _lib.libusb_close.restype = None
+            _lib.libusb_claim_interface.argtypes = [ctypes.c_void_p, ctypes.c_int]
+            _lib.libusb_claim_interface.restype = ctypes.c_int
+            _lib.libusb_release_interface.argtypes = [ctypes.c_void_p, ctypes.c_int]
+            _lib.libusb_release_interface.restype = ctypes.c_int
             _lib.libusb_control_transfer.argtypes = [
                 ctypes.c_void_p, ctypes.c_uint8, ctypes.c_uint8,
                 ctypes.c_uint16, ctypes.c_uint16,
@@ -190,6 +194,11 @@ class ElgatoWaveDevice:
                 handle = lib.libusb_open_device_with_vid_pid(_lib_ctx, self.profile.vid, self.profile.pid)
                 if handle:
                     self._handle = handle
+                    # Claim vendor control interface 3 for direct USB control transfers without kernel interference
+                    try:
+                        lib.libusb_claim_interface(handle, 3)
+                    except Exception:
+                        pass
                     log.info(f"Successfully connected to Elgato {self.profile.display_name} (0x{self.profile.vid:04X}:0x{self.profile.pid:04X})")
                     self._read_initial_info()
                     return True
@@ -200,6 +209,10 @@ class ElgatoWaveDevice:
     def disconnect(self):
         with self._lock:
             if self._handle and _lib:
+                try:
+                    _lib.libusb_release_interface(self._handle, 3)
+                except Exception:
+                    pass
                 try:
                     _lib.libusb_close(self._handle)
                 except Exception:

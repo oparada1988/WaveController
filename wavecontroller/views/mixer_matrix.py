@@ -707,39 +707,52 @@ class MixerMatrixView(Gtk.Box):
             header.update_ui_state()
 
     def _on_hardware_sync(self, curr: dict, changed: dict):
-        # 1. Update all matching Wave microphone channel cards live (Gain Mode & Mute)
-        for ch_id, card in list(self.channel_cards.items()):
-            ch_name = str(card.channel_info.get("name", "")).lower()
-            if ch_id in ("mic", "elgato_wave_xlr") or "wave" in ch_id.lower() or "wave" in ch_name or (card.channel_info.get("type") == "source" and getattr(self.hardware_mgr, "is_elgato", False)):
-                if "phantom_power" in changed:
-                    card.update_phantom_state(changed["phantom_power"])
-                if "gain_db" in changed:
-                    val = int(round(changed["gain_db"]))
-                    vol_pct = max(0, min(100, int(round((val / 75.0) * 100))))
-                    self.pipewire_mgr.set_channel_master_volume(ch_id, vol_pct)
-                    card.set_master_volume(vol_pct, self.pipewire_mgr.get_channel_master_mute(ch_id))
-                if "mute" in changed:
-                    is_muted = changed["mute"]
+        dial_mode = curr.get("dial_mode", "gain")
+
+        # 1. Update 48V Phantom Power badge
+        if "phantom_power" in changed:
+            for ch_id, card in list(self.channel_cards.items()):
+                if getattr(card, "is_wave_channel", False):
+                    card.update_phantom_state(bool(changed["phantom_power"]))
+
+        # 2. Update hardware mute
+        if "mute" in changed:
+            is_muted = bool(changed["mute"])
+            for ch_id, card in list(self.channel_cards.items()):
+                if getattr(card, "is_wave_channel", False):
                     self.pipewire_mgr.set_channel_master_mute(ch_id, is_muted)
                     card.set_muted(is_muted)
 
-        # 2. Update headphone monitor mix headers live when knob is clicked to Output / HP Mode
-        if "hp_volume_pct" in changed:
-            hp_vol = changed["hp_volume_pct"]
-            target_headers = []
-            for m_id, header in list(self.mix_headers.items()):
-                m_name = str(header.mix_info.get("name", "")).lower()
-                m_target = str(header.mix_info.get("target_device", "")).lower()
-                if "wave" in m_target or "personal" in m_id.lower() or "beta" in m_name or m_id in ("personal", "personal_mix") or "headphone" in m_name:
-                    target_headers.append((m_id, header))
-            if not target_headers and self.mix_headers:
-                for m_id, header in list(self.mix_headers.items()):
-                    if header.mix_info.get("type", "sink") == "sink":
-                        target_headers.append((m_id, header))
+        # 3. Update Preamp Gain ONLY when knob is in Gain Mode (Mode 1 / 1st LED on Wave hardware)
+        if "gain_db" in changed and dial_mode == "gain":
+            val = float(changed["gain_db"])
+            vol_pct = max(0, min(100, int(round((val / 75.0) * 100))))
+            for ch_id, card in list(self.channel_cards.items()):
+                if getattr(card, "is_wave_channel", False) or ch_id in ("mic", "elgato_wave_xlr"):
+                    self.pipewire_mgr.set_channel_master_volume(ch_id, vol_pct)
+                    card.set_master_volume(vol_pct, self.pipewire_mgr.get_channel_master_mute(ch_id))
+
+        # 4. Update Headphone Monitor Mix Header ONLY when knob is in Output / HP Mode (Mode 2 / 2nd LED on Wave hardware)
+        if "hp_volume_pct" in changed and dial_mode == "hp":
+            hp_vol = int(round(changed["hp_volume_pct"]))
+            assigned_mix = "personal_mix"
+            if self.hardware_mgr:
+                assigned_mix = self.hardware_mgr.get_device_assigned_mix("Wave XLR") or self.hardware_mgr.get_device_assigned_mix(self.hardware_mgr.device_name) or "personal_mix"
+            
+            target_header = self.mix_headers.get(assigned_mix)
+            if not target_header:
+                for m_id, header in self.mix_headers.items():
+                    if m_id in (assigned_mix, "personal", "personal_mix") or "wave" in str(header.mix_info.get("name", "")).lower():
+                        target_header = header
+                        assigned_mix = m_id
                         break
-            for m_id, header in target_headers:
-                self.pipewire_mgr.set_mix_master_volume(m_id, hp_vol)
-                header.set_volume(hp_vol)
+            if not target_header and self.mix_headers:
+                target_header = list(self.mix_headers.values())[0]
+                assigned_mix = list(self.mix_headers.keys())[0]
+
+            if target_header:
+                self.pipewire_mgr.set_mix_master_volume(assigned_mix, hp_vol)
+                target_header.set_volume(hp_vol)
 
     def _on_channel_deleted(self, ch_id: str):
         self.pipewire_mgr.remove_channel(ch_id)

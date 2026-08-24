@@ -35,6 +35,8 @@ class StereoSlider(Gtk.DrawingArea):
         self.add_controller(drag_gesture)
 
     def set_volume(self, volume: int, is_muted: bool = False):
+        if self.is_dragging:
+            return
         new_vol = max(0, min(100, volume))
         if self.volume != new_vol or self.is_muted != is_muted:
             self.volume = new_vol
