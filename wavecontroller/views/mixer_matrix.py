@@ -66,6 +66,7 @@ class MixerMatrixView(Gtk.Box):
         self.balance_scale = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 0, 100, 1)
         self.balance_scale.set_size_request(110, -1)
         self.balance_scale.set_draw_value(False)
+        self.balance_scale.add_mark(50, Gtk.PositionType.BOTTOM, None)
         self.balance_scale.add_css_class("wave-balance-fader")
         init_mix = self.hardware_mgr.get_monitor_mix() if self.hardware_mgr else 50
         self.balance_scale.set_value(init_mix)

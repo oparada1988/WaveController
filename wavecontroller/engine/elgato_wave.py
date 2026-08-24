@@ -422,8 +422,9 @@ class ElgatoWaveDevice:
         try:
             cfg = self.read_config()
             raw = struct.unpack_from("<H", cfg, self.profile.off_monitor_mix)[0]
-            pct = raw >> 8
-            return max(0, min(100, pct))
+            hw_pct = raw >> 8
+            # Invert hardware register (0x0000 = 100% PC Right, 0x6400 = 100% Mic Left)
+            return max(0, min(100, 100 - hw_pct))
         except Exception:
             return 50
 
@@ -432,7 +433,8 @@ class ElgatoWaveDevice:
             return
         try:
             pct = max(0, min(100, int(pct)))
-            raw = pct << 8
+            hw_pct = 100 - pct
+            raw = hw_pct << 8
             cfg = self.read_config()
             struct.pack_into("<H", cfg, self.profile.off_monitor_mix, raw)
             if transient:
@@ -599,7 +601,8 @@ class ElgatoWaveDevice:
             monitor_mix = 50
             if self.profile.off_monitor_mix is not None:
                 raw_mix = struct.unpack_from("<H", cfg, self.profile.off_monitor_mix)[0]
-                monitor_mix = max(0, min(100, raw_mix >> 8))
+                hw_pct = raw_mix >> 8
+                monitor_mix = max(0, min(100, 100 - hw_pct))
 
             low_z = False
             if self.profile.off_low_z is not None:
