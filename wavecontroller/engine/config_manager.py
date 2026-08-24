@@ -33,7 +33,18 @@ class ConfigManager:
             "gain_db": 45,
             "phantom_power": False,
             "clipguard": True,
-            "low_cut": "80Hz"
+            "low_cut": "80Hz",
+            "led_colors": {
+                "gain": "#FFFFFF",
+                "hp": "#2ECC71",
+                "mix": "#FF9500",
+                "vu": "#00E5FF",
+                "mute": "#FF0000"
+            },
+            "vu_meter_enabled": {
+                "gain": True,
+                "hp": True
+            }
         }
     }
 
