@@ -185,6 +185,10 @@ class ElgatoWaveDevice:
         self._last_state: Dict[str, Any] = {}
         self.dev_info: Dict[str, str] = {}
         self._steady_dial_mode: str = "gain"
+        self._steady_gain_db: float = 45.0
+        self._steady_hp_pct: int = 70
+        self._steady_mix_pct: int = 50
+        self._is_streaming_vu: bool = False
         self._revert_timer: Optional[threading.Timer] = None
         self._mode_mutes: Dict[str, bool] = {"gain": False, "hp": False, "mix": False}
         self._led_colors: Dict[str, str] = {
@@ -300,6 +304,8 @@ class ElgatoWaveDevice:
 
     def set_gain_db(self, gain_db: float, transient: bool = False):
         try:
+            self._steady_gain_db = float(gain_db)
+            self._is_streaming_vu = False
             self.notify_user_interaction("gain")
             gain_db = max(0.0, min(self.profile.gain_max_db, float(gain_db)))
             raw = int((gain_db / self.profile.gain_max_db) * self.profile.gain_raw_max)
@@ -420,6 +426,8 @@ class ElgatoWaveDevice:
 
     def set_headphone_volume_pct(self, pct: int, transient: bool = False):
         try:
+            self._steady_hp_pct = int(pct)
+            self._is_streaming_vu = False
             self.notify_user_interaction("hp")
             pct = max(0, min(100, pct))
             db = (pct / 100.0 * 60.0) - 60.0
@@ -451,6 +459,8 @@ class ElgatoWaveDevice:
         if self.profile.off_monitor_mix is None:
             return
         try:
+            self._steady_mix_pct = int(pct)
+            self._is_streaming_vu = False
             self.notify_user_interaction("mix")
             pct = max(0, min(100, int(pct)))
             hw_pct = 100 - pct
@@ -621,6 +631,7 @@ class ElgatoWaveDevice:
 
     def _on_interaction_timeout(self):
         self._user_interacting = False
+        self._is_streaming_vu = False
         try:
             curr_mode = self.get_dial_mode()
             self.apply_mode_color(curr_mode)
@@ -633,6 +644,8 @@ class ElgatoWaveDevice:
     def update_live_vu(self, mode: str, peak_level: float):
         """Streams live peak audio levels (0.0 to 1.0) to the hardware LED ring in dedicated VU color."""
         if self._user_interacting or self.get_mode_mute(mode) or not self.is_connected():
+            if self._is_streaming_vu:
+                self._is_streaming_vu = False
             return
 
         import time
@@ -654,6 +667,8 @@ class ElgatoWaveDevice:
             curr_mode = self.get_dial_mode()
             if curr_mode != mode:
                 return
+
+            self._is_streaming_vu = True
 
             # Apply Dedicated VU Color
             vu_hex = self._led_colors.get("vu", "#00E5FF").lstrip("#")
@@ -687,12 +702,12 @@ class ElgatoWaveDevice:
         try:
             cfg = self.read_config()
             raw_gain = struct.unpack_from("<H", cfg, self.profile.off_gain)[0]
-            gain_db = round((raw_gain / float(self.profile.gain_raw_max)) * self.profile.gain_max_db, 1)
+            read_gain_db = round((raw_gain / float(self.profile.gain_raw_max)) * self.profile.gain_max_db, 1)
             mute = bool(cfg[self.profile.off_mute])
             
             raw_hp = struct.unpack_from(self.profile.hp_fmt, cfg, self.profile.off_hp_vol)[0]
             hp_db = raw_hp / self.profile.hp_scale
-            hp_pct = max(0, min(100, int(round((hp_db + 60.0) / 60.0 * 100.0))))
+            read_hp_pct = max(0, min(100, int(round((hp_db + 60.0) / 60.0 * 100.0))))
 
             dial_mode = "gain"
             if self.profile.off_vol_select is not None:
@@ -702,7 +717,23 @@ class ElgatoWaveDevice:
             if self.profile.off_monitor_mix is not None:
                 raw_mix = struct.unpack_from("<H", cfg, self.profile.off_monitor_mix)[0]
                 hw_pct = raw_mix >> 8
-                monitor_mix = max(0, min(100, 100 - hw_pct))
+                read_mix_pct = max(0, min(100, 100 - hw_pct))
+            else:
+                read_mix_pct = 50
+
+            # When streaming VU meter, state returns steady user parameter values to prevent slider bounce
+            gain_db = self._steady_gain_db if self._is_streaming_vu else read_gain_db
+            hp_pct = self._steady_hp_pct if self._is_streaming_vu else read_hp_pct
+            monitor_mix = self._steady_mix_pct if self._is_streaming_vu else read_mix_pct
+
+            # Update steady parameters during active user interaction
+            if self._user_interacting:
+                self._steady_gain_db = read_gain_db
+                self._steady_hp_pct = read_hp_pct
+                self._steady_mix_pct = read_mix_pct
+                gain_db = read_gain_db
+                hp_pct = read_hp_pct
+                monitor_mix = read_mix_pct
 
             low_z = False
             if self.profile.off_low_z is not None:
