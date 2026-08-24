@@ -3,6 +3,7 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import Gtk, Adw, GLib, Pango
 import math
+from .led_color_picker import LEDColorButton
 
 class UnifiedDeviceSettingsView(Gtk.Box):
     """
@@ -178,6 +179,17 @@ class UnifiedDeviceSettingsView(Gtk.Box):
             vol_row.add_suffix(self.vol_slider)
             grp_out.add(vol_row)
 
+            # Direct Mic / PC Audio Crossfade (Monitor Mix)
+            bal_row = Adw.ActionRow(title="Mic / PC Audio Balance (Monitor Mix)", subtitle="Hardware zero-latency sidetone crossfader")
+            curr_mix = self.hardware_mgr.get_monitor_mix()
+            self.bal_adj = Gtk.Adjustment(value=curr_mix, lower=0, upper=100, step_increment=1, page_increment=5)
+            self.bal_slider = Gtk.Scale(orientation=Gtk.Orientation.HORIZONTAL, adjustment=self.bal_adj)
+            self.bal_slider.set_size_request(180, -1)
+            self.bal_slider.set_valign(Gtk.Align.CENTER)
+            self._bal_handler_id = self.bal_slider.connect("value-changed", self._on_balance_changed)
+            bal_row.add_suffix(self.bal_slider)
+            grp_out.add(bal_row)
+
             # Low-Impedance Mode Switch
             self.low_z_row = Adw.SwitchRow(title="Low-Impedance Headphone Mode", subtitle="Optimized for sensitive In-Ear Monitors (IEMs)")
             self.low_z_row.set_active(self.hardware_mgr.low_impedance_mode)
@@ -221,7 +233,41 @@ class UnifiedDeviceSettingsView(Gtk.Box):
 
             pref_page.add(grp_out)
 
-        # Group 4: Hardware Diagnostics & Firmware (USB DFU 1.10)
+        # Group 4: Hardware RGB LED Ring Customization (Elgato Wave devices)
+        if self.is_elgato:
+            grp_led = Adw.PreferencesGroup(title="Hardware RGB LED Ring Customization")
+
+            # Mic Gain Mode Color
+            gain_led_row = Adw.ActionRow(title="Mic Gain Mode Ring Color", subtitle="Color when knob adjusts microphone preamp gain")
+            gain_led_btn = LEDColorButton(self.hardware_mgr, "gain", title="Mic Gain Mode Color")
+            gain_led_btn.set_valign(Gtk.Align.CENTER)
+            gain_led_row.add_suffix(gain_led_btn)
+            grp_led.add(gain_led_row)
+
+            # Headphone Mode Color
+            hp_led_row = Adw.ActionRow(title="Headphone Mode Ring Color", subtitle="Color when knob adjusts headphone output volume")
+            hp_led_btn = LEDColorButton(self.hardware_mgr, "hp", title="Headphone Mode Color")
+            hp_led_btn.set_valign(Gtk.Align.CENTER)
+            hp_led_row.add_suffix(hp_led_btn)
+            grp_led.add(hp_led_row)
+
+            # Balance Mode Color
+            mix_led_row = Adw.ActionRow(title="Balance Mode Ring Color", subtitle="Color when knob adjusts Mic/PC crossfade balance")
+            mix_led_btn = LEDColorButton(self.hardware_mgr, "mix", title="Balance Mode Color")
+            mix_led_btn.set_valign(Gtk.Align.CENTER)
+            mix_led_row.add_suffix(mix_led_btn)
+            grp_led.add(mix_led_row)
+
+            # Mute State Color
+            mute_led_row = Adw.ActionRow(title="Mute State Ring Color", subtitle="Color when microphone is muted via capacitive sensor")
+            mute_led_btn = LEDColorButton(self.hardware_mgr, "mute", title="Mute State Color")
+            mute_led_btn.set_valign(Gtk.Align.CENTER)
+            mute_led_row.add_suffix(mute_led_btn)
+            grp_led.add(mute_led_row)
+
+            pref_page.add(grp_led)
+
+        # Group 5: Hardware Diagnostics & Firmware (USB DFU 1.10)
         grp_diag = Adw.PreferencesGroup(title="Hardware Diagnostics &amp; Firmware")
         
         info = self.hardware_mgr.get_elgato_device_info()
@@ -348,6 +394,17 @@ class UnifiedDeviceSettingsView(Gtk.Box):
                             self.low_z_row.handler_unblock(self._low_z_handler_id)
                     else:
                         self.low_z_row.set_active(val)
+
+            if "monitor_mix_pct" in changed and hasattr(self, "bal_adj") and hasattr(self, "bal_slider"):
+                val = int(round(changed["monitor_mix_pct"]))
+                if hasattr(self, "_bal_handler_id") and self._bal_handler_id:
+                    self.bal_slider.handler_block(self._bal_handler_id)
+                    try:
+                        self.bal_adj.set_value(val)
+                    finally:
+                        self.bal_slider.handler_unblock(self._bal_handler_id)
+                else:
+                    self.bal_adj.set_value(val)
         finally:
             self._syncing_from_hw = False
 
@@ -428,8 +485,14 @@ class UnifiedDeviceSettingsView(Gtk.Box):
         if getattr(self, "_syncing_from_hw", False):
             return
         val = int(self.gain_adj.get_value())
-        self.hardware_mgr.set_gain(val, self.device_key)
+        self.hardware_mgr.set_gain(val, self.device_key, transient=True)
         self.gain_row.set_subtitle(f"{val} dB")
+
+    def _on_balance_changed(self, scale):
+        if getattr(self, "_syncing_from_hw", False):
+            return
+        val = int(self.bal_adj.get_value())
+        self.hardware_mgr.set_monitor_mix(val, transient=True)
 
     def _on_low_cut_changed(self, row, *args):
         if getattr(self, "_syncing_from_hw", False):
@@ -451,7 +514,7 @@ class UnifiedDeviceSettingsView(Gtk.Box):
         if getattr(self, "_syncing_from_hw", False):
             return
         val = int(self.vol_adj.get_value())
-        self.hardware_mgr.set_output_volume(self.device_key, val)
+        self.hardware_mgr.set_output_volume(self.device_key, val, transient=True)
 
     def _on_output_mute_clicked(self, btn):
         self.hardware_mgr.toggle_output_mute(self.device_key)

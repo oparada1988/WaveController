@@ -165,6 +165,10 @@ class MixHeaderCard(Gtk.Box):
         self.vol_lbl.set_text(f"{vol}%")
         if self.pipewire_mgr:
             self.pipewire_mgr.set_mix_master_volume(self.mix_info["id"], vol)
+        if self.hardware_mgr and (self.mix_info.get("type") == "sink" or "personal" in self.mix_info.get("id", "")):
+            target = self.mix_info.get("target_device", "")
+            if "wave" in str(target).lower() or "elgato" in str(target).lower() or target in ("default", ""):
+                self.hardware_mgr.set_output_volume(volume_pct=vol, transient=True)
 
     def _apply_indicator_color(self, hex_code: str):
         # We can dynamically apply custom color via CSS provider
@@ -276,6 +280,17 @@ class MixHeaderCard(Gtk.Box):
             target_dev_combo.set_hexpand(True)
             target_row.append(target_dev_combo)
             box.append(target_row)
+
+            # Hardware LED Color Dropdown (Headphone Volume Mode)
+            if self.hardware_mgr:
+                led_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+                led_lbl = Gtk.Label(label="Hardware LED (Headphone):", hexpand=True, halign=Gtk.Align.START)
+                led_lbl.add_css_class("mix-header-subtitle")
+                from .led_color_picker import LEDColorButton
+                led_btn = LEDColorButton(self.hardware_mgr, "hp", title="Hardware LED")
+                led_row.append(led_lbl)
+                led_row.append(led_btn)
+                box.append(led_row)
 
         # Minimal Symbolic Icon Palette (Pure Vector Icons, No Text Labels, Zero Emojis)
         AVAILABLE_MIX_ICONS = [

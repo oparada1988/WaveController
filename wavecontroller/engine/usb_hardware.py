@@ -17,8 +17,16 @@ class USBHardwareManager:
 
     def __init__(self):
         self.device_name = "Elgato Wave XLR"
-        self.device_type = "generic" # 'elgato' or 'generic'
-        self.discovered_devices = {} # {device_key: dev_info_dict}
+        self.device_type = "generic" # "generic" or "elgato"
+        self.monitor_mix = 50
+        hw_init = config_manager.get("hardware_settings", {})
+        self.led_colors = dict(hw_init.get("led_colors", {
+            "gain": "#FFFFFF",
+            "hp": "#2ECC71",
+            "mix": "#FF9500",
+            "mute": "#FF0000"
+        }))
+        self.discovered_devices: Dict[str, dict] = {} # {device_key: dev_info_dict}
         self.input_devices = [] # Legacy compatibility
         self.output_devices = [] # Legacy compatibility
         self.connected_audio_devices = [] # Legacy compatibility
@@ -111,6 +119,12 @@ class USBHardwareManager:
 
         if "hp_volume_pct" in changed:
             self.headphone_volume = int(round(changed["hp_volume_pct"]))
+
+        if "monitor_mix_pct" in changed:
+            self.monitor_mix = int(round(changed["monitor_mix_pct"]))
+
+        if "led_colors" in changed:
+            self.led_colors.update(changed["led_colors"])
 
         if "clipguard" in changed:
             self.clipguard_enabled = bool(changed["clipguard"])
@@ -525,19 +539,46 @@ class USBHardwareManager:
             pass
         return self.headphone_volume
 
-    def set_output_volume(self, sink_id_or_key: str = None, volume_pct: int = 75):
+    def set_output_volume(self, sink_id_or_key: str = None, volume_pct: int = 75, transient: bool = False):
         self.headphone_volume = max(0, min(100, volume_pct))
         target = self._resolve_sink_target(sink_id_or_key)
         vol_frac = max(0.0, min(1.5, self.headphone_volume / 100.0))
-        try:
-            subprocess.run(["wpctl", "set-volume", target, f"{vol_frac:.2f}"], stderr=subprocess.DEVNULL)
-        except Exception:
-            pass
+        if not self._is_target_elgato(sink_id_or_key):
+            try:
+                subprocess.run(["wpctl", "set-volume", target, f"{vol_frac:.2f}"], stderr=subprocess.DEVNULL)
+            except Exception:
+                pass
 
         # Sync to Elgato hardware if applicable
         elgato_dev = elgato_manager.get_device()
         if elgato_dev and self._is_target_elgato(sink_id_or_key):
-            elgato_dev.set_headphone_volume_pct(self.headphone_volume)
+            elgato_dev.set_headphone_volume_pct(self.headphone_volume, transient=transient)
+
+    def get_monitor_mix(self) -> int:
+        elgato_dev = elgato_manager.get_device()
+        if elgato_dev:
+            return elgato_dev.get_monitor_mix()
+        return getattr(self, "monitor_mix", 50)
+
+    def set_monitor_mix(self, pct: int, transient: bool = False):
+        self.monitor_mix = max(0, min(100, int(pct)))
+        elgato_dev = elgato_manager.get_device()
+        if elgato_dev:
+            elgato_dev.set_monitor_mix(self.monitor_mix, transient=transient)
+        self.notify_hardware_listeners({"monitor_mix_pct": self.monitor_mix}, {"monitor_mix_pct": self.monitor_mix})
+
+    def get_led_color(self, mode: str) -> str:
+        return self.led_colors.get(mode, "#FFFFFF")
+
+    def set_led_color(self, mode: str, color_hex: str):
+        self.led_colors[mode] = color_hex
+        hw = dict(config_manager.get("hardware_settings", {}))
+        hw["led_colors"] = dict(self.led_colors)
+        config_manager.set("hardware_settings", hw, immediate=True)
+        elgato_dev = elgato_manager.get_device()
+        if elgato_dev:
+            elgato_dev.set_led_colors(self.led_colors)
+        self.notify_hardware_listeners({"led_colors": self.led_colors}, {"led_colors": self.led_colors})
 
     def get_output_mute(self, sink_id_or_key: str = None) -> bool:
         target = self._resolve_sink_target(sink_id_or_key)
@@ -588,7 +629,7 @@ class USBHardwareManager:
         return "wave" in k.lower() or "elgato" in k.lower()
 
     # Input Gain & Hardware DSP Controls
-    def set_gain(self, gain_db: int, source_id_or_key: str = None):
+    def set_gain(self, gain_db: int, source_id_or_key: str = None, transient: bool = False):
         self.hardware_gain_db = max(0, min(75, gain_db))
         hw = dict(config_manager.get("hardware_settings", {}))
         hw["gain_db"] = self.hardware_gain_db
@@ -596,7 +637,7 @@ class USBHardwareManager:
 
         elgato_dev = elgato_manager.get_device()
         if elgato_dev and self._is_target_elgato(source_id_or_key):
-            elgato_dev.set_gain_db(self.hardware_gain_db)
+            elgato_dev.set_gain_db(self.hardware_gain_db, transient=transient)
         else:
             vol_pct = self.hardware_gain_db / 75.0
             target = self._resolve_source_target(source_id_or_key)

@@ -218,15 +218,28 @@ class IPCServer:
             res["clipguard"] = self.hardware_mgr.clipguard_enabled
             res["low_cut"] = self.hardware_mgr.low_cut_filter
             res["low_impedance"] = self.hardware_mgr.low_impedance_mode
+            res["monitor_mix_pct"] = self.hardware_mgr.get_monitor_mix()
+            res["led_colors"] = getattr(self.hardware_mgr, "led_colors", {})
             res["elgato_info"] = self.hardware_mgr.get_elgato_device_info()
         elif cmd in ["set_hardware_gain", "set_gain"]:
             gain_val = req.get("gain_db")
             if gain_val is not None:
-                self.hardware_mgr.set_gain(int(gain_val))
+                self.hardware_mgr.set_gain(int(gain_val), transient=req.get("transient", False))
             elif "delta" in req:
                 curr = self.hardware_mgr.hardware_gain_db
-                self.hardware_mgr.set_gain(max(0, min(75, curr + int(req["delta"]))))
+                self.hardware_mgr.set_gain(max(0, min(75, curr + int(req["delta"]))), transient=req.get("transient", False))
             res["gain_db"] = self.hardware_mgr.hardware_gain_db
+        elif cmd == "set_monitor_mix":
+            pct = req.get("percent", req.get("pct", 50))
+            self.hardware_mgr.set_monitor_mix(int(pct), transient=req.get("transient", False))
+            res["monitor_mix_pct"] = self.hardware_mgr.get_monitor_mix()
+        elif cmd == "get_monitor_mix":
+            res["monitor_mix_pct"] = self.hardware_mgr.get_monitor_mix()
+        elif cmd == "set_led_color":
+            mode = req.get("mode", "hp")
+            color_hex = req.get("color", "#FFFFFF")
+            self.hardware_mgr.set_led_color(mode, color_hex)
+            res["led_colors"] = self.hardware_mgr.led_colors
         elif cmd == "toggle_phantom_power":
             res["phantom_48v"] = self.hardware_mgr.toggle_phantom_power()
         elif cmd == "toggle_clipguard":

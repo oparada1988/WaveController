@@ -96,6 +96,8 @@ class ElgatoProfile:
     off_low_z: Optional[int]
     off_monitor_mix: Optional[int]
     mix_max: int
+    off_rgb_mute: Optional[int] = None
+    off_rgb_ring: Optional[int] = None
 
 
 PROFILE_WAVE_XLR = ElgatoProfile(
@@ -126,8 +128,10 @@ PROFILE_WAVE_XLR = ElgatoProfile(
     off_vol_select=14,
     vol_select_map={0x01: "gain", 0x02: "hp", 0x03: "mix"},
     off_low_z=33,
-    off_monitor_mix=None,
-    mix_max=0,
+    off_monitor_mix=2,
+    mix_max=0x6400,
+    off_rgb_mute=15,
+    off_rgb_ring=18,
 )
 
 PROFILE_WAVE_3 = ElgatoProfile(
@@ -160,6 +164,8 @@ PROFILE_WAVE_3 = ElgatoProfile(
     off_low_z=None,
     off_monitor_mix=10,
     mix_max=0x6400,
+    off_rgb_mute=None,
+    off_rgb_ring=None,
 )
 
 ELGATO_PROFILES = [PROFILE_WAVE_XLR, PROFILE_WAVE_3]
@@ -178,6 +184,14 @@ class ElgatoWaveDevice:
         self._lock = threading.RLock()
         self._last_state: Dict[str, Any] = {}
         self.dev_info: Dict[str, str] = {}
+        self._steady_dial_mode: str = "gain"
+        self._revert_timer: Optional[threading.Timer] = None
+        self._led_colors: Dict[str, str] = {
+            "gain": "#FFFFFF",
+            "hp": "#2ECC71",
+            "mix": "#FF9500",
+            "mute": "#FF0000"
+        }
 
     def is_connected(self) -> bool:
         return self._handle is not None
@@ -278,13 +292,16 @@ class ElgatoWaveDevice:
         except Exception:
             return 45.0
 
-    def set_gain_db(self, gain_db: float):
+    def set_gain_db(self, gain_db: float, transient: bool = False):
         try:
             gain_db = max(0.0, min(self.profile.gain_max_db, float(gain_db)))
             raw = int((gain_db / self.profile.gain_max_db) * self.profile.gain_raw_max)
             cfg = self.read_config()
             struct.pack_into("<H", cfg, self.profile.off_gain, raw)
-            self.write_config(cfg)
+            if transient:
+                self._trigger_transient_peek("gain", cfg)
+            else:
+                self.write_config(cfg)
             self._last_state["gain_db"] = gain_db
         except Exception as e:
             log.warning(f"Failed to set hardware gain: {e}")
@@ -383,17 +400,48 @@ class ElgatoWaveDevice:
         except Exception:
             return 70
 
-    def set_headphone_volume_pct(self, pct: int):
+    def set_headphone_volume_pct(self, pct: int, transient: bool = False):
         try:
             pct = max(0, min(100, pct))
             db = (pct / 100.0 * 60.0) - 60.0
             raw = int(db * self.profile.hp_scale)
             cfg = self.read_config()
             struct.pack_into(self.profile.hp_fmt, cfg, self.profile.off_hp_vol, raw)
-            self.write_config(cfg)
+            if transient:
+                self._trigger_transient_peek("hp", cfg)
+            else:
+                self.write_config(cfg)
             self._last_state["hp_pct"] = pct
         except Exception as e:
             log.warning(f"Failed to set headphone volume: {e}")
+
+    # --- Monitor Mix (Crossfade: 0% Mic to 100% PC) ---
+    def get_monitor_mix(self) -> int:
+        if self.profile.off_monitor_mix is None:
+            return 50
+        try:
+            cfg = self.read_config()
+            raw = struct.unpack_from("<H", cfg, self.profile.off_monitor_mix)[0]
+            pct = raw >> 8
+            return max(0, min(100, pct))
+        except Exception:
+            return 50
+
+    def set_monitor_mix(self, pct: int, transient: bool = False):
+        if self.profile.off_monitor_mix is None:
+            return
+        try:
+            pct = max(0, min(100, int(pct)))
+            raw = pct << 8
+            cfg = self.read_config()
+            struct.pack_into("<H", cfg, self.profile.off_monitor_mix, raw)
+            if transient:
+                self._trigger_transient_peek("mix", cfg)
+            else:
+                self.write_config(cfg)
+            self._last_state["monitor_mix"] = pct
+        except Exception as e:
+            log.warning(f"Failed to set monitor mix: {e}")
 
     # --- Low-Impedance Mode ---
     def get_low_impedance(self) -> bool:
@@ -416,7 +464,7 @@ class ElgatoWaveDevice:
         except Exception as e:
             log.warning(f"Failed to set low impedance mode: {e}")
 
-    # --- Dial Mode & Monitor Mix ---
+    # --- Dial Mode & Transient LED Peek ---
     def get_dial_mode(self) -> str:
         if self.profile.off_vol_select is None:
             return "gain"
@@ -426,6 +474,112 @@ class ElgatoWaveDevice:
             return self.profile.vol_select_map.get(val, "gain")
         except Exception:
             return "gain"
+
+    def set_dial_mode(self, mode: str, permanent: bool = True):
+        if self.profile.off_vol_select is None:
+            return
+        rev_map = {v: k for k, v in self.profile.vol_select_map.items()}
+        val = rev_map.get(mode)
+        if val is None:
+            return
+        try:
+            cfg = self.read_config()
+            cfg[self.profile.off_vol_select] = val
+            if permanent:
+                self._steady_dial_mode = mode
+                self._cancel_revert_timer()
+            self._apply_led_colors_to_config(cfg, active_mode=mode)
+            self.write_config(cfg)
+            self._last_state["dial_mode"] = mode
+        except Exception as e:
+            log.warning(f"Failed to set dial mode: {e}")
+
+    def _trigger_transient_peek(self, target_mode: str, cfg: bytearray):
+        """Temporarily illuminates target mode and reverts after 1.8s."""
+        if self.profile.off_vol_select is None:
+            self.write_config(cfg)
+            return
+
+        current_steady = getattr(self, "_steady_dial_mode", "gain")
+        rev_map = {v: k for k, v in self.profile.vol_select_map.items()}
+        target_val = rev_map.get(target_mode)
+
+        if target_val is not None:
+            cfg[self.profile.off_vol_select] = target_val
+            self._apply_led_colors_to_config(cfg, active_mode=target_mode)
+
+        self.write_config(cfg)
+
+        if target_mode != current_steady:
+            self._cancel_revert_timer()
+            self._revert_timer = threading.Timer(1.8, self._revert_to_steady_mode)
+            self._revert_timer.daemon = True
+            self._revert_timer.start()
+
+    def _revert_to_steady_mode(self):
+        try:
+            steady = getattr(self, "_steady_dial_mode", "gain")
+            rev_map = {v: k for k, v in self.profile.vol_select_map.items()}
+            val = rev_map.get(steady)
+            if val is not None and self.profile.off_vol_select is not None:
+                cfg = self.read_config()
+                cfg[self.profile.off_vol_select] = val
+                self._apply_led_colors_to_config(cfg, active_mode=steady)
+                self.write_config(cfg)
+                self._last_state["dial_mode"] = steady
+        except Exception as e:
+            log.debug(f"Transient revert ignored: {e}")
+
+    def _cancel_revert_timer(self):
+        timer = getattr(self, "_revert_timer", None)
+        if timer and timer.is_alive():
+            timer.cancel()
+        self._revert_timer = None
+
+    # --- Hardware RGB LED Ring Customization ---
+    def set_led_colors(self, colors: Dict[str, str]):
+        """Sets RGB hex colors for 'gain', 'hp', 'mix', 'mute'."""
+        self._led_colors.update(colors)
+        try:
+            cfg = self.read_config()
+            current_mode = self.get_dial_mode()
+            self._apply_led_colors_to_config(cfg, active_mode=current_mode)
+            self.write_config(cfg)
+        except Exception as e:
+            log.warning(f"Failed to set LED colors: {e}")
+
+    def apply_mode_color(self, mode: str):
+        try:
+            cfg = self.read_config()
+            self._apply_led_colors_to_config(cfg, active_mode=mode)
+            self.write_config(cfg)
+        except Exception as e:
+            log.warning(f"Failed to apply mode color: {e}")
+
+    def _apply_led_colors_to_config(self, cfg: bytearray, active_mode: str = "gain"):
+        if self.profile.off_rgb_mute is not None:
+            mute_hex = self._led_colors.get("mute", "#FF0000").lstrip("#")
+            if len(mute_hex) == 6:
+                try:
+                    mr, mg, mb = int(mute_hex[0:2], 16), int(mute_hex[2:4], 16), int(mute_hex[4:6], 16)
+                    cfg[self.profile.off_rgb_mute] = mr
+                    cfg[self.profile.off_rgb_mute + 1] = mg
+                    cfg[self.profile.off_rgb_mute + 2] = mb
+                except Exception:
+                    pass
+
+        if self.profile.off_rgb_ring is not None:
+            color_hex = self._led_colors.get(active_mode, "#FFFFFF").lstrip("#")
+            if len(color_hex) == 6:
+                try:
+                    r, g, b = int(color_hex[0:2], 16), int(color_hex[2:4], 16), int(color_hex[4:6], 16)
+                    for off in [self.profile.off_rgb_ring, self.profile.off_rgb_ring + 3, self.profile.off_rgb_ring + 6]:
+                        if off + 2 < len(cfg):
+                            cfg[off] = r
+                            cfg[off + 1] = g
+                            cfg[off + 2] = b
+                except Exception:
+                    pass
 
     def get_all_state(self) -> Dict[str, Any]:
         try:
@@ -441,6 +595,11 @@ class ElgatoWaveDevice:
             dial_mode = "gain"
             if self.profile.off_vol_select is not None:
                 dial_mode = self.profile.vol_select_map.get(cfg[self.profile.off_vol_select], "gain")
+
+            monitor_mix = 50
+            if self.profile.off_monitor_mix is not None:
+                raw_mix = struct.unpack_from("<H", cfg, self.profile.off_monitor_mix)[0]
+                monitor_mix = max(0, min(100, raw_mix >> 8))
 
             low_z = False
             if self.profile.off_low_z is not None:
@@ -459,8 +618,10 @@ class ElgatoWaveDevice:
                 "clipguard": clipguard,
                 "low_cut": low_cut,
                 "hp_volume_pct": hp_pct,
+                "monitor_mix_pct": monitor_mix,
                 "dial_mode": dial_mode,
                 "low_impedance": low_z,
+                "led_colors": dict(self._led_colors),
                 "serial": self.dev_info.get("serial", ""),
                 "fw_version": self.dev_info.get("fw_version", ""),
             }
@@ -523,6 +684,11 @@ class ElgatoManager:
                             changed[k] = v
                     if changed:
                         self.last_state.update(changed)
+                        if "dial_mode" in changed:
+                            timer = getattr(dev, "_revert_timer", None)
+                            if not timer or not timer.is_alive():
+                                dev._steady_dial_mode = curr["dial_mode"]
+                                dev.apply_mode_color(curr["dial_mode"])
                         if self.on_state_changed:
                             self.on_state_changed(curr, changed)
             except Exception:

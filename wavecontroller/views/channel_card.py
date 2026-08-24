@@ -291,6 +291,18 @@ class ChannelCard(Gtk.Box):
         sync_row.append(sync_switch)
         vbox.append(sync_row)
 
+        # Hardware LED Color Dropdown for Elgato Wave device
+        if self.is_wave_channel and self.hardware_mgr:
+            vbox.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
+            led_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+            led_lbl = Gtk.Label(label="Hardware LED (Mic Gain):", hexpand=True, halign=Gtk.Align.START)
+            led_lbl.add_css_class("mix-header-subtitle")
+            from .led_color_picker import LEDColorButton
+            led_btn = LEDColorButton(self.hardware_mgr, "gain", title="Hardware LED")
+            led_row.append(led_lbl)
+            led_row.append(led_btn)
+            vbox.append(led_row)
+
         # Delete Channel button (Available for all custom and device channels)
         remove_btn = Gtk.Button(label="Delete Channel")
         remove_btn.add_css_class("destructive-action")
@@ -317,7 +329,7 @@ class ChannelCard(Gtk.Box):
         self.pipewire_mgr.set_channel_master_volume(ch_id, new_vol)
         if self.is_wave_channel and self.hardware_mgr:
             gain_db = int(round((new_vol / 100.0) * 75.0))
-            self.hardware_mgr.set_gain(gain_db)
+            self.hardware_mgr.set_gain(gain_db, transient=True)
         if self.pipewire_mgr.is_channel_linked(ch_id) and self.on_link_toggle_callback:
             self.on_link_toggle_callback(ch_id, True)
 

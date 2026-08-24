@@ -497,3 +497,29 @@ popover.wave-popover entry:focus {
     border-color: #fbbf24;
     box-shadow: 0 0 14px rgba(245, 158, 11, 0.55);
 }
+
+/* Balance Fader & Hardware LED Picker Styling */
+.wave-balance-fader trough {
+    min-height: 4px;
+    background-color: rgba(255, 255, 255, 0.12);
+    border-radius: 2px;
+}
+
+.wave-balance-fader highlight {
+    background-color: #3584e4;
+    border-radius: 2px;
+}
+
+.wave-balance-fader slider {
+    min-width: 14px;
+    min-height: 14px;
+    margin: -5px;
+    border-radius: 7px;
+    background-color: #ffffff;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
+}
+
+.wave-color-dot {
+    border-radius: 4px;
+    border: 1px solid rgba(255, 255, 255, 0.3);
+}

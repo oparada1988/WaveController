@@ -6,6 +6,7 @@ from gi.repository import Gtk, Adw, GLib
 from .channel_card import ChannelCard
 from .mix_header import MixHeaderCard
 from .matrix_cell import MatrixCell
+from .led_color_picker import LEDColorButton
 
 class MixerMatrixView(Gtk.Box):
     """
@@ -17,6 +18,7 @@ class MixerMatrixView(Gtk.Box):
         self.pipewire_mgr = pipewire_mgr
         self.peak_monitor = peak_monitor
         self.hardware_mgr = hardware_mgr
+        self._syncing_hw_balance = False
         
         self.channel_cards = {}
         self.matrix_cells = {} # {(channel_id, mix_id): MatrixCell}
@@ -30,11 +32,11 @@ class MixerMatrixView(Gtk.Box):
         self.set_margin_start(20)
         self.set_margin_end(20)
 
-        # 1. Header Bar: Title + Output Device Selector (Configured/Tracked Devices Only)
+        # 1. Header Toolbar (Navigation & Controls)
         header_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
         
         title_lbl = Gtk.Label(label="Mixes")
-        title_lbl.add_css_class("wave-main-title")
+        title_lbl.add_css_class("wave-view-title")
         header_box.append(title_lbl)
 
         header_box.append(Gtk.Box(hexpand=True)) # Spacer
@@ -51,6 +53,36 @@ class MixerMatrixView(Gtk.Box):
                 break
         self.out_dropdown.connect("notify::selected", self._on_output_dropdown_changed)
         out_box.append(self.out_dropdown)
+
+        # Exposed Hardware Balance Fader & Dynamic LED Dropdown (Visible only for Wave devices)
+        self.balance_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        self.balance_box.set_valign(Gtk.Align.CENTER)
+
+        bal_icon = Gtk.Image.new_from_icon_name("power-profile-balanced-symbolic")
+        bal_icon.set_pixel_size(16)
+        bal_icon.set_tooltip_text("Direct Monitor Mix (Mic / PC Balance)")
+        self.balance_box.append(bal_icon)
+
+        self.balance_scale = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 0, 100, 1)
+        self.balance_scale.set_size_request(110, -1)
+        self.balance_scale.set_draw_value(False)
+        self.balance_scale.add_css_class("wave-balance-fader")
+        init_mix = self.hardware_mgr.get_monitor_mix() if self.hardware_mgr else 50
+        self.balance_scale.set_value(init_mix)
+        self._bal_scale_handler = self.balance_scale.connect("value-changed", self._on_balance_slider_changed)
+        self.balance_box.append(self.balance_scale)
+
+        self.balance_lbl = Gtk.Label(label="50/50")
+        self.balance_lbl.add_css_class("mix-header-subtitle")
+        self.balance_lbl.set_size_request(42, -1)
+        self._format_balance_label(init_mix)
+        self.balance_box.append(self.balance_lbl)
+
+        self.balance_led_btn = LEDColorButton(self.hardware_mgr, "mix", title="Hardware LED")
+        self.balance_box.append(self.balance_led_btn)
+
+        out_box.append(self.balance_box)
+        self._update_balance_visibility()
 
         # Output Mute Toggle Button
         self.out_mute_btn = Gtk.Button.new_from_icon_name("audio-volume-high-symbolic")
@@ -764,6 +796,56 @@ class MixerMatrixView(Gtk.Box):
                 self.pipewire_mgr.set_mix_master_volume(assigned_mix, hp_vol)
                 target_header.set_volume(hp_vol)
 
+        # 5. Update Monitor Balance Fader when physical knob turns in Mode 3 (or any balance change)
+        if "monitor_mix_pct" in changed and hasattr(self, "balance_scale"):
+            val = int(round(changed["monitor_mix_pct"]))
+            self._syncing_hw_balance = True
+            try:
+                if hasattr(self, "_bal_scale_handler") and self._bal_scale_handler:
+                    self.balance_scale.handler_block(self._bal_scale_handler)
+                    try:
+                        self.balance_scale.set_value(val)
+                    finally:
+                        self.balance_scale.handler_unblock(self._bal_scale_handler)
+                else:
+                    self.balance_scale.set_value(val)
+                self._format_balance_label(val)
+            finally:
+                self._syncing_hw_balance = False
+
+    def _on_balance_slider_changed(self, scale):
+        if getattr(self, "_syncing_hw_balance", False):
+            return
+        val = int(scale.get_value())
+        self._format_balance_label(val)
+        if self.hardware_mgr:
+            self.hardware_mgr.set_monitor_mix(val, transient=True)
+
+    def _format_balance_label(self, val: int):
+        val = max(0, min(100, int(val)))
+        if val == 50:
+            self.balance_lbl.set_label("50/50")
+        elif val == 0:
+            self.balance_lbl.set_label("100% Mic")
+        elif val == 100:
+            self.balance_lbl.set_label("100% PC")
+        else:
+            mic_pct = 100 - val
+            pc_pct = val
+            self.balance_lbl.set_label(f"{mic_pct}/{pc_pct}")
+
+    def _update_balance_visibility(self):
+        idx = self.out_dropdown.get_selected()
+        is_wave = False
+        if idx < len(self.output_devices_list):
+            dev = self.output_devices_list[idx]
+            d_name = dev.get("name", "").lower()
+            d_disp = dev.get("display_name", "").lower()
+            d_key = str(dev.get("device_key", "")).lower()
+            is_wave = dev.get("is_elgato", False) or "wave" in d_name or "elgato" in d_name or "wave" in d_disp or "wave" in d_key
+        if hasattr(self, "balance_box"):
+            self.balance_box.set_visible(is_wave)
+
     def _on_channel_deleted(self, ch_id: str):
         self.pipewire_mgr.remove_channel(ch_id)
         GLib.idle_add(self._rebuild_grid)
@@ -791,6 +873,7 @@ class MixerMatrixView(Gtk.Box):
                 self.hardware_mgr.set_active_output_device(sink_id)
                 is_muted = self.hardware_mgr.get_output_mute(sink_id)
                 self._update_out_mute_btn(is_muted)
+        self._update_balance_visibility()
 
     def _get_selected_output_sink_id(self):
         idx = self.out_dropdown.get_selected()
@@ -823,6 +906,7 @@ class MixerMatrixView(Gtk.Box):
             self.out_dropdown.set_selected(curr_selected)
         elif len(out_names) > 0:
             self.out_dropdown.set_selected(0)
+        self._update_balance_visibility()
 
         for ch_id, card in self.channel_cards.items():
             if hasattr(card, "refresh_name"):
