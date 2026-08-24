@@ -1050,11 +1050,26 @@ class PipeWireManager:
             # Find output ports for this channel
             ch_out_ports = []
             if is_source_channel:
+                ch_name_low = str(ch.get("name", "")).lower()
+                ch_id_low = str(ch_id).lower()
+                matched_ports = []
                 for p in out_ports:
-                    if p.startswith("output.WaveController_") or p.startswith("WaveController_"):
+                    if p.startswith("output.WaveController_") or p.startswith("WaveController_") or ":monitor_" in p:
                         continue
                     if ":capture_" in p and p.startswith("alsa_input."):
-                        ch_out_ports.append(p)
+                        p_low = p.lower()
+                        if "wave" in ch_id_low or "elgato" in ch_id_low or "wave" in ch_name_low:
+                            if "wave" in p_low or "elgato" in p_low:
+                                matched_ports.append(p)
+                        elif "fefine" in ch_id_low or "fifine" in ch_name_low:
+                            if "fifine" in p_low or "3142" in p_low:
+                                matched_ports.append(p)
+                        elif "mic" == ch_id_low or "microphone" in ch_name_low:
+                            if "wave" in p_low or "elgato" in p_low or "fifine" in p_low:
+                                matched_ports.append(p)
+                if not matched_ports:
+                    matched_ports = [p for p in out_ports if ":capture_" in p and p.startswith("alsa_input.") and not p.startswith("WaveController_")]
+                ch_out_ports = matched_ports
             else:
                 assigned = self.get_assigned_apps(ch_id)
                 for app in assigned:

@@ -29,6 +29,15 @@ class ChannelCard(Gtk.Box):
         self.set_hexpand(False)
         self.set_size_request(370, -1)
 
+        # Identify if this channel corresponds to Elgato Wave hardware
+        ch_id = str(channel_info.get("id", ""))
+        ch_name = str(channel_info.get("name", "")).lower()
+        self.is_wave_channel = (ch_id in ("mic", "elgato_wave_xlr") or "wave" in ch_id.lower() or "wave" in ch_name) and (
+            getattr(self.hardware_mgr, "is_elgato", False) or 
+            getattr(self.hardware_mgr, "device_type", "") == "elgato" or 
+            "wave" in str(getattr(self.hardware_mgr, "device_name", "")).lower()
+        )
+
         # 1. Dedicated Vertical 6-Dots Drag Grip Handle (list-drag-handle-symbolic)
         self.drag_grip = Gtk.Image.new_from_icon_name("list-drag-handle-symbolic")
         self.drag_grip.set_pixel_size(16)
@@ -46,10 +55,10 @@ class ChannelCard(Gtk.Box):
         # 3. Channel Title + Subtitle Box
         title_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=1)
         title_box.set_hexpand(False)
-        title_box.set_size_request(114, -1)
+        title_box.set_size_request(104, -1)
 
         display_name = channel_info.get("name", "Channel")
-        if channel_info["id"] == "mic" and self.hardware_mgr:
+        if self.is_wave_channel and self.hardware_mgr and self.hardware_mgr.device_name:
             display_name = self.hardware_mgr.get_device_display_name(self.hardware_mgr.device_name)
 
         self.title_lbl = Gtk.Label(label=display_name)
@@ -60,7 +69,7 @@ class ChannelCard(Gtk.Box):
 
         # Assigned apps subtitle
         assigned = self.pipewire_mgr.get_assigned_apps(channel_info["id"])
-        sub_text = ", ".join(assigned[:2]) if assigned else ("System capture" if channel_info["id"] == "mic" else "No apps assigned")
+        sub_text = ", ".join(assigned[:2]) if assigned else ("System capture" if (self.is_wave_channel or channel_info.get("type") == "source") else "No apps assigned")
         self.sub_lbl = Gtk.Label(label=sub_text)
         self.sub_lbl.add_css_class("mix-header-subtitle")
         self.sub_lbl.set_halign(Gtk.Align.START)
@@ -69,8 +78,8 @@ class ChannelCard(Gtk.Box):
 
         self.append(title_box)
 
-        # 4. 48V Phantom Power Quick Toggle (Microphone Only)
-        if channel_info["id"] == "mic" and self.hardware_mgr:
+        # 4. 48V Phantom Power Quick Toggle (Wave XLR Only)
+        if self.is_wave_channel and self.hardware_mgr:
             self.phantom_btn = Gtk.Button(label="48V")
             self.phantom_btn.add_css_class("flat")
             self.phantom_btn.add_css_class("wave-48v-badge")
@@ -175,12 +184,11 @@ class ChannelCard(Gtk.Box):
         self.add_controller(self.drop_target)
 
     def _resolve_icon(self) -> str:
-        if self.channel_info["id"] == "mic" and self.hardware_mgr:
+        if self.is_wave_channel and self.hardware_mgr:
             dev_icon = self.hardware_mgr.get_device_icon(self.hardware_mgr.device_name)
             if dev_icon and dev_icon != "audio-input-microphone-symbolic":
                 return dev_icon
-            if getattr(self.hardware_mgr, "is_elgato", False) or getattr(self.hardware_mgr, "device_type", "") == "elgato" or "wave" in str(self.hardware_mgr.device_name).lower():
-                return "elgato-wave-xlr-symbolic"
+            return "elgato-wave-xlr-symbolic"
         assigned = self.pipewire_mgr.get_assigned_apps(self.channel_info["id"])
         primary_app = assigned[0] if assigned else self.channel_info.get("name", "")
         return self.channel_info.get("icon") or self.pipewire_mgr.resolve_icon_for_app(primary_app)
@@ -270,12 +278,11 @@ class ChannelCard(Gtk.Box):
         sync_row.append(sync_switch)
         vbox.append(sync_row)
 
-        # Remove channel button (if not mic)
-        if self.channel_info["id"] != "mic":
-            remove_btn = Gtk.Button(label="Delete Channel")
-            remove_btn.add_css_class("destructive-action")
-            remove_btn.connect("clicked", self._on_remove_clicked)
-            vbox.append(remove_btn)
+        # Delete Channel button (Available for all custom and device channels)
+        remove_btn = Gtk.Button(label="Delete Channel")
+        remove_btn.add_css_class("destructive-action")
+        remove_btn.connect("clicked", self._on_remove_clicked)
+        vbox.append(remove_btn)
 
         popover.set_child(vbox)
         self.settings_btn.set_popover(popover)
@@ -360,9 +367,12 @@ class ChannelCard(Gtk.Box):
             self.link_btn.set_icon_name("mail-attachment-symbolic")
             self.link_btn.remove_css_class("active")
 
+        if self.is_wave_channel and self.hardware_mgr:
+            self.update_phantom_state(self.hardware_mgr.phantom_power_48v)
+
     def refresh_name(self):
         display_name = self.channel_info.get("name", "Channel")
-        if self.channel_info["id"] == "mic" and self.hardware_mgr:
+        if self.is_wave_channel and self.hardware_mgr and self.hardware_mgr.device_name:
             display_name = self.hardware_mgr.get_device_display_name(self.hardware_mgr.device_name)
         self.title_lbl.set_text(display_name)
         self.icon_img.set_from_icon_name(self._resolve_icon())

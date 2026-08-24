@@ -130,11 +130,13 @@ class UnifiedDeviceSettingsView(Gtk.Box):
             self.gain_row.add_suffix(self.gain_slider)
             grp_mic.add(self.gain_row)
 
-            # 48V Phantom Power Switch (with Safety Confirmation)
-            self.phantom_row = Adw.SwitchRow(title="48V Phantom Power", subtitle="Provides 48V DC power to XLR condenser microphones")
-            self.phantom_row.set_active(self.hardware_mgr.phantom_power_48v)
-            self.phantom_row.connect("notify::active", self._on_phantom_toggled)
-            grp_mic.add(self.phantom_row)
+            # 48V Phantom Power Switch (Strictly for Wave XLR Hardware)
+            is_wave_xlr = self.is_elgato and ("xlr" in self.device_key.lower() or "xlr" in self.title_lbl.get_text().lower() or "wave xlr" in self.device_info.get("name", "").lower())
+            if is_wave_xlr:
+                self.phantom_row = Adw.SwitchRow(title="48V Phantom Power", subtitle="Provides 48V DC power to XLR condenser microphones")
+                self.phantom_row.set_active(self.hardware_mgr.phantom_power_48v)
+                self.phantom_row.connect("notify::active", self._on_phantom_toggled)
+                grp_mic.add(self.phantom_row)
 
             # Mic Test Direct Loopback
             listen_row = Adw.ActionRow(title="Mic Test (Direct Loopback)", subtitle="Hear your live voice in headphones to verify levels")
