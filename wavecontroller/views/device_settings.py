@@ -288,28 +288,29 @@ class UnifiedDeviceSettingsView(Gtk.Box):
 
             pref_page.add(grp_led)
 
-        # Group 5: Exclusive Volume Guard & Protection
-        grp_guard = Adw.PreferencesGroup(title="Exclusive Volume Guard &amp; Protection")
-        
-        if self.device_type in ["duplex", "input"]:
-            excl_mic_row = Adw.SwitchRow(
-                title="Lock Microphone Gain (Exclusive Control)",
-                subtitle="Blocks Discord AGC, web browsers, and voice apps from changing mic gain. Knob and WaveController remain active."
-            )
-            excl_mic_row.set_active(self.hardware_mgr.get_exclusive_mic_lock())
-            excl_mic_row.connect("notify::active", lambda r, *a: self.hardware_mgr.set_exclusive_mic_lock(r.get_active()))
-            grp_guard.add(excl_mic_row)
+        # Group 5: Exclusive Volume Guard & Protection (Strictly for Elgato Wave Devices)
+        if self.is_elgato:
+            grp_guard = Adw.PreferencesGroup(title="Exclusive Volume Guard &amp; Protection")
+            
+            if self.device_type in ["duplex", "input"]:
+                excl_mic_row = Adw.SwitchRow(
+                    title="Lock Microphone Gain (Exclusive Control)",
+                    subtitle="Blocks Discord AGC, web browsers, and voice apps from changing mic gain. Knob and WaveController remain active."
+                )
+                excl_mic_row.set_active(self.hardware_mgr.get_exclusive_mic_lock())
+                excl_mic_row.connect("notify::active", lambda r, *a: self.hardware_mgr.set_exclusive_mic_lock(r.get_active()))
+                grp_guard.add(excl_mic_row)
 
-        if self.device_type in ["duplex", "output"]:
-            excl_out_row = Adw.SwitchRow(
-                title="Lock Headphone / Output Volume (Exclusive Control)",
-                subtitle="Prevents external media players and desktop sliders from overriding physical DAC volume. Knob and WaveController remain active."
-            )
-            excl_out_row.set_active(self.hardware_mgr.get_exclusive_output_lock())
-            excl_out_row.connect("notify::active", lambda r, *a: self.hardware_mgr.set_exclusive_output_lock(r.get_active()))
-            grp_guard.add(excl_out_row)
+            if self.device_type in ["duplex", "output"]:
+                excl_out_row = Adw.SwitchRow(
+                    title="Lock Headphone / Output Volume (Exclusive Control)",
+                    subtitle="Prevents external media players and desktop sliders from overriding physical DAC volume. Knob and WaveController remain active."
+                )
+                excl_out_row.set_active(self.hardware_mgr.get_exclusive_output_lock())
+                excl_out_row.connect("notify::active", lambda r, *a: self.hardware_mgr.set_exclusive_output_lock(r.get_active()))
+                grp_guard.add(excl_out_row)
 
-        pref_page.add(grp_guard)
+            pref_page.add(grp_guard)
 
         # Group 6: Hardware Diagnostics & Firmware (USB DFU 1.10)
         grp_diag = Adw.PreferencesGroup(title="Hardware Diagnostics &amp; Firmware")
