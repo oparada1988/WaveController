@@ -48,10 +48,15 @@ class USBHardwareManager:
         
         self.is_monitoring_mic = False
         self._loopback_proc = None
+        self.pipewire_mgr = None
         self.on_device_renamed_callback = None
         self.on_devices_changed_callback = None
         self.on_new_device_detected_callback = None
         self._hardware_listeners = []
+
+    def set_pipewire_manager(self, pw_mgr):
+        """Sets reference to PipeWireManager for bi-directional hardware/software mute sync."""
+        self.pipewire_mgr = pw_mgr
 
         # Hook Elgato hardware dial & capacitive mute sync
         elgato_manager.on_state_changed = self._on_elgato_hardware_sync
@@ -116,12 +121,16 @@ class USBHardwareManager:
                     subprocess.Popen(["wpctl", "set-mute", target, "1" if self.hardware_mute else "0"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 except Exception:
                     pass
+                if getattr(self, "pipewire_mgr", None):
+                    for ch_key in ("elgato_wave_xlr", "mic", "microphone"):
+                        self.pipewire_mgr.set_channel_master_mute(ch_key, self.hardware_mute)
             elif dial_mode in ("hp", "mix"):
                 target = self._resolve_sink_target()
                 try:
                     subprocess.Popen(["wpctl", "set-mute", target, "1" if self.hardware_mute else "0"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 except Exception:
                     pass
+            self.notify_hardware_listeners({"mute": self.hardware_mute}, {"mute": self.hardware_mute})
 
         if "gain_db" in changed:
             self.hardware_gain_db = int(round(changed["gain_db"]))

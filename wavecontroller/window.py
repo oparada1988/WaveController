@@ -147,40 +147,11 @@ class WaveMainWindow(Adw.ApplicationWindow):
         sidebar.set_size_request(210, -1)
         sidebar.set_hexpand(False)
 
-        # Section 1: Audio Hardware Devices Header with [+] button
-        sec1_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-        sec1_box.set_margin_start(16)
-        sec1_box.set_margin_end(12)
-        sec1_box.set_margin_top(14)
-        sec1_box.set_margin_bottom(6)
-
-        sec1_lbl = Gtk.Label(label="Audio Devices")
+        # Section 1: Mixes & Effects (Top / 1st Position)
+        sec1_lbl = Gtk.Label(label="Mixes & Effects")
         sec1_lbl.add_css_class("wave-sidebar-section-title")
-        sec1_lbl.set_margin_start(0)
-        sec1_lbl.set_margin_end(0)
-        sec1_lbl.set_margin_top(0)
-        sec1_lbl.set_margin_bottom(0)
         sec1_lbl.set_halign(Gtk.Align.START)
-        sec1_lbl.set_hexpand(True)
-        sec1_box.append(sec1_lbl)
-
-        add_header_btn = Gtk.Button.new_from_icon_name("list-add-symbolic")
-        add_header_btn.add_css_class("flat")
-        add_header_btn.add_css_class("wave-icon-btn")
-        add_header_btn.set_tooltip_text("Add Audio Device")
-        add_header_btn.connect("clicked", lambda b: self._open_add_device_dialog())
-        sec1_box.append(add_header_btn)
-        sidebar.append(sec1_box)
-
-        # Container for tracked device list rows
-        self.device_list_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
-        sidebar.append(self.device_list_box)
-
-        # Section 2: Mixes & Effects
-        sec2_lbl = Gtk.Label(label="Mixes & Effects")
-        sec2_lbl.add_css_class("wave-sidebar-section-title")
-        sec2_lbl.set_halign(Gtk.Align.START)
-        sidebar.append(sec2_lbl)
+        sidebar.append(sec1_lbl)
 
         self.mixes_btn = Gtk.Button()
         self.mixes_btn.add_css_class("flat")
@@ -212,6 +183,35 @@ class WaveMainWindow(Adw.ApplicationWindow):
         self.fx_btn.set_child(fx_box)
         self.fx_btn.connect("clicked", lambda b: self._switch_view("effects", self.fx_btn))
         sidebar.append(self.fx_btn)
+
+        # Section 2: Audio Hardware Devices Header with [+] button (2nd Position)
+        sec2_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        sec2_box.set_margin_start(16)
+        sec2_box.set_margin_end(12)
+        sec2_box.set_margin_top(14)
+        sec2_box.set_margin_bottom(6)
+
+        sec2_dev_lbl = Gtk.Label(label="Audio Devices")
+        sec2_dev_lbl.add_css_class("wave-sidebar-section-title")
+        sec2_dev_lbl.set_margin_start(0)
+        sec2_dev_lbl.set_margin_end(0)
+        sec2_dev_lbl.set_margin_top(0)
+        sec2_dev_lbl.set_margin_bottom(0)
+        sec2_dev_lbl.set_halign(Gtk.Align.START)
+        sec2_dev_lbl.set_hexpand(True)
+        sec2_box.append(sec2_dev_lbl)
+
+        add_header_btn = Gtk.Button.new_from_icon_name("list-add-symbolic")
+        add_header_btn.add_css_class("flat")
+        add_header_btn.add_css_class("wave-icon-btn")
+        add_header_btn.set_tooltip_text("Add Audio Device")
+        add_header_btn.connect("clicked", lambda b: self._open_add_device_dialog())
+        sec2_box.append(add_header_btn)
+        sidebar.append(sec2_box)
+
+        # Container for tracked device list rows
+        self.device_list_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        sidebar.append(self.device_list_box)
 
         sidebar.append(Gtk.Box(vexpand=True)) # Spacer
 

@@ -623,6 +623,11 @@ class PipeWireManager:
             self._volume_queue[channel_id] = (vol, muted)
             self._volume_event.set()
             self._save_state_to_config(immediate=False)
+            self._sync_channel_audio_routing(channel_id)
+
+            # Sync physical Elgato hardware mute if this is a mic channel
+            if self.hardware_mgr and any(k in channel_id.lower() for k in ("elgato", "wave", "mic", "microphone")):
+                self.hardware_mgr.set_mode_mute("gain", muted)
 
     def toggle_channel_master_mute(self, channel_id: str) -> bool:
         with self._lock:
@@ -643,6 +648,12 @@ class PipeWireManager:
             self._volume_queue[channel_id] = (vol, new_mute)
             self._volume_event.set()
             self._save_state_to_config(immediate=False)
+            self._sync_channel_audio_routing(channel_id)
+
+            # Sync physical Elgato hardware mute if this is a mic channel
+            if self.hardware_mgr and any(k in channel_id.lower() for k in ("elgato", "wave", "mic", "microphone")):
+                self.hardware_mgr.set_mode_mute("gain", new_mute)
+
             return new_mute
 
     # -------------------------------------------------------------
@@ -898,6 +909,7 @@ class PipeWireManager:
             with self._lock:
                 self._submix_volume_queue[(channel_id, canon_mix)] = (vol, muted)
                 self._volume_event.set()
+            self._sync_channel_audio_routing(channel_id)
 
     def toggle_channel_mute(self, channel_id: str, mix_id: str) -> bool:
         """Toggles mute state within a specific virtual mix bus."""
@@ -1173,8 +1185,8 @@ class PipeWireManager:
                     # 1. Sever any direct link between app output and mix target
                     self._link_stereo_ports(ch_out_ports, target_in_ports, unlink=True)
 
-                    if is_enabled:
-                        self._ensure_submix_loopback(ch_id, m_id, vol_pct, is_muted)
+                    if is_enabled and not is_muted:
+                        self._ensure_submix_loopback(ch_id, m_id, vol_pct, is_muted=False)
                         
                         loopback_in_prefix = f"input.WaveController_submix_{ch_id}_{m_id}:input_"
                         loopback_out_prefix = f"output.WaveController_submix_{ch_id}_{m_id}:output_"
@@ -1204,10 +1216,12 @@ class PipeWireManager:
                         self._link_stereo_ports(lb_out_ports, target_in_ports, unlink=False)
                     else:
                         self._stop_submix_loopback(ch_id, m_id)
+                        self._link_stereo_ports(ch_out_ports, target_in_ports, unlink=True)
                 else:
                     # Linked Mode: Stop dedicated loopback and route via direct low-latency pw-link
                     self._stop_submix_loopback(ch_id, m_id)
-                    self._link_stereo_ports(ch_out_ports, target_in_ports, unlink=not is_enabled)
+                    unlink_target = (not is_enabled) or is_muted
+                    self._link_stereo_ports(ch_out_ports, target_in_ports, unlink=unlink_target)
 
         # Synchronize physical output target devices for all Sink mixes
         self._sync_mix_physical_output_routing(mix_id, out_ports, in_ports)
