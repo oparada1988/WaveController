@@ -38,12 +38,7 @@ class ConfigManager:
                 "gain": "#FFFFFF",
                 "hp": "#2ECC71",
                 "mix": "#FF9500",
-                "vu": "#00E5FF",
                 "mute": "#FF0000"
-            },
-            "vu_meter_enabled": {
-                "gain": True,
-                "hp": True
             },
             "exclusive_mic_lock": True,
             "exclusive_output_lock": True

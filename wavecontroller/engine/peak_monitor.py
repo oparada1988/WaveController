@@ -58,6 +58,23 @@ class MultiChannelPeakMonitor:
         except Exception:
             return None, 1
 
+    def _discover_sink_target(self) -> str:
+        """Finds active virtual mix sink or output playback device monitor target."""
+        try:
+            out = subprocess.check_output(['pw-link', '-o'], text=True, stderr=subprocess.DEVNULL)
+            all_ports = [l.strip() for l in out.splitlines() if ':monitor_' in l.strip()]
+            
+            wc_ports = [p for p in all_ports if 'wavecontroller' in p.lower() and 'sink' in p.lower()]
+            elgato_ports = [p for p in all_ports if 'wave' in p.lower() or 'elgato' in p.lower() or '0fd9' in p.lower()]
+            other_ports = [p for p in all_ports if p not in wc_ports and p not in elgato_ports and 'source' not in p.lower()]
+            
+            selected = wc_ports or elgato_ports or other_ports
+            if selected:
+                return selected[0].split(':')[0]
+        except Exception:
+            pass
+        return None
+
     def _open_pw_record(self, node_name: str, target: str = None, channels: int = 2):
         # Spoof application ID as org.PulseAudio.pavucontrol and media.role as volume-control
         # to bypass GNOME Shell's persistent microphone privacy recording icon on the top panel.
@@ -70,6 +87,8 @@ class MultiChannelPeakMonitor:
             '-P', 'application.icon_name=pavucontrol',
             '-P', 'application.process.binary=pavucontrol',
             '-P', 'media.role=volume-control',
+            '-P', f'audio.channels={channels}',
+            '-P', 'audio.position=[FL,FR]' if channels == 2 else 'audio.position=[MONO]',
             '--raw',
             '--format=s16',
             '--rate=48000',
@@ -125,6 +144,7 @@ class MultiChannelPeakMonitor:
             if mono_port:
                 subprocess.run(['pw-link', mono_port, 'wave_mic_monitor:input_FL'], stderr=subprocess.DEVNULL)
                 subprocess.run(['pw-link', mono_port, 'wave_mic_monitor:input_FR'], stderr=subprocess.DEVNULL)
+                subprocess.run(['pw-link', mono_port, 'wave_mic_monitor:input_MONO'], stderr=subprocess.DEVNULL)
                 return
 
             # Stereo capture
@@ -157,13 +177,21 @@ class MultiChannelPeakMonitor:
             except Exception:
                 pass
 
-            # 2. Discover active monitor output ports from sound cards and virtual mixes
+            # 2. Check what input ports wave_sink_monitor has
+            io_out = subprocess.check_output(['pw-link', '-io'], text=True, stderr=subprocess.DEVNULL)
+            in_ports = [l.strip() for l in io_out.splitlines() if l.strip().startswith('wave_sink_monitor:')]
+            has_fl = any(':input_FL' in p for p in in_ports)
+            has_fr = any(':input_FR' in p for p in in_ports)
+            has_mono = any(':input_MONO' in p for p in in_ports)
+
+            # 3. Discover active monitor output ports from sound cards and virtual mixes
             out = subprocess.check_output(['pw-link', '-o'], text=True, stderr=subprocess.DEVNULL)
             ports = [l.strip() for l in out.splitlines() if l.strip()]
 
             # Find matching monitor ports
             mon_fls = [p for p in ports if p.endswith(':monitor_FL')]
             mon_frs = [p for p in ports if p.endswith(':monitor_FR')]
+            mon_monos = [p for p in ports if p.endswith(':monitor_MONO') or ':monitor' in p]
 
             # Prioritize: 1. WaveController Virtual Mix Sinks 2. Elgato Wave XLR / USB 3. PCI / Default Output
             target_fls = []
@@ -186,13 +214,20 @@ class MultiChannelPeakMonitor:
                     target_frs.append(fr)
 
             # Link primary virtual mix sinks or primary hardware outputs
-            for fl in target_fls:
-                if 'wave_sink_monitor' not in fl and 'wave_mic_monitor' not in fl:
-                    subprocess.run(['pw-link', fl, 'wave_sink_monitor:input_FL'], stderr=subprocess.DEVNULL)
+            if has_fl:
+                for fl in target_fls:
+                    if 'wave_sink_monitor' not in fl and 'wave_mic_monitor' not in fl:
+                        subprocess.run(['pw-link', fl, 'wave_sink_monitor:input_FL'], stderr=subprocess.DEVNULL)
+            if has_fr:
+                for fr in target_frs:
+                    if 'wave_sink_monitor' not in fr and 'wave_mic_monitor' not in fr:
+                        subprocess.run(['pw-link', fr, 'wave_sink_monitor:input_FR'], stderr=subprocess.DEVNULL)
 
-            for fr in target_frs:
-                if 'wave_sink_monitor' not in fr and 'wave_mic_monitor' not in fr:
-                    subprocess.run(['pw-link', fr, 'wave_sink_monitor:input_FR'], stderr=subprocess.DEVNULL)
+            if has_mono:
+                mono_targets = target_fls or mon_monos
+                for m in mono_targets:
+                    if 'wave_sink_monitor' not in m and 'wave_mic_monitor' not in m:
+                        subprocess.run(['pw-link', m, 'wave_sink_monitor:input_MONO'], stderr=subprocess.DEVNULL)
         except Exception:
             pass
 
@@ -263,9 +298,10 @@ class MultiChannelPeakMonitor:
             time.sleep(0.1)
             self._link_mic_monitor()
         
-        # 2. Open playback capture with unique node name and link to active sink monitors
-        time.sleep(0.1)
-        self.sink_proc = self._open_pw_record('wave_sink_monitor', channels=2)
+        # 2. Open playback capture targeted to active mix sink monitor
+        sink_target = self._discover_sink_target()
+        self.sink_target = sink_target
+        self.sink_proc = self._open_pw_record('wave_sink_monitor', target=sink_target, channels=2)
         time.sleep(0.15)
         self._link_sink_monitor()
 
@@ -293,6 +329,17 @@ class MultiChannelPeakMonitor:
                         if not curr_target:
                             self._link_mic_monitor()
 
+                    curr_sink_target = self._discover_sink_target()
+                    if curr_sink_target != self.sink_target or not self.sink_proc or self.sink_proc.poll() is not None:
+                        if self.sink_proc:
+                            try:
+                                self.sink_proc.terminate()
+                            except Exception:
+                                pass
+                        self.sink_target = curr_sink_target
+                        self.sink_proc = self._open_pw_record('wave_sink_monitor', target=curr_sink_target, channels=2)
+                        time.sleep(0.1)
+
                     self._link_sink_monitor()
 
                 # Re-spawn if exited
@@ -301,7 +348,7 @@ class MultiChannelPeakMonitor:
                     if not self.mic_target:
                         self._link_mic_monitor()
                 if (not self.sink_proc or self.sink_proc.poll() is not None) and self.running:
-                    self.sink_proc = self._open_pw_record('wave_sink_monitor', channels=2)
+                    self.sink_proc = self._open_pw_record('wave_sink_monitor', target=self.sink_target, channels=2)
                     self._link_sink_monitor()
 
                 # Fast attack (instant punch on rise) + smooth exponential release & graceful fade-down to 0
@@ -332,12 +379,15 @@ class MultiChannelPeakMonitor:
                 s_r = 0.0 if sink_r < 0.002 else sink_r
 
                 with self._lock:
+                    self._last_sink_peaks = {"left": s_l, "right": s_r, "peak": max(s_l, s_r)}
+                    self._last_mic_peaks = {"left": m_l, "right": m_r, "peak": max(m_l, m_r)}
+
                     # Physical microphone channels ONLY get physical microphone level
                     for ch in ["mic", "microphone", "fefine", "fifine", "elgato_wave_xlr", "wave", "wave_xlr", "input", "system_capture"]:
                         self.peaks[ch] = {"left": m_l, "right": m_r, "peak": max(m_l, m_r)}
                     
                     # Application & System Playback channels (Spotify, Discord, Games, etc.) get sink monitor level
-                    for ch in ["spotify", "music", "game", "chat", "browser", "system", "sfx", "master"]:
+                    for ch in ["spotify", "music", "game", "chat", "browser", "system", "sfx", "master", "default"]:
                         self.peaks[ch] = {"left": s_l, "right": s_r, "peak": max(s_l, s_r)}
 
                     # Mix buses also receive monitor levels
@@ -358,18 +408,19 @@ class MultiChannelPeakMonitor:
                 if ch_low in self.peaks:
                     p = self.peaks[ch_low]
                     return p.get("left", 0.0), p.get("right", 0.0)
-                p = self.peaks.get("mic", self.peaks.get("elgato_wave_xlr", {}))
-                return p.get("left", 0.0), p.get("right", 0.0)
+                mic_p = getattr(self, "_last_mic_peaks", self.peaks.get("mic", self.peaks.get("elgato_wave_xlr", {})))
+                return mic_p.get("left", 0.0), mic_p.get("right", 0.0)
 
-            # 2. Playback Channels
+            # 2. Playback Channels (Existing and newly created custom channels)
             if ch_low in self.peaks:
                 p = self.peaks[ch_low]
                 return p.get("left", 0.0), p.get("right", 0.0)
             for k, p in self.peaks.items():
                 if k in ch_low or ch_low in k:
                     return p.get("left", 0.0), p.get("right", 0.0)
-            p = self.peaks.get("system", self.peaks.get("spotify", {}))
-            return p.get("left", 0.0), p.get("right", 0.0)
+            
+            sink_p = getattr(self, "_last_sink_peaks", self.peaks.get("system", self.peaks.get("spotify", {})))
+            return sink_p.get("left", 0.0), sink_p.get("right", 0.0)
 
     def get_channel_peak(self, channel_id: str) -> float:
         l, r = self.get_channel_stereo_peaks(channel_id)

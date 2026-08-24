@@ -18,16 +18,13 @@ class USBHardwareManager:
     def __init__(self):
         self.device_name = "Elgato Wave XLR"
         self.device_type = "generic" # "generic" or "elgato"
-        self.monitor_mix = 50
         hw_init = config_manager.get("hardware_settings", {})
         self.led_colors = dict(hw_init.get("led_colors", {
             "gain": "#FFFFFF",
             "hp": "#2ECC71",
             "mix": "#FF9500",
-            "vu": "#00E5FF",
             "mute": "#FF0000"
         }))
-        self.vu_meter_enabled: Dict[str, bool] = dict(config_manager.get("hardware_settings", {}).get("vu_meter_enabled", {"gain": True, "hp": True}))
         self.exclusive_mic_lock: bool = bool(config_manager.get("hardware_settings", {}).get("exclusive_mic_lock", True))
         self.exclusive_output_lock: bool = bool(config_manager.get("hardware_settings", {}).get("exclusive_output_lock", True))
         self.discovered_devices: Dict[str, dict] = {} # {device_key: dev_info_dict}
@@ -128,51 +125,15 @@ class USBHardwareManager:
 
         if "mute" in changed:
             self.hardware_mute = bool(changed["mute"])
-            dial_mode = curr.get("dial_mode", "gain")
-            if dial_mode == "gain":
-                # Setting 1 (LED 1): Mute Microphone ONLY
-                target = self._resolve_source_target()
-                try:
-                    subprocess.Popen(["wpctl", "set-mute", target, "1" if self.hardware_mute else "0"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                except Exception:
-                    pass
-                if getattr(self, "pipewire_mgr", None):
-                    for ch_key in ("elgato_wave_xlr", "mic", "microphone"):
-                        self.pipewire_mgr.set_channel_master_mute(ch_key, self.hardware_mute)
-
-            elif dial_mode == "hp":
-                # Setting 2 (LED 2): Mute Headphone Output Mix ONLY (Shield mic from UAC2 hardware mute packet)
-                target = self._resolve_sink_target()
-                try:
-                    subprocess.Popen(["wpctl", "set-mute", target, "1" if self.hardware_mute else "0"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                except Exception:
-                    pass
-                src_target = self._resolve_source_target()
-                try:
-                    subprocess.Popen(["wpctl", "set-mute", src_target, "0"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                except Exception:
-                    pass
-                if getattr(self, "pipewire_mgr", None):
-                    target_mix_id = self._get_elgato_output_mix_id()
-                    self.pipewire_mgr.set_mix_master_mute(target_mix_id, self.hardware_mute)
-                    for ch_key in ("elgato_wave_xlr", "mic", "microphone"):
-                        if self.pipewire_mgr.get_channel_master_mute(ch_key):
-                            self.pipewire_mgr.set_channel_master_mute(ch_key, False)
-
-            elif dial_mode == "mix":
-                # Setting 3 (LED 3): Mute BOTH Microphone AND Headphone Output
-                src_target = self._resolve_source_target()
-                sink_target = self._resolve_sink_target()
-                try:
-                    subprocess.Popen(["wpctl", "set-mute", src_target, "1" if self.hardware_mute else "0"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                    subprocess.Popen(["wpctl", "set-mute", sink_target, "1" if self.hardware_mute else "0"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                except Exception:
-                    pass
-                if getattr(self, "pipewire_mgr", None):
-                    for ch_key in ("elgato_wave_xlr", "mic", "microphone"):
-                        self.pipewire_mgr.set_channel_master_mute(ch_key, self.hardware_mute)
-                    target_mix_id = self._get_elgato_output_mix_id()
-                    self.pipewire_mgr.set_mix_master_mute(target_mix_id, self.hardware_mute)
+            # Tapping the capacitive sensor or hardware mute always controls the microphone mute
+            target = self._resolve_source_target()
+            try:
+                subprocess.Popen(["wpctl", "set-mute", target, "1" if self.hardware_mute else "0"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            except Exception:
+                pass
+            if getattr(self, "pipewire_mgr", None):
+                for ch_key in ("elgato_wave_xlr", "mic", "microphone"):
+                    self.pipewire_mgr.set_channel_master_mute(ch_key, self.hardware_mute)
 
             self.notify_hardware_listeners(curr, changed)
 
@@ -645,32 +606,11 @@ class USBHardwareManager:
             elgato_dev.set_led_colors(self.led_colors)
         self.notify_hardware_listeners({"led_colors": self.led_colors}, {"led_colors": self.led_colors})
 
-    def get_vu_meter_enabled(self, mode: str = "gain") -> bool:
-        return self.vu_meter_enabled.get(mode, True)
-
-    def set_vu_meter_enabled(self, mode: str, enabled: bool):
-        self.vu_meter_enabled[mode] = bool(enabled)
-        hw = dict(config_manager.get("hardware_settings", {}))
-        hw["vu_meter_enabled"] = dict(self.vu_meter_enabled)
-        config_manager.set("hardware_settings", hw, immediate=True)
-        self.notify_hardware_listeners({"vu_meter_enabled": self.vu_meter_enabled}, {"vu_meter_enabled": self.vu_meter_enabled})
-        if not enabled:
-            elgato_dev = elgato_manager.get_device()
-            if elgato_dev:
-                elgato_dev.apply_mode_color(elgato_dev.get_dial_mode())
-
     def is_user_interacting(self) -> bool:
         elgato_dev = elgato_manager.get_device()
         if elgato_dev:
             return elgato_dev.is_user_interacting()
         return False
-
-    def update_live_vu_level(self, mode: str, peak_level: float):
-        if not self.get_vu_meter_enabled(mode):
-            return
-        elgato_dev = elgato_manager.get_device()
-        if elgato_dev:
-            elgato_dev.update_live_vu(mode, peak_level)
 
     def get_mode_mute(self, mode: str) -> bool:
         elgato_dev = elgato_manager.get_device()
@@ -686,6 +626,8 @@ class USBHardwareManager:
         hw = dict(config_manager.get("hardware_settings", {}))
         hw["exclusive_mic_lock"] = self.exclusive_mic_lock
         config_manager.set("hardware_settings", hw, immediate=True)
+        if getattr(self, "pipewire_mgr", None) and hasattr(self.pipewire_mgr, "_enforce_exclusive_volume_guard"):
+            self.pipewire_mgr._enforce_exclusive_volume_guard()
         self.notify_hardware_listeners({"exclusive_mic_lock": self.exclusive_mic_lock}, {"exclusive_mic_lock": self.exclusive_mic_lock})
 
     def get_exclusive_output_lock(self) -> bool:
@@ -696,6 +638,8 @@ class USBHardwareManager:
         hw = dict(config_manager.get("hardware_settings", {}))
         hw["exclusive_output_lock"] = self.exclusive_output_lock
         config_manager.set("hardware_settings", hw, immediate=True)
+        if getattr(self, "pipewire_mgr", None) and hasattr(self.pipewire_mgr, "_enforce_exclusive_volume_guard"):
+            self.pipewire_mgr._enforce_exclusive_volume_guard()
         self.notify_hardware_listeners({"exclusive_output_lock": self.exclusive_output_lock}, {"exclusive_output_lock": self.exclusive_output_lock})
 
     def set_mode_mute(self, mode: str, muted: bool):

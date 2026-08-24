@@ -195,7 +195,6 @@ class ElgatoWaveDevice:
             "gain": "#FFFFFF",
             "hp": "#2ECC71",
             "mix": "#FF9500",
-            "vu": "#00E5FF",
             "mute": "#FF0000"
         }
         self._user_interacting: bool = False
@@ -319,33 +318,35 @@ class ElgatoWaveDevice:
         except Exception as e:
             log.warning(f"Failed to set hardware gain: {e}")
 
-    # --- Capacitive Mute & Per-Mode Mute ---
+    # --- Capacitive Mute & Hardware Mic Mute ---
     def get_mute(self) -> bool:
         try:
             cfg = self.read_config()
             return bool(cfg[self.profile.off_mute])
         except Exception:
-            return False
+            return self._mode_mutes.get("gain", False)
 
     def get_mode_mute(self, mode: str) -> bool:
+        if mode in ("gain", "mic"):
+            return self.get_mute()
         return self._mode_mutes.get(mode, False)
 
     def set_mode_mute(self, mode: str, muted: bool):
         self._mode_mutes[mode] = bool(muted)
-        curr_mode = self.get_dial_mode()
-        if curr_mode == mode:
-            try:
-                cfg = self.read_config()
-                cfg[self.profile.off_mute] = 0x01 if muted else 0x00
-                self._apply_led_colors_to_config(cfg, active_mode=mode)
-                self.write_config(cfg)
-                self._last_state["mute"] = muted
-            except Exception as e:
-                log.warning(f"Failed to set mode mute: {e}")
+        if mode in ("gain", "mic"):
+            self.set_mute(muted)
 
     def set_mute(self, muted: bool):
-        curr_mode = self.get_dial_mode()
-        self.set_mode_mute(curr_mode, muted)
+        try:
+            self._mode_mutes["gain"] = bool(muted)
+            cfg = self.read_config()
+            cfg[self.profile.off_mute] = 0x01 if muted else 0x00
+            curr_mode = self.get_dial_mode()
+            self._apply_led_colors_to_config(cfg, active_mode=curr_mode)
+            self.write_config(cfg)
+            self._last_state["mute"] = bool(muted)
+        except Exception as e:
+            log.warning(f"Failed to set hardware mic mute: {e}")
 
     # --- 48V Phantom Power ---
     def get_phantom_power(self) -> bool:
@@ -538,9 +539,9 @@ class ElgatoWaveDevice:
 
         if target_val is not None:
             cfg[self.profile.off_vol_select] = target_val
-            # Isolate mute status: only set physical mute byte to 0x01 if the TARGET mode is muted
-            is_target_muted = self._mode_mutes.get(target_mode, False)
-            cfg[self.profile.off_mute] = 0x01 if is_target_muted else 0x00
+            # Preserve mic mute status
+            is_mic_muted = self.get_mute()
+            cfg[self.profile.off_mute] = 0x01 if is_mic_muted else 0x00
             self._apply_led_colors_to_config(cfg, active_mode=target_mode)
 
         self.write_config(cfg)
@@ -559,12 +560,13 @@ class ElgatoWaveDevice:
             if val is not None and self.profile.off_vol_select is not None:
                 cfg = self.read_config()
                 cfg[self.profile.off_vol_select] = val
-                is_steady_muted = self._mode_mutes.get(steady, False)
-                cfg[self.profile.off_mute] = 0x01 if is_steady_muted else 0x00
+                # Preserve mic mute status
+                is_mic_muted = self.get_mute()
+                cfg[self.profile.off_mute] = 0x01 if is_mic_muted else 0x00
                 self._apply_led_colors_to_config(cfg, active_mode=steady)
                 self.write_config(cfg)
                 self._last_state["dial_mode"] = steady
-                self._last_state["mute"] = is_steady_muted
+                self._last_state["mute"] = is_mic_muted
         except Exception as e:
             log.debug(f"Transient revert ignored: {e}")
 
@@ -642,61 +644,12 @@ class ElgatoWaveDevice:
         return self._user_interacting
 
     def update_live_vu(self, mode: str, peak_level: float):
-        """Streams live peak audio levels (0.0 to 1.0) to the hardware LED ring in dedicated VU color."""
-        if self._user_interacting or self.get_mode_mute(mode) or not self.is_connected():
-            if self._is_streaming_vu:
-                self._is_streaming_vu = False
-            return
-
-        import time
-        now = time.time()
-        # Rate-limit USB transfers to ~30 Hz (0.033s)
-        if now - self._last_vu_time < 0.030:
-            return
-        self._last_vu_time = now
-
-        # Ballistics: instant attack, smooth exponential decay
-        peak = max(0.0, min(1.0, float(peak_level)))
-        if peak > self._vu_ballistics_level:
-            self._vu_ballistics_level = peak
-        else:
-            self._vu_ballistics_level = max(0.0, self._vu_ballistics_level * 0.80)
-
-        try:
-            cfg = self.read_config()
-            curr_mode = self.get_dial_mode()
-            if curr_mode != mode:
-                return
-
-            self._is_streaming_vu = True
-
-            # Apply Dedicated VU Color
-            vu_hex = self._led_colors.get("vu", "#00E5FF").lstrip("#")
-            if len(vu_hex) == 6 and self.profile.off_rgb_ring is not None:
-                vr, vg, vb = int(vu_hex[0:2], 16), int(vu_hex[2:4], 16), int(vu_hex[4:6], 16)
-                for off in [self.profile.off_rgb_ring, self.profile.off_rgb_ring + 3, self.profile.off_rgb_ring + 6]:
-                    if off + 2 < len(cfg):
-                        cfg[off] = vr
-                        cfg[off + 1] = vg
-                        cfg[off + 2] = vb
-
-            # Map peak amplitude into active mode register
-            if curr_mode == "gain" and self.profile.off_gain is not None:
-                raw_gain = int(self._vu_ballistics_level * self.profile.gain_raw_max)
-                struct.pack_into("<H", cfg, self.profile.off_gain, raw_gain)
-            elif curr_mode == "hp" and self.profile.off_hp_vol is not None:
-                db = (self._vu_ballistics_level * 60.0) - 60.0
-                raw_hp = int(db * self.profile.hp_scale)
-                struct.pack_into(self.profile.hp_fmt, cfg, self.profile.off_hp_vol, raw_hp)
-            elif curr_mode == "mix" and self.profile.off_monitor_mix is not None:
-                pct = int(round(self._vu_ballistics_level * 100))
-                hw_pct = 100 - pct
-                struct.pack_into("<H", cfg, self.profile.off_monitor_mix, hw_pct << 8)
-
-            cfg[self.profile.off_mute] = 0x00
-            self.write_config(cfg)
-        except Exception:
-            pass
+        """
+        VU metering is driven through software matrix meters. Hardware analog registers
+        (preamp gain, headphone volume, monitor crossfade) are preserved safely.
+        """
+        # Preserved safely: avoid corrupting analog preamp gain and headphone DAC volume registers
+        return
 
     def get_all_state(self) -> Dict[str, Any]:
         try:
@@ -824,20 +777,17 @@ class ElgatoManager:
                         if any(k in changed for k in ("gain_db", "hp_volume_pct", "monitor_mix_pct", "dial_mode")):
                             dev.notify_user_interaction()
                         if "mute" in changed:
-                            active_mode = curr.get("dial_mode", "gain")
-                            dev._mode_mutes[active_mode] = bool(changed["mute"])
+                            dev._mode_mutes["gain"] = bool(changed["mute"])
                         if "dial_mode" in changed:
                             timer = getattr(dev, "_revert_timer", None)
                             if not timer or not timer.is_alive():
                                 new_mode = curr["dial_mode"]
                                 dev._steady_dial_mode = new_mode
-                                is_mode_muted = dev._mode_mutes.get(new_mode, False)
                                 try:
                                     c = dev.read_config()
-                                    c[dev.profile.off_mute] = 0x01 if is_mode_muted else 0x00
+                                    # Crucial: Apply the color for the new mode while preserving the existing mute state
                                     dev._apply_led_colors_to_config(c, active_mode=new_mode)
                                     dev.write_config(c)
-                                    dev._last_state["mute"] = is_mode_muted
                                 except Exception:
                                     pass
                         if self.on_state_changed:

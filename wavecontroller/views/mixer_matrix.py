@@ -973,30 +973,5 @@ class MixerMatrixView(Gtk.Box):
             peak_l, peak_r = self.peak_monitor.get_channel_stereo_peaks(channel_id)
             cell.update_peaks(peak_l, peak_r)
 
-        # 4. Stream real-time peak audio levels to Elgato Wave hardware LED VU meter
-        if self.hardware_mgr and hasattr(self.hardware_mgr, "is_user_interacting") and not self.hardware_mgr.is_user_interacting():
-            from ..engine.elgato_wave import elgato_manager
-            elgato_dev = elgato_manager.get_device()
-            if elgato_dev and elgato_dev.is_connected():
-                dial_mode = elgato_dev.get_dial_mode()
-                if dial_mode == "gain" and self.hardware_mgr.get_vu_meter_enabled("gain"):
-                    mic_peak = 0.0
-                    for ch_id, card in self.channel_cards.items():
-                        if getattr(card, "is_wave_channel", False) or ch_id in ("mic", "elgato_wave_xlr", "wave"):
-                            l, r = self.peak_monitor.get_channel_stereo_peaks(ch_id)
-                            mic_peak = max(l, r)
-                            break
-                    if mic_peak == 0.0 and "mic" in self.channel_cards:
-                        l, r = self.peak_monitor.get_channel_stereo_peaks("mic")
-                        mic_peak = max(l, r)
-                    self.hardware_mgr.update_live_vu_level("gain", mic_peak)
-                elif dial_mode == "hp" and self.hardware_mgr.get_vu_meter_enabled("hp"):
-                    max_out_peak = 0.0
-                    for ch_id, card in self.channel_cards.items():
-                        if not getattr(card, "is_wave_channel", False) and ch_id not in ("mic", "elgato_wave_xlr"):
-                            l, r = self.peak_monitor.get_channel_stereo_peaks(ch_id)
-                            max_out_peak = max(max_out_peak, l, r)
-                    self.hardware_mgr.update_live_vu_level("hp", max_out_peak)
-
         return True
 

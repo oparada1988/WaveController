@@ -274,7 +274,7 @@ class PipeWireManager:
         return None, None
 
     def _external_sync_loop(self):
-        """Monitors system and application volume changes in real-time (1:1 sync with Volume Controller Plus)."""
+        """Monitors system source changes in real-time (e.g. system default microphone)."""
         while self.running:
             try:
                 changed = False
@@ -293,40 +293,106 @@ class PipeWireManager:
                                 st["muted"] = curr_mic_muted
                                 changed = True
 
-                # 2. Sync Application Channels (e.g. Spotify, Games, Discord) Master
-                channels_to_check = []
-                with self._lock:
-                    for ch in self.channels:
-                        if ch.get("type") != "source" and not any(k in ch["id"].lower() for k in ("mic", "fefine", "microphone", "wave", "elgato", "input", "capture")):
-                            assigned = self.assigned_apps.get(ch["id"], [ch["name"]])
-                            channels_to_check.append((ch["id"], assigned))
-
-                for ch_id, assigned_list in channels_to_check:
-                    for app_name in assigned_list:
-                        app_vol, app_muted = self.get_application_volume_status(app_name)
-                        if app_vol is not None:
-                            with self._lock:
-                                if ch_id not in self.channel_master_states:
-                                    self.channel_master_states[ch_id] = {"volume": 80, "muted": False}
-                                st = self.channel_master_states[ch_id]
-                                if abs(st["volume"] - app_vol) >= 1 or st["muted"] != app_muted:
-                                    st["volume"] = app_vol
-                                    st["muted"] = app_muted
-                                    changed = True
-                            break
-
                 if changed and self.on_external_change_callback:
                     GLib.idle_add(self.on_external_change_callback)
 
-                # 3. Periodic real-time stream & mix reconciliation (every ~1s / 25 ticks)
+                # 2. Periodic real-time stream, guard & mix reconciliation
                 sync_tick = getattr(self, "_sync_loop_tick", 0) + 1
                 self._sync_loop_tick = sync_tick
+                if sync_tick % 5 == 0:
+                    self._enforce_exclusive_volume_guard()
                 if sync_tick % 25 == 0:
                     self._sync_channel_audio_routing()
                     self._ensure_mix_sinks_unmuted()
             except Exception:
                 pass
             time.sleep(0.04) # 25 Hz fast poller (40ms)
+
+    def _enforce_exclusive_volume_guard(self):
+        """
+        Enforces Exclusive Volume Guard & Protection for hardware devices.
+        When exclusive_output_lock is active:
+          - Locks physical ALSA output sink volume to 100% (1.0) and unmuted in PipeWire
+            so external tools (pavucontrol, GNOME volume) cannot attenuate physical DAC output.
+        When exclusive_mic_lock is active:
+          - Locks physical ALSA input source capture volume to 100% (1.0) in PipeWire
+            so external apps (Discord AGC, WebRTC, pavucontrol) cannot override analog preamp gain.
+        """
+        if not self.hardware_mgr:
+            return
+
+        excl_out = getattr(self.hardware_mgr, "exclusive_output_lock", True)
+        excl_mic = getattr(self.hardware_mgr, "exclusive_mic_lock", True)
+
+        if not excl_out and not excl_mic:
+            return
+
+        out_node_ids = set()
+        in_node_ids = set()
+
+        if hasattr(self.hardware_mgr, "discovered_devices"):
+            for dev_key, dev in self.hardware_mgr.discovered_devices.items():
+                is_elgato = dev.get("is_elgato", False) or "wave" in str(dev.get("name", "")).lower()
+                if is_elgato:
+                    if excl_out and dev.get("primary_sink_id"):
+                        out_node_ids.add(str(dev["primary_sink_id"]))
+                    for s in dev.get("sinks", []):
+                        if excl_out and s.get("id"):
+                            out_node_ids.add(str(s["id"]))
+
+                    if excl_mic and dev.get("primary_source_id"):
+                        in_node_ids.add(str(dev["primary_source_id"]))
+                    for src in dev.get("sources", []):
+                        if excl_mic and src.get("id"):
+                            in_node_ids.add(str(src["id"]))
+
+        # Fallback to scanning pw-dump if discovered_devices is not fully populated yet
+        if (excl_out and not out_node_ids) or (excl_mic and not in_node_ids):
+            try:
+                out_raw = subprocess.check_output(["pw-dump"], text=True, stderr=subprocess.DEVNULL)
+                objs = json.loads(out_raw)
+                for obj in objs:
+                    if obj.get("type") != "PipeWire:Interface:Node":
+                        continue
+                    props = obj.get("info", {}).get("props", {})
+                    n_name = props.get("node.name", "").lower()
+                    media_class = props.get("media.class", "")
+                    if "wave" in n_name or "elgato" in n_name:
+                        if excl_out and media_class == "Audio/Sink":
+                            out_node_ids.add(str(obj["id"]))
+                        elif excl_mic and media_class == "Audio/Source":
+                            in_node_ids.add(str(obj["id"]))
+            except Exception:
+                pass
+
+        # Enforce Output Sink Lock (100% volume, unmuted in ALSA/PipeWire)
+        for sink_id in out_node_ids:
+            try:
+                out = subprocess.check_output(["wpctl", "get-volume", str(sink_id)], text=True, stderr=subprocess.DEVNULL).strip()
+                import re
+                m = re.search(r'Volume:\s*([\d\.]+)', out)
+                is_muted = "[MUTED]" in out
+                if m:
+                    vol_val = float(m.group(1))
+                    if abs(vol_val - 1.0) > 0.005:
+                        subprocess.run(["wpctl", "set-volume", str(sink_id), "1.0"], stderr=subprocess.DEVNULL)
+                    if is_muted:
+                        subprocess.run(["wpctl", "set-mute", str(sink_id), "0"], stderr=subprocess.DEVNULL)
+            except Exception:
+                pass
+
+        # Enforce Mic Capture Lock (100% capture volume in ALSA/PipeWire)
+        for src_id in in_node_ids:
+            try:
+                out = subprocess.check_output(["wpctl", "get-volume", str(src_id)], text=True, stderr=subprocess.DEVNULL).strip()
+                import re
+                m = re.search(r'Volume:\s*([\d\.]+)', out)
+                if m:
+                    vol_val = float(m.group(1))
+                    if abs(vol_val - 1.0) > 0.005:
+                        subprocess.run(["wpctl", "set-volume", str(src_id), "1.0"], stderr=subprocess.DEVNULL)
+            except Exception:
+                pass
 
     def _ensure_mix_sinks_unmuted(self):
         """Enforces unmuted state on PipeWire virtual null-sinks so audio always passes to physical outputs."""

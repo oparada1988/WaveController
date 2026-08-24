@@ -307,25 +307,6 @@ class ChannelCard(Gtk.Box):
             led_row.append(led_btn)
             vbox.append(led_row)
 
-            # Hardware LED VU Meter Toggle Switch
-            vu_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-            vu_lbl = Gtk.Label(label="Hardware LED VU Meter:", hexpand=True, halign=Gtk.Align.START)
-            vu_lbl.add_css_class("mix-header-subtitle")
-            vu_switch = Gtk.Switch(active=self.hardware_mgr.get_vu_meter_enabled("gain"))
-            vu_switch.connect("state-set", lambda sw, st: (self.hardware_mgr.set_vu_meter_enabled("gain", st), False)[1])
-            vu_row.append(vu_lbl)
-            vu_row.append(vu_switch)
-            vbox.append(vu_row)
-
-            # Dedicated VU Meter Color
-            vu_color_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-            vu_color_lbl = Gtk.Label(label="VU Meter LED Color:", hexpand=True, halign=Gtk.Align.START)
-            vu_color_lbl.add_css_class("mix-header-subtitle")
-            vu_color_btn = LEDColorButton(self.hardware_mgr, "vu", title="VU Meter LED")
-            vu_color_row.append(vu_color_lbl)
-            vu_color_row.append(vu_color_btn)
-            vbox.append(vu_color_row)
-
         # Delete Channel button (Available for all custom and device channels)
         remove_btn = Gtk.Button(label="Delete Channel")
         remove_btn.add_css_class("destructive-action")
