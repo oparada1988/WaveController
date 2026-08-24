@@ -36,17 +36,41 @@ class MultiChannelPeakMonitor:
         self.mic_proc = None
         self.sink_proc = None
 
-    def _open_pw_record(self, node_name: str):
+    def _discover_mic_target(self) -> tuple:
+        """Finds active physical microphone target node name and channels."""
+        try:
+            out = subprocess.check_output(['pw-link', '-o'], text=True, stderr=subprocess.DEVNULL)
+            all_ports = [l.strip() for l in out.splitlines() if l.strip().startswith("alsa_input.") and ":capture_" in l.strip()]
+            
+            elgato_ports = [p for p in all_ports if 'wave' in p.lower() or 'elgato' in p.lower()]
+            usb_ports = [p for p in all_ports if 'usb' in p.lower() and p not in elgato_ports]
+            other_ports = [p for p in all_ports if p not in elgato_ports and p not in usb_ports]
+            
+            selected = elgato_ports or usb_ports or other_ports
+            if not selected:
+                return None, 1
+            
+            port = selected[0]
+            node_name = port.split(':')[0]
+            is_mono = any(p.lower().endswith("mono") or "mono" in p.lower() for p in selected)
+            channels = 1 if is_mono else 2
+            return node_name, channels
+        except Exception:
+            return None, 1
+
+    def _open_pw_record(self, node_name: str, target: str = None, channels: int = 2):
         cmd = [
             'pw-record',
             '-P', f'node.name={node_name}',
             '--raw',
             '--format=s16',
             '--rate=48000',
-            '--channels=2',
-            '--latency=20ms',
-            '-'
+            f'--channels={channels}',
+            '--latency=20ms'
         ]
+        if target:
+            cmd.extend(['--target', target])
+        cmd.append('-')
         try:
             proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
             fd = proc.stdout.fileno()
@@ -164,7 +188,7 @@ class MultiChannelPeakMonitor:
         except Exception:
             pass
 
-    def _drain_and_calc_peaks(self, proc):
+    def _drain_and_calc_peaks(self, proc, channels: int = 2):
         if not proc or proc.poll() is not None:
             return 0.0, 0.0
         fd = proc.stdout.fileno()
@@ -182,7 +206,7 @@ class MultiChannelPeakMonitor:
             return 0.0, 0.0
 
         combined = b"".join(all_data)
-        if len(combined) < 4:
+        if len(combined) < 2:
             return 0.0, 0.0
 
         if len(combined) % 2 != 0:
@@ -192,37 +216,48 @@ class MultiChannelPeakMonitor:
         window = combined[-8192:] if len(combined) > 8192 else combined
         samples = array.array('h', window)
         n_samples = len(samples)
-        if n_samples < 2:
+        if n_samples < 1:
             return 0.0, 0.0
 
+        # Mono 1-channel capture (e.g. Wave XLR mono microphone)
+        if channels == 1:
+            sum_sq = sum(s * s for s in samples)
+            rms = math.sqrt(sum_sq / len(samples)) / 32768.0 if samples else 0.0
+            peak_raw = max(max(samples), -min(samples)) / 32768.0 if samples else 0.0
+            val = (rms * 2.2 * 0.70) + (peak_raw * 1.4 * 0.30)
+            val = max(0.0, min(1.0, val))
+            return val, val
+
+        # Stereo 2-channel interleaved capture
         lefts = samples[0::2]
         rights = samples[1::2]
 
-        # 1. RMS Energy (perceived loudness power without waveform phase jitter)
         sum_sq_l = sum(s * s for s in lefts)
         sum_sq_r = sum(s * s for s in rights)
         rms_l = math.sqrt(sum_sq_l / len(lefts)) / 32768.0 if lefts else 0.0
         rms_r = math.sqrt(sum_sq_r / len(rights)) / 32768.0 if rights else 0.0
 
-        # 2. True Peak (dynamic transients and punch)
         peak_raw_l = max(max(lefts), -min(lefts)) / 32768.0 if lefts else 0.0
         peak_raw_r = max(max(rights), -min(rights)) / 32768.0 if rights else 0.0
 
-        # Calibrated 70% RMS + 30% Peak hybrid weighting
         val_l = (rms_l * 2.2 * 0.70) + (peak_raw_l * 1.4 * 0.30)
         val_r = (rms_r * 2.2 * 0.70) + (peak_raw_r * 1.4 * 0.30)
 
         return max(0.0, min(1.0, val_l)), max(0.0, min(1.0, val_r))
 
     def _run_capture_loop(self):
-        # 1. Open mic capture with unique node name and link to physical hardware mic
-        self.mic_proc = self._open_pw_record('wave_mic_monitor')
-        time.sleep(0.1)
-        self._link_mic_monitor()
+        # 1. Open mic capture directly targeted to physical microphone node
+        mic_target, mic_channels = self._discover_mic_target()
+        self.mic_channels = mic_channels
+        self.mic_target = mic_target
+        self.mic_proc = self._open_pw_record('wave_mic_monitor', target=mic_target, channels=mic_channels)
+        if not mic_target:
+            time.sleep(0.1)
+            self._link_mic_monitor()
         
-        # 2. Open playback capture with unique node name and link to active sink monitor
+        # 2. Open playback capture with unique node name and link to active sink monitors
         time.sleep(0.1)
-        self.sink_proc = self._open_pw_record('wave_sink_monitor')
+        self.sink_proc = self._open_pw_record('wave_sink_monitor', channels=2)
         time.sleep(0.15)
         self._link_sink_monitor()
 
@@ -232,20 +267,33 @@ class MultiChannelPeakMonitor:
 
         while self.running:
             try:
-                raw_ml, raw_mr = self._drain_and_calc_peaks(self.mic_proc)
-                raw_sl, raw_sr = self._drain_and_calc_peaks(self.sink_proc)
+                raw_ml, raw_mr = self._drain_and_calc_peaks(self.mic_proc, channels=self.mic_channels)
+                raw_sl, raw_sr = self._drain_and_calc_peaks(self.sink_proc, channels=2)
 
                 tick_counter += 1
                 if tick_counter % 80 == 0: # Check and refresh links periodically (~2 seconds)
-                    self._link_mic_monitor()
+                    curr_target, curr_ch = self._discover_mic_target()
+                    if curr_target != self.mic_target or not self.mic_proc or self.mic_proc.poll() is not None:
+                        if self.mic_proc:
+                            try:
+                                self.mic_proc.terminate()
+                            except Exception:
+                                pass
+                        self.mic_target = curr_target
+                        self.mic_channels = curr_ch
+                        self.mic_proc = self._open_pw_record('wave_mic_monitor', target=curr_target, channels=curr_ch)
+                        if not curr_target:
+                            self._link_mic_monitor()
+
                     self._link_sink_monitor()
 
                 # Re-spawn if exited
                 if (not self.mic_proc or self.mic_proc.poll() is not None) and self.running:
-                    self.mic_proc = self._open_pw_record('wave_mic_monitor')
-                    self._link_mic_monitor()
+                    self.mic_proc = self._open_pw_record('wave_mic_monitor', target=self.mic_target, channels=self.mic_channels)
+                    if not self.mic_target:
+                        self._link_mic_monitor()
                 if (not self.sink_proc or self.sink_proc.poll() is not None) and self.running:
-                    self.sink_proc = self._open_pw_record('wave_sink_monitor')
+                    self.sink_proc = self._open_pw_record('wave_sink_monitor', channels=2)
                     self._link_sink_monitor()
 
                 # Fast attack (instant punch on rise) + smooth exponential release & graceful fade-down to 0

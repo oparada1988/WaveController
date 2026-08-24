@@ -317,9 +317,37 @@ class PipeWireManager:
 
                 if changed and self.on_external_change_callback:
                     GLib.idle_add(self.on_external_change_callback)
+
+                # 3. Periodic real-time stream & mix reconciliation (every ~1s / 25 ticks)
+                sync_tick = getattr(self, "_sync_loop_tick", 0) + 1
+                self._sync_loop_tick = sync_tick
+                if sync_tick % 25 == 0:
+                    self._sync_channel_audio_routing()
+                    self._ensure_mix_sinks_unmuted()
             except Exception:
                 pass
             time.sleep(0.04) # 25 Hz fast poller (40ms)
+
+    def _ensure_mix_sinks_unmuted(self):
+        """Enforces unmuted state on PipeWire virtual null-sinks so audio always passes to physical outputs."""
+        try:
+            out = subprocess.check_output(["pw-dump"], text=True, stderr=subprocess.DEVNULL)
+            data = json.loads(out)
+            for obj in data:
+                props = obj.get("info", {}).get("props", {})
+                n_name = props.get("node.name", "")
+                if n_name.startswith("WaveController_") and n_name.endswith("_Sink"):
+                    obj_id = obj.get("id")
+                    if obj_id:
+                        m_id = n_name.replace("WaveController_", "").replace("_Sink", "")
+                        mix_muted = self.mix_states.get(m_id, {}).get("muted", False)
+                        if not mix_muted:
+                            try:
+                                subprocess.run(["wpctl", "set-mute", str(obj_id), "0"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                            except Exception:
+                                pass
+        except Exception:
+            pass
 
     def refresh_devices(self):
         """Discovers available physical output sinks and input sources from PipeWire."""
