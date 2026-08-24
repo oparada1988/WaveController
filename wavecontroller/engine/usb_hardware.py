@@ -125,15 +125,44 @@ class USBHardwareManager:
 
         if "mute" in changed:
             self.hardware_mute = bool(changed["mute"])
-            # Tapping the capacitive sensor or hardware mute always controls the microphone mute
-            target = self._resolve_source_target()
-            try:
-                subprocess.Popen(["wpctl", "set-mute", target, "1" if self.hardware_mute else "0"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            except Exception:
-                pass
-            if getattr(self, "pipewire_mgr", None):
-                for ch_key in ("elgato_wave_xlr", "mic", "microphone"):
-                    self.pipewire_mgr.set_channel_master_mute(ch_key, self.hardware_mute)
+            active_mode = curr.get("dial_mode", "gain")
+
+            if active_mode == "gain":
+                # Mode 1 (LED 1): Mute / Unmute Microphone ONLY
+                target = self._resolve_source_target()
+                try:
+                    subprocess.Popen(["wpctl", "set-mute", target, "1" if self.hardware_mute else "0"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                except Exception:
+                    pass
+                if getattr(self, "pipewire_mgr", None):
+                    for ch_key in ("elgato_wave_xlr", "mic", "microphone"):
+                        self.pipewire_mgr.set_channel_master_mute(ch_key, self.hardware_mute)
+
+            elif active_mode == "hp":
+                # Mode 2 (LED 2): Mute / Unmute Headphone Output Mix ONLY
+                target = self._resolve_sink_target()
+                try:
+                    subprocess.Popen(["wpctl", "set-mute", target, "1" if self.hardware_mute else "0"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                except Exception:
+                    pass
+                if getattr(self, "pipewire_mgr", None):
+                    target_mix_id = self._get_elgato_output_mix_id()
+                    self.pipewire_mgr.set_mix_master_mute(target_mix_id, self.hardware_mute)
+
+            elif active_mode == "mix":
+                # Mode 3 (LED 3): Mutes BOTH Microphone AND Headphone Output
+                src_target = self._resolve_source_target()
+                sink_target = self._resolve_sink_target()
+                try:
+                    subprocess.Popen(["wpctl", "set-mute", src_target, "1" if self.hardware_mute else "0"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    subprocess.Popen(["wpctl", "set-mute", sink_target, "1" if self.hardware_mute else "0"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                except Exception:
+                    pass
+                if getattr(self, "pipewire_mgr", None):
+                    for ch_key in ("elgato_wave_xlr", "mic", "microphone"):
+                        self.pipewire_mgr.set_channel_master_mute(ch_key, self.hardware_mute)
+                    target_mix_id = self._get_elgato_output_mix_id()
+                    self.pipewire_mgr.set_mix_master_mute(target_mix_id, self.hardware_mute)
 
             self.notify_hardware_listeners(curr, changed)
 
