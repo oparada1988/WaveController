@@ -27,6 +27,7 @@ class UnifiedDeviceSettingsView(Gtk.Box):
         self.device_key = device_info.get("device_key", "")
         self.device_type = device_info.get("type", "duplex") # "duplex", "input", "output"
         self.is_elgato = device_info.get("is_elgato", False) or "wave" in device_info.get("name", "").lower()
+        self._syncing_from_hw = False
 
         self.set_margin_top(16)
         self.set_margin_bottom(16)
@@ -271,80 +272,84 @@ class UnifiedDeviceSettingsView(Gtk.Box):
         """Called when physical rotary dial, 48V, or touch mute is adjusted on the hardware."""
         if not self.get_mapped():
             return
-        if "gain_db" in changed and hasattr(self, "gain_adj") and hasattr(self, "gain_slider"):
-            val = int(round(changed["gain_db"]))
-            if hasattr(self, "_gain_handler_id") and self._gain_handler_id:
-                self.gain_slider.handler_block(self._gain_handler_id)
-                try:
+        self._syncing_from_hw = True
+        try:
+            if "gain_db" in changed and hasattr(self, "gain_adj") and hasattr(self, "gain_slider"):
+                val = int(round(changed["gain_db"]))
+                if hasattr(self, "_gain_handler_id") and self._gain_handler_id:
+                    self.gain_slider.handler_block(self._gain_handler_id)
+                    try:
+                        self.gain_adj.set_value(val)
+                    finally:
+                        self.gain_slider.handler_unblock(self._gain_handler_id)
+                else:
                     self.gain_adj.set_value(val)
-                finally:
-                    self.gain_slider.handler_unblock(self._gain_handler_id)
-            else:
-                self.gain_adj.set_value(val)
-            self.gain_row.set_subtitle(f"{val} dB")
+                self.gain_row.set_subtitle(f"{val} dB")
 
-        if "hp_volume_pct" in changed and hasattr(self, "vol_adj") and hasattr(self, "vol_slider"):
-            val = int(round(changed["hp_volume_pct"]))
-            if hasattr(self, "_vol_handler_id") and self._vol_handler_id:
-                self.vol_slider.handler_block(self._vol_handler_id)
-                try:
+            if "hp_volume_pct" in changed and hasattr(self, "vol_adj") and hasattr(self, "vol_slider"):
+                val = int(round(changed["hp_volume_pct"]))
+                if hasattr(self, "_vol_handler_id") and self._vol_handler_id:
+                    self.vol_slider.handler_block(self._vol_handler_id)
+                    try:
+                        self.vol_adj.set_value(val)
+                    finally:
+                        self.vol_slider.handler_unblock(self._vol_handler_id)
+                else:
                     self.vol_adj.set_value(val)
-                finally:
-                    self.vol_slider.handler_unblock(self._vol_handler_id)
-            else:
-                self.vol_adj.set_value(val)
 
-        if "dial_mode" in changed and hasattr(self, "dial_mode_row"):
-            self.dial_mode_row.set_subtitle(f"Active Mode: {str(changed['dial_mode']).capitalize()}")
+            if "dial_mode" in changed and hasattr(self, "dial_mode_row"):
+                self.dial_mode_row.set_subtitle(f"Active Mode: {str(changed['dial_mode']).capitalize()}")
 
-        if "phantom_power" in changed and hasattr(self, "phantom_row"):
-            val = bool(changed["phantom_power"])
-            if self.phantom_row.get_active() != val:
-                if hasattr(self, "_phantom_handler_id") and self._phantom_handler_id:
-                    self.phantom_row.handler_block(self._phantom_handler_id)
-                    try:
+            if "phantom_power" in changed and hasattr(self, "phantom_row"):
+                val = bool(changed["phantom_power"])
+                if self.phantom_row.get_active() != val:
+                    if hasattr(self, "_phantom_handler_id") and self._phantom_handler_id:
+                        self.phantom_row.handler_block(self._phantom_handler_id)
+                        try:
+                            self.phantom_row.set_active(val)
+                        finally:
+                            self.phantom_row.handler_unblock(self._phantom_handler_id)
+                    else:
                         self.phantom_row.set_active(val)
-                    finally:
-                        self.phantom_row.handler_unblock(self._phantom_handler_id)
-                else:
-                    self.phantom_row.set_active(val)
 
-        if "clipguard" in changed and hasattr(self, "clipguard_row"):
-            val = bool(changed["clipguard"])
-            if self.clipguard_row.get_active() != val:
-                if hasattr(self, "_clipguard_handler_id") and self._clipguard_handler_id:
-                    self.clipguard_row.handler_block(self._clipguard_handler_id)
-                    try:
+            if "clipguard" in changed and hasattr(self, "clipguard_row"):
+                val = bool(changed["clipguard"])
+                if self.clipguard_row.get_active() != val:
+                    if hasattr(self, "_clipguard_handler_id") and self._clipguard_handler_id:
+                        self.clipguard_row.handler_block(self._clipguard_handler_id)
+                        try:
+                            self.clipguard_row.set_active(val)
+                        finally:
+                            self.clipguard_row.handler_unblock(self._clipguard_handler_id)
+                    else:
                         self.clipguard_row.set_active(val)
-                    finally:
-                        self.clipguard_row.handler_unblock(self._clipguard_handler_id)
-                else:
-                    self.clipguard_row.set_active(val)
 
-        if "low_cut" in changed and hasattr(self, "low_cut_row"):
-            mode = str(changed["low_cut"])
-            sel = 1 if mode == "80Hz" else (2 if mode == "120Hz" else 0)
-            if self.low_cut_row.get_selected() != sel:
-                if hasattr(self, "_low_cut_handler_id") and self._low_cut_handler_id:
-                    self.low_cut_row.handler_block(self._low_cut_handler_id)
-                    try:
+            if "low_cut" in changed and hasattr(self, "low_cut_row"):
+                mode = str(changed["low_cut"])
+                sel = 1 if mode == "80Hz" else (2 if mode == "120Hz" else 0)
+                if self.low_cut_row.get_selected() != sel:
+                    if hasattr(self, "_low_cut_handler_id") and self._low_cut_handler_id:
+                        self.low_cut_row.handler_block(self._low_cut_handler_id)
+                        try:
+                            self.low_cut_row.set_selected(sel)
+                        finally:
+                            self.low_cut_row.handler_unblock(self._low_cut_handler_id)
+                    else:
                         self.low_cut_row.set_selected(sel)
-                    finally:
-                        self.low_cut_row.handler_unblock(self._low_cut_handler_id)
-                else:
-                    self.low_cut_row.set_selected(sel)
 
-        if "low_impedance" in changed and hasattr(self, "low_z_row"):
-            val = bool(changed["low_impedance"])
-            if self.low_z_row.get_active() != val:
-                if hasattr(self, "_low_z_handler_id") and self._low_z_handler_id:
-                    self.low_z_row.handler_block(self._low_z_handler_id)
-                    try:
+            if "low_impedance" in changed and hasattr(self, "low_z_row"):
+                val = bool(changed["low_impedance"])
+                if self.low_z_row.get_active() != val:
+                    if hasattr(self, "_low_z_handler_id") and self._low_z_handler_id:
+                        self.low_z_row.handler_block(self._low_z_handler_id)
+                        try:
+                            self.low_z_row.set_active(val)
+                        finally:
+                            self.low_z_row.handler_unblock(self._low_z_handler_id)
+                    else:
                         self.low_z_row.set_active(val)
-                    finally:
-                        self.low_z_row.handler_unblock(self._low_z_handler_id)
-                else:
-                    self.low_z_row.set_active(val)
+        finally:
+            self._syncing_from_hw = False
 
     def _on_phantom_toggled(self, row, *args):
         is_active = self.phantom_row.get_active()
@@ -420,11 +425,15 @@ class UnifiedDeviceSettingsView(Gtk.Box):
         dialog.present()
 
     def _on_gain_changed(self, scale):
+        if getattr(self, "_syncing_from_hw", False):
+            return
         val = int(self.gain_adj.get_value())
         self.hardware_mgr.set_gain(val, self.device_key)
         self.gain_row.set_subtitle(f"{val} dB")
 
     def _on_low_cut_changed(self, row, *args):
+        if getattr(self, "_syncing_from_hw", False):
+            return
         idx = row.get_selected()
         mode = "Off" if idx == 0 else ("80Hz" if idx == 1 else "120Hz")
         self.hardware_mgr.set_low_cut(mode)
@@ -439,6 +448,8 @@ class UnifiedDeviceSettingsView(Gtk.Box):
             self.listen_btn.remove_css_class("suggested-action")
 
     def _on_output_volume_changed(self, scale):
+        if getattr(self, "_syncing_from_hw", False):
+            return
         val = int(self.vol_adj.get_value())
         self.hardware_mgr.set_output_volume(self.device_key, val)
 

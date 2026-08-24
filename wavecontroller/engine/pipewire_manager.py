@@ -26,7 +26,8 @@ class PipeWireManager:
         "mic": ["System capture"]
     }
 
-    def __init__(self):
+    def __init__(self, hardware_mgr=None):
+        self.hardware_mgr = hardware_mgr
         saved_channels = config_manager.get("channels")
         saved_mixes = config_manager.get("mixes")
         saved_apps = config_manager.get("assigned_apps")
@@ -278,17 +279,19 @@ class PipeWireManager:
             try:
                 changed = False
                 
-                # 1. Sync Microphone (Source) Channel Master
-                curr_mic_vol, curr_mic_muted = self._query_system_source_status()
-                if curr_mic_vol is not None:
-                    with self._lock:
-                        if "mic" not in self.channel_master_states:
-                            self.channel_master_states["mic"] = {"volume": 80, "muted": False}
-                        st = self.channel_master_states["mic"]
-                        if abs(st["volume"] - curr_mic_vol) >= 1 or st["muted"] != curr_mic_muted:
-                            st["volume"] = curr_mic_vol
-                            st["muted"] = curr_mic_muted
-                            changed = True
+                # 1. Sync Microphone (Source) Channel Master (Generic ALSA only; skip if Elgato hardware is managing preamp)
+                is_elgato_mic = self.hardware_mgr and (getattr(self.hardware_mgr, "is_elgato", False) or getattr(self.hardware_mgr, "device_type", "") == "elgato")
+                if not is_elgato_mic:
+                    curr_mic_vol, curr_mic_muted = self._query_system_source_status()
+                    if curr_mic_vol is not None:
+                        with self._lock:
+                            if "mic" not in self.channel_master_states:
+                                self.channel_master_states["mic"] = {"volume": 80, "muted": False}
+                            st = self.channel_master_states["mic"]
+                            if abs(st["volume"] - curr_mic_vol) >= 2 or st["muted"] != curr_mic_muted:
+                                st["volume"] = curr_mic_vol
+                                st["muted"] = curr_mic_muted
+                                changed = True
 
                 # 2. Sync Application Channels (e.g. Spotify, Games, Discord) Master
                 channels_to_check = []
@@ -665,9 +668,11 @@ class PipeWireManager:
                     if target_sink in n_name or target_src in n_name:
                         ids.append(obj_id)
                     elif (m_type == "sink" or "personal" in canon_mix) and target_dev and target_dev != "none":
-                        clean_target = target_dev.replace("alsa_card.", "").replace("alsa_output.", "").replace("alsa_input.", "").strip().lower()
-                        if media_class == "Audio/Sink" and (clean_target in n_name or clean_target in props.get("node.description", "").lower()):
-                            ids.append(obj_id)
+                        # Exclude Elgato physical USB hardware nodes to prevent ALSA UAC2 hardware volume fights
+                        if "elgato" not in target_dev.lower() and "wave" not in target_dev.lower():
+                            clean_target = target_dev.replace("alsa_card.", "").replace("alsa_output.", "").replace("alsa_input.", "").strip().lower()
+                            if media_class == "Audio/Sink" and (clean_target in n_name or clean_target in props.get("node.description", "").lower()):
+                                ids.append(obj_id)
         except Exception:
             pass
 
@@ -906,6 +911,10 @@ class PipeWireManager:
                             pass
                     continue
 
+                # If channel is an Elgato hardware device, bypass wpctl ALSA dispatch to avoid UAC2 hardware volume fights
+                if "elgato" in channel_id.lower() or "wave_xlr" in channel_id.lower() or (ch_name and "elgato" in ch_name.lower()):
+                    continue
+
                 assigned_app_names = self.get_assigned_apps(channel_id)
                 ch_name = ""
                 with self._lock:
@@ -934,6 +943,8 @@ class PipeWireManager:
                     with self._lock:
                         for sk in search_keys:
                             for cached_name, node_ids in self._node_cache.items():
+                                if "elgato" in cached_name or "wave_xlr" in cached_name:
+                                    continue
                                 if sk in cached_name or cached_name in sk:
                                     matches.update(node_ids)
                     return matches

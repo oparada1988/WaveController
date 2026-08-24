@@ -22,9 +22,9 @@ class WaveControllerApp(Adw.Application):
         )
         self.is_daemon = is_daemon
         self._daemon_started = False
-        self.pipewire_mgr = PipeWireManager()
-        self.peak_monitor = MultiChannelPeakMonitor()
         self.hardware_mgr = USBHardwareManager()
+        self.pipewire_mgr = PipeWireManager(hardware_mgr=self.hardware_mgr)
+        self.peak_monitor = MultiChannelPeakMonitor()
         self.ipc_server = IPCServer(self.pipewire_mgr, self.peak_monitor, self.hardware_mgr)
         self.tray_mgr = TrayManager(
             on_activate=self._on_tray_activate,

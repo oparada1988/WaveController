@@ -93,18 +93,21 @@ class USBHardwareManager:
             self.phantom_power_48v = bool(changed["phantom_power"])
             hw = dict(config_manager.get("hardware_settings", {}))
             hw["phantom_power"] = self.phantom_power_48v
-            config_manager.set("hardware_settings", hw)
+            config_manager.set("hardware_settings", hw, immediate=False)
 
         if "mute" in changed:
             self.hardware_mute = bool(changed["mute"])
             target = self._resolve_source_target()
-            subprocess.run(["wpctl", "set-mute", target, "1" if self.hardware_mute else "0"], stderr=subprocess.DEVNULL)
+            try:
+                subprocess.Popen(["wpctl", "set-mute", target, "1" if self.hardware_mute else "0"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            except Exception:
+                pass
 
         if "gain_db" in changed:
             self.hardware_gain_db = int(round(changed["gain_db"]))
             hw = dict(config_manager.get("hardware_settings", {}))
             hw["gain_db"] = self.hardware_gain_db
-            config_manager.set("hardware_settings", hw)
+            config_manager.set("hardware_settings", hw, immediate=False)
 
         if "hp_volume_pct" in changed:
             self.headphone_volume = int(round(changed["hp_volume_pct"]))

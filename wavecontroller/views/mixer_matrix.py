@@ -745,14 +745,14 @@ class MixerMatrixView(Gtk.Box):
         # 4. Update Headphone Monitor Mix Header ONLY when knob is in Output / HP Mode (Mode 2 / 2nd LED on Wave hardware)
         if "hp_volume_pct" in changed and dial_mode == "hp":
             hp_vol = int(round(changed["hp_volume_pct"]))
-            assigned_mix = "personal_mix"
+            assigned_mix = "personal"
             if self.hardware_mgr:
-                assigned_mix = self.hardware_mgr.get_device_assigned_mix("Wave XLR") or self.hardware_mgr.get_device_assigned_mix(self.hardware_mgr.device_name) or "personal_mix"
+                assigned_mix = self.hardware_mgr.get_device_assigned_mix("Wave XLR") or self.hardware_mgr.get_device_assigned_mix(self.hardware_mgr.device_name) or "personal"
             
             target_header = self.mix_headers.get(assigned_mix)
             if not target_header:
                 for m_id, header in self.mix_headers.items():
-                    if m_id in (assigned_mix, "personal", "personal_mix") or "wave" in str(header.mix_info.get("name", "")).lower():
+                    if m_id in (assigned_mix, "personal", "personal_mix") or "personal" in str(header.mix_info.get("name", "")).lower() or "wave" in str(header.mix_info.get("name", "")).lower():
                         target_header = header
                         assigned_mix = m_id
                         break

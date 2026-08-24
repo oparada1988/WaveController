@@ -88,10 +88,6 @@ class ChannelCard(Gtk.Box):
             self.update_phantom_state(self.hardware_mgr.phantom_power_48v)
             self.append(self.phantom_btn)
 
-        # Connect hardware listener for live knob, mute, and 48V sync
-        if self.hardware_mgr and hasattr(self.hardware_mgr, "add_hardware_listener"):
-            self.hardware_mgr.add_hardware_listener(lambda curr, changed: GLib.idle_add(self._on_hardware_state_sync, curr, changed))
-
         # 5. Channel settings gear popover button
         self.settings_btn = Gtk.MenuButton()
         self.settings_btn.set_icon_name("emblem-system-symbolic")
