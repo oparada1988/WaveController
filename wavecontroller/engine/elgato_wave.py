@@ -191,8 +191,13 @@ class ElgatoWaveDevice:
             "gain": "#FFFFFF",
             "hp": "#2ECC71",
             "mix": "#FF9500",
+            "vu": "#00E5FF",
             "mute": "#FF0000"
         }
+        self._user_interacting: bool = False
+        self._interaction_timer: Optional[threading.Timer] = None
+        self._last_vu_time: float = 0.0
+        self._vu_ballistics_level: float = 0.0
 
     def is_connected(self) -> bool:
         return self._handle is not None
@@ -295,6 +300,7 @@ class ElgatoWaveDevice:
 
     def set_gain_db(self, gain_db: float, transient: bool = False):
         try:
+            self.notify_user_interaction("gain")
             gain_db = max(0.0, min(self.profile.gain_max_db, float(gain_db)))
             raw = int((gain_db / self.profile.gain_max_db) * self.profile.gain_raw_max)
             cfg = self.read_config()
@@ -414,6 +420,7 @@ class ElgatoWaveDevice:
 
     def set_headphone_volume_pct(self, pct: int, transient: bool = False):
         try:
+            self.notify_user_interaction("hp")
             pct = max(0, min(100, pct))
             db = (pct / 100.0 * 60.0) - 60.0
             raw = int(db * self.profile.hp_scale)
@@ -444,6 +451,7 @@ class ElgatoWaveDevice:
         if self.profile.off_monitor_mix is None:
             return
         try:
+            self.notify_user_interaction("mix")
             pct = max(0, min(100, int(pct)))
             hw_pct = 100 - pct
             raw = hw_pct << 8
@@ -601,6 +609,80 @@ class ElgatoWaveDevice:
                 except Exception:
                     pass
 
+    # --- Live Hardware VU Meter & Interaction State ---
+    def notify_user_interaction(self, mode: str = None):
+        """Notifies driver that user is actively adjusting a knob/slider, pausing VU meter for 1.8s."""
+        self._user_interacting = True
+        if self._interaction_timer and self._interaction_timer.is_alive():
+            self._interaction_timer.cancel()
+        self._interaction_timer = threading.Timer(1.8, self._on_interaction_timeout)
+        self._interaction_timer.daemon = True
+        self._interaction_timer.start()
+
+    def _on_interaction_timeout(self):
+        self._user_interacting = False
+        try:
+            curr_mode = self.get_dial_mode()
+            self.apply_mode_color(curr_mode)
+        except Exception:
+            pass
+
+    def is_user_interacting(self) -> bool:
+        return self._user_interacting
+
+    def update_live_vu(self, mode: str, peak_level: float):
+        """Streams live peak audio levels (0.0 to 1.0) to the hardware LED ring in dedicated VU color."""
+        if self._user_interacting or self.get_mode_mute(mode) or not self.is_connected():
+            return
+
+        import time
+        now = time.time()
+        # Rate-limit USB transfers to ~30 Hz (0.033s)
+        if now - self._last_vu_time < 0.030:
+            return
+        self._last_vu_time = now
+
+        # Ballistics: instant attack, smooth exponential decay
+        peak = max(0.0, min(1.0, float(peak_level)))
+        if peak > self._vu_ballistics_level:
+            self._vu_ballistics_level = peak
+        else:
+            self._vu_ballistics_level = max(0.0, self._vu_ballistics_level * 0.80)
+
+        try:
+            cfg = self.read_config()
+            curr_mode = self.get_dial_mode()
+            if curr_mode != mode:
+                return
+
+            # Apply Dedicated VU Color
+            vu_hex = self._led_colors.get("vu", "#00E5FF").lstrip("#")
+            if len(vu_hex) == 6 and self.profile.off_rgb_ring is not None:
+                vr, vg, vb = int(vu_hex[0:2], 16), int(vu_hex[2:4], 16), int(vu_hex[4:6], 16)
+                for off in [self.profile.off_rgb_ring, self.profile.off_rgb_ring + 3, self.profile.off_rgb_ring + 6]:
+                    if off + 2 < len(cfg):
+                        cfg[off] = vr
+                        cfg[off + 1] = vg
+                        cfg[off + 2] = vb
+
+            # Map peak amplitude into active mode register
+            if curr_mode == "gain" and self.profile.off_gain is not None:
+                raw_gain = int(self._vu_ballistics_level * self.profile.gain_raw_max)
+                struct.pack_into("<H", cfg, self.profile.off_gain, raw_gain)
+            elif curr_mode == "hp" and self.profile.off_hp_vol is not None:
+                db = (self._vu_ballistics_level * 60.0) - 60.0
+                raw_hp = int(db * self.profile.hp_scale)
+                struct.pack_into(self.profile.hp_fmt, cfg, self.profile.off_hp_vol, raw_hp)
+            elif curr_mode == "mix" and self.profile.off_monitor_mix is not None:
+                pct = int(round(self._vu_ballistics_level * 100))
+                hw_pct = 100 - pct
+                struct.pack_into("<H", cfg, self.profile.off_monitor_mix, hw_pct << 8)
+
+            cfg[self.profile.off_mute] = 0x00
+            self.write_config(cfg)
+        except Exception:
+            pass
+
     def get_all_state(self) -> Dict[str, Any]:
         try:
             cfg = self.read_config()
@@ -706,6 +788,8 @@ class ElgatoManager:
                             changed[k] = v
                     if changed:
                         self.last_state.update(changed)
+                        if any(k in changed for k in ("gain_db", "hp_volume_pct", "monitor_mix_pct", "dial_mode")):
+                            dev.notify_user_interaction()
                         if "mute" in changed:
                             active_mode = curr.get("dial_mode", "gain")
                             dev._mode_mutes[active_mode] = bool(changed["mute"])

@@ -285,16 +285,36 @@ class MixHeaderCard(Gtk.Box):
             target_row.append(target_dev_combo)
             box.append(target_row)
 
-            # Hardware LED Color Dropdown (Headphone Volume Mode)
+            # Hardware LED Controls (Headphone Volume Mode & VU Meter)
             if self.hardware_mgr:
+                # Static Headphone Volume Color
                 led_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
                 led_lbl = Gtk.Label(label="Hardware LED (Headphone):", hexpand=True, halign=Gtk.Align.START)
                 led_lbl.add_css_class("mix-header-subtitle")
                 from .led_color_picker import LEDColorButton
-                led_btn = LEDColorButton(self.hardware_mgr, "hp", title="Hardware LED")
+                led_btn = LEDColorButton(self.hardware_mgr, "hp", title="Headphone LED")
                 led_row.append(led_lbl)
                 led_row.append(led_btn)
                 box.append(led_row)
+
+                # Hardware LED VU Meter Toggle Switch
+                vu_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+                vu_lbl = Gtk.Label(label="Hardware LED VU Meter:", hexpand=True, halign=Gtk.Align.START)
+                vu_lbl.add_css_class("mix-header-subtitle")
+                vu_switch = Gtk.Switch(active=self.hardware_mgr.get_vu_meter_enabled("hp"))
+                vu_switch.connect("state-set", lambda sw, st: (self.hardware_mgr.set_vu_meter_enabled("hp", st), False)[1])
+                vu_row.append(vu_lbl)
+                vu_row.append(vu_switch)
+                box.append(vu_row)
+
+                # Dedicated VU Meter Color
+                vu_color_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+                vu_color_lbl = Gtk.Label(label="VU Meter LED Color:", hexpand=True, halign=Gtk.Align.START)
+                vu_color_lbl.add_css_class("mix-header-subtitle")
+                vu_color_btn = LEDColorButton(self.hardware_mgr, "vu", title="VU Meter LED")
+                vu_color_row.append(vu_color_lbl)
+                vu_color_row.append(vu_color_btn)
+                box.append(vu_color_row)
 
         # Minimal Symbolic Icon Palette (Pure Vector Icons, No Text Labels, Zero Emojis)
         AVAILABLE_MIX_ICONS = [

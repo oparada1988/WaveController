@@ -261,12 +261,30 @@ class UnifiedDeviceSettingsView(Gtk.Box):
             mix_led_row.add_suffix(mix_led_btn)
             grp_led.add(mix_led_row)
 
+            # Dedicated Live VU Meter Color
+            vu_led_row = Adw.ActionRow(title="Live VU Meter Ring Color", subtitle="Color when animating live peak audio levels on LED ring")
+            vu_led_btn = LEDColorButton(self.hardware_mgr, "vu", title="Live VU Meter Color")
+            vu_led_btn.set_valign(Gtk.Align.CENTER)
+            vu_led_row.add_suffix(vu_led_btn)
+            grp_led.add(vu_led_row)
+
             # Mute State Color
             mute_led_row = Adw.ActionRow(title="Mute State Ring Color", subtitle="Color when microphone is muted via capacitive sensor")
             mute_led_btn = LEDColorButton(self.hardware_mgr, "mute", title="Mute State Color")
             mute_led_btn.set_valign(Gtk.Align.CENTER)
             mute_led_row.add_suffix(mute_led_btn)
             grp_led.add(mute_led_row)
+
+            # VU Meter Toggle Switches
+            vu_mic_row = Adw.SwitchRow(title="Enable Live VU Metering (Mic Gain)", subtitle="Animates live voice input level on LED ring when idle")
+            vu_mic_row.set_active(self.hardware_mgr.get_vu_meter_enabled("gain"))
+            vu_mic_row.connect("notify::active", lambda r, *a: self.hardware_mgr.set_vu_meter_enabled("gain", r.get_active()))
+            grp_led.add(vu_mic_row)
+
+            vu_hp_row = Adw.SwitchRow(title="Enable Live VU Metering (Headphone Output)", subtitle="Animates live headphone playback level on LED ring when idle")
+            vu_hp_row.set_active(self.hardware_mgr.get_vu_meter_enabled("hp"))
+            vu_hp_row.connect("notify::active", lambda r, *a: self.hardware_mgr.set_vu_meter_enabled("hp", r.get_active()))
+            grp_led.add(vu_hp_row)
 
             pref_page.add(grp_led)
 

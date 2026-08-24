@@ -24,8 +24,10 @@ class USBHardwareManager:
             "gain": "#FFFFFF",
             "hp": "#2ECC71",
             "mix": "#FF9500",
+            "vu": "#00E5FF",
             "mute": "#FF0000"
         }))
+        self.vu_meter_enabled: Dict[str, bool] = dict(config_manager.get("hardware_settings", {}).get("vu_meter_enabled", {"gain": True, "hp": True}))
         self.discovered_devices: Dict[str, dict] = {} # {device_key: dev_info_dict}
         self.input_devices = [] # Legacy compatibility
         self.output_devices = [] # Legacy compatibility
@@ -587,6 +589,33 @@ class USBHardwareManager:
         if elgato_dev:
             elgato_dev.set_led_colors(self.led_colors)
         self.notify_hardware_listeners({"led_colors": self.led_colors}, {"led_colors": self.led_colors})
+
+    def get_vu_meter_enabled(self, mode: str = "gain") -> bool:
+        return self.vu_meter_enabled.get(mode, True)
+
+    def set_vu_meter_enabled(self, mode: str, enabled: bool):
+        self.vu_meter_enabled[mode] = bool(enabled)
+        hw = dict(config_manager.get("hardware_settings", {}))
+        hw["vu_meter_enabled"] = dict(self.vu_meter_enabled)
+        config_manager.set("hardware_settings", hw, immediate=True)
+        self.notify_hardware_listeners({"vu_meter_enabled": self.vu_meter_enabled}, {"vu_meter_enabled": self.vu_meter_enabled})
+        if not enabled:
+            elgato_dev = elgato_manager.get_device()
+            if elgato_dev:
+                elgato_dev.apply_mode_color(elgato_dev.get_dial_mode())
+
+    def is_user_interacting(self) -> bool:
+        elgato_dev = elgato_manager.get_device()
+        if elgato_dev:
+            return elgato_dev.is_user_interacting()
+        return False
+
+    def update_live_vu_level(self, mode: str, peak_level: float):
+        if not self.get_vu_meter_enabled(mode):
+            return
+        elgato_dev = elgato_manager.get_device()
+        if elgato_dev:
+            elgato_dev.update_live_vu(mode, peak_level)
 
     def get_mode_mute(self, mode: str) -> bool:
         elgato_dev = elgato_manager.get_device()
