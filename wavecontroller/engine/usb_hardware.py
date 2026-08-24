@@ -695,7 +695,10 @@ class USBHardwareManager:
             return False
 
     def _get_elgato_output_mix_id(self) -> str:
-        """Finds the mix bus mapped to the physical Elgato headphone DAC, or defaults to personal_mix."""
+        """Finds the mix bus mapped to the physical Elgato headphone DAC or configured assigned mix."""
+        assigned = self.get_device_assigned_mix("Wave XLR") or self.get_device_assigned_mix(self.device_name)
+        if assigned:
+            return assigned
         if getattr(self, "pipewire_mgr", None):
             for m in self.pipewire_mgr.mixes:
                 t_dev = m.get("target_device", "")
