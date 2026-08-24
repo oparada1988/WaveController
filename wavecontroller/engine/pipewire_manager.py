@@ -489,7 +489,8 @@ class PipeWireManager:
                         "wavecontroller", "submix", "loopback", "wave_sink", "wave_mic",
                         "vcp_monitor", "pw-record", "parecord", "pipewire", "wireplumber",
                         "easyeffects", "wpctl", "system_capture", "system capture",
-                        "speech-dispatcher", "null-sink", "pw-loopback", "monitor"
+                        "speech-dispatcher", "null-sink", "pw-loopback", "monitor",
+                        "pavucontrol", "org.pulseaudio.pavucontrol"
                     ]
                     if any(kw in name_low or kw in bin_low or kw in node_low or kw in app_id_low for kw in internal_keywords):
                         continue
@@ -820,8 +821,8 @@ class PipeWireManager:
             if proc is None or proc.poll() is not None:
                 cmd = [
                     "pw-loopback",
-                    "--capture-props=node.autoconnect=false",
-                    "--playback-props=node.autoconnect=false",
+                    "--capture-props={ node.autoconnect=false application.id=org.PulseAudio.pavucontrol media.role=volume-control }",
+                    "--playback-props={ node.autoconnect=false }",
                     "-n", node_name,
                     "--latency=5"
                 ]

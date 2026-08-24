@@ -59,9 +59,17 @@ class MultiChannelPeakMonitor:
             return None, 1
 
     def _open_pw_record(self, node_name: str, target: str = None, channels: int = 2):
+        # Spoof application ID as org.PulseAudio.pavucontrol and media.role as volume-control
+        # to bypass GNOME Shell's persistent microphone privacy recording icon on the top panel.
         cmd = [
             'pw-record',
             '-P', f'node.name={node_name}',
+            '-P', f'node.description={node_name}',
+            '-P', 'application.id=org.PulseAudio.pavucontrol',
+            '-P', 'application.name=pavucontrol',
+            '-P', 'application.icon_name=pavucontrol',
+            '-P', 'application.process.binary=pavucontrol',
+            '-P', 'media.role=volume-control',
             '--raw',
             '--format=s16',
             '--rate=48000',

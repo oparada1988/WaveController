@@ -860,7 +860,12 @@ class USBHardwareManager:
         else:
             try:
                 self._loopback_proc = subprocess.Popen(
-                    ["pw-loopback", "--latency=20ms", "--capture-props=media.class=Stream/Input/Audio", "--playback-props=media.class=Stream/Output/Audio"],
+                    [
+                        "pw-loopback",
+                        "--latency=20ms",
+                        "--capture-props={ media.class=Stream/Input/Audio application.id=org.PulseAudio.pavucontrol media.role=volume-control }",
+                        "--playback-props={ media.class=Stream/Output/Audio }"
+                    ],
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL
                 )

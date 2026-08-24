@@ -27,6 +27,8 @@
   * Built-in local IPC server at `/tmp/wavecontroller.sock`.
   * Adjust any sub-mix channel directly from Stream Deck Plus physical dials.
   * Live audio VU meters on Stream Deck Plus LCD screens.
+* **GNOME Microphone Icon Bypass**:
+  * Real-time VU peak monitoring and helper sub-mix streams are spoofed with `application.id=org.PulseAudio.pavucontrol` and `media.role=volume-control` to prevent GNOME Shell from displaying a persistent orange recording microphone indicator on the top panel.
 
 ### 📦 Installation & Setup
 

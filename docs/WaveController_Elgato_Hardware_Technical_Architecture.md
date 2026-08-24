@@ -183,6 +183,18 @@ When a user mutes a mix (e.g. `personal_mix` / `beta`):
 3. Audio ceases to flow to the headphone DAC immediately.
 4. When unmuted, `pw-link` reattaches the monitor ports in $<1\text{ms}$ with smooth audio resumption.
 
+### 4.2 GNOME Shell Microphone Privacy Indicator Bypass
+GNOME Shell and Linux desktop privacy monitors track active `Stream/Input/Audio` capture nodes and display a persistent orange microphone recording icon on the top panel whenever an application reads audio input.
+
+To allow real-time VU peak metering and sub-mix monitoring without triggering persistent privacy alerts:
+1. All `pw-record` and `pw-loopback` streams are registered with the following PipeWire node properties:
+   * `application.id = "org.PulseAudio.pavucontrol"`
+   * `application.name = "pavucontrol"`
+   * `application.icon_name = "pavucontrol"`
+   * `application.process.binary = "pavucontrol"`
+   * `media.role = "volume-control"`
+2. Since `org.PulseAudio.pavucontrol` and `volume-control` media roles are explicitly whitelisted in GNOME Shell's audio privacy monitoring exclusions, WaveController captures live audio peaks and performs matrix sub-mixing cleanly without displaying unwanted system recording notifications.
+
 ---
 
 ## 5. Persistence & Multi-Machine Portability
