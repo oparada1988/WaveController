@@ -217,6 +217,26 @@ class IPCServer:
             res["phantom_48v"] = self.hardware_mgr.phantom_power_48v
             res["clipguard"] = self.hardware_mgr.clipguard_enabled
             res["low_cut"] = self.hardware_mgr.low_cut_filter
+            res["low_impedance"] = self.hardware_mgr.low_impedance_mode
+            res["elgato_info"] = self.hardware_mgr.get_elgato_device_info()
+        elif cmd in ["set_hardware_gain", "set_gain"]:
+            gain_val = req.get("gain_db")
+            if gain_val is not None:
+                self.hardware_mgr.set_gain(int(gain_val))
+            elif "delta" in req:
+                curr = self.hardware_mgr.hardware_gain_db
+                self.hardware_mgr.set_gain(max(0, min(75, curr + int(req["delta"]))))
+            res["gain_db"] = self.hardware_mgr.hardware_gain_db
+        elif cmd == "toggle_phantom_power":
+            res["phantom_48v"] = self.hardware_mgr.toggle_phantom_power()
+        elif cmd == "toggle_clipguard":
+            res["clipguard"] = self.hardware_mgr.toggle_clipguard()
+        elif cmd == "set_low_cut":
+            mode = req.get("mode", "80Hz")
+            self.hardware_mgr.set_low_cut(mode)
+            res["low_cut"] = self.hardware_mgr.low_cut_filter
+        elif cmd == "toggle_low_impedance":
+            res["low_impedance"] = self.hardware_mgr.toggle_low_impedance()
         elif cmd == "get_output_devices":
             devices = self.hardware_mgr.get_tracked_output_devices() if self.hardware_mgr else []
             res["devices"] = devices

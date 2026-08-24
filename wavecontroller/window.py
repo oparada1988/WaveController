@@ -99,6 +99,10 @@ class WaveMainWindow(Adw.ApplicationWindow):
 
         self.hardware_mgr.on_device_renamed_callback = lambda *a: GLib.idle_add(self._refresh_sidebar_device_names)
         self.hardware_mgr.on_devices_changed_callback = lambda *a: GLib.idle_add(self._rebuild_device_views)
+        self.hardware_mgr.on_new_device_detected_callback = lambda dev_info: GLib.idle_add(self._on_new_device_detected, dev_info)
+
+        # Check for untracked connected devices (such as Wave XLR) on launch
+        GLib.timeout_add(800, self._check_initial_untracked_devices)
 
     def _apply_theme(self):
         """Applies either the default Midnight Dark theme or follows standard GTK/Libadwaita system theme."""
@@ -391,5 +395,51 @@ class WaveMainWindow(Adw.ApplicationWindow):
         if hasattr(self, "mixer_view") and self.mixer_view:
             self.mixer_view.refresh_device_names()
         self._rebuild_device_views()
+
+    def _check_initial_untracked_devices(self) -> bool:
+        untracked = self.hardware_mgr.get_available_untracked_devices()
+        for dev in untracked:
+            if dev.get("is_elgato"):
+                self.show_device_detected_dialog(dev)
+                break
+        return False
+
+    def _on_new_device_detected(self, dev_info: dict):
+        if not self.get_visible():
+            return
+        self.show_device_detected_dialog(dev_info)
+
+    def show_device_detected_dialog(self, dev_info: dict):
+        device_name = dev_info.get("name", "Wave XLR")
+        device_key = dev_info.get("device_key", "")
+
+        tracked = config_manager.get("tracked_devices", [])
+        if device_key in tracked:
+            return
+
+        if not hasattr(self, "_prompted_devices"):
+            self._prompted_devices = set()
+        if device_key in self._prompted_devices:
+            return
+        self._prompted_devices.add(device_key)
+
+        dialog = Adw.MessageDialog(
+            transient_for=self,
+            heading=f"{device_name} Detected",
+            body=f"{device_name} Detected, would you like to add the device to WaveController?"
+        )
+        dialog.add_response("dismiss", "Dismiss")
+        dialog.add_response("add", "Add")
+        dialog.set_response_appearance("add", Adw.ResponseAppearance.SUGGESTED)
+        dialog.set_default_response("add")
+        dialog.set_close_response("dismiss")
+
+        def _on_response(d, response_id):
+            if response_id == "add":
+                self.hardware_mgr.add_tracked_device(device_key)
+                self._rebuild_device_views(select_device_key=device_key)
+
+        dialog.connect("response", _on_response)
+        dialog.present()
 
 

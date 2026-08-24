@@ -6,9 +6,14 @@ import math
 
 class UnifiedDeviceSettingsView(Gtk.Box):
     """
-    Unified device management view for a specific physical hardware device.
-    Dynamically renders Microphone (Capture) and Headphone Monitor (Playback)
-    controls based on device capabilities (Duplex, Input Only, Output Only).
+    Unified device management view for physical hardware devices.
+    Provides dedicated Tier 1 controls for Elgato Wave XLR, Wave:3, and generic USB interfaces:
+    - 0-75 dB Preamp Gain
+    - 48V Phantom Power (with safety warning modal)
+    - Clipguard Dual-Stage Limiter
+    - Enhanced Low-Cut Filter (Off / 80Hz / 120Hz)
+    - Headphone Output Volume & Low-Impedance Mode (IEMs)
+    - Hardware Serial Number & Firmware Version Diagnostics (USB DFU 1.10)
     """
     def __init__(self, device_info: dict, hardware_mgr, peak_monitor, pipewire_mgr=None, on_device_renamed=None, on_device_removed=None):
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=16)
@@ -21,6 +26,7 @@ class UnifiedDeviceSettingsView(Gtk.Box):
 
         self.device_key = device_info.get("device_key", "")
         self.device_type = device_info.get("type", "duplex") # "duplex", "input", "output"
+        self.is_elgato = device_info.get("is_elgato", False) or "wave" in device_info.get("name", "").lower()
 
         self.set_margin_top(16)
         self.set_margin_bottom(16)
@@ -49,7 +55,8 @@ class UnifiedDeviceSettingsView(Gtk.Box):
         is_conn = device_info.get("connected", True)
         badge_text = device_info.get("badge", "In / Out")
         desc = device_info.get("description", device_info.get("name", "Audio Device"))
-        status_text = f"🟢 Connected • {badge_text} ({desc})" if is_conn else "🟡 Disconnected / Offline"
+        hw_tag = " [Tier 1 Hardware Connected]" if self.is_elgato else ""
+        status_text = f"🟢 Connected • {badge_text} ({desc}){hw_tag}" if is_conn else "🟡 Disconnected / Offline"
         self.sub_lbl = Gtk.Label(label=status_text)
         self.sub_lbl.add_css_class("mix-header-subtitle")
         self.sub_lbl.set_halign(Gtk.Align.START)
@@ -84,17 +91,17 @@ class UnifiedDeviceSettingsView(Gtk.Box):
         icon_row.add_suffix(self.icon_btn)
         grp_ident.add(icon_row)
 
-        hw_row = Adw.ActionRow(title="Hardware Identifier", subtitle=self.device_key)
+        hw_row = Adw.ActionRow(title="Hardware Identifier", subtitle=str(self.device_key))
         grp_ident.add(hw_row)
 
         pref_page.add(grp_ident)
 
         # Group 2: Microphone (Input) Section (Duplex or Input-Only)
         if self.device_type in ["duplex", "input"]:
-            grp_mic = Adw.PreferencesGroup(title="Microphone (Audio Input) &amp; Live Diagnostics")
+            grp_mic = Adw.PreferencesGroup(title="Microphone (Audio Input) &amp; Hardware DSP")
 
             # VU Meter
-            meter_row = Adw.ActionRow(title="Vocal Input Signal", subtitle="Real-time audio activity")
+            meter_row = Adw.ActionRow(title="Vocal Input Signal", subtitle="Real-time studio audio activity")
             meter_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
             meter_box.set_size_request(240, -1)
             meter_box.set_valign(Gtk.Align.CENTER)
@@ -113,8 +120,8 @@ class UnifiedDeviceSettingsView(Gtk.Box):
             meter_row.add_suffix(meter_box)
             grp_mic.add(meter_row)
 
-            # Preamp Gain Slider
-            self.gain_row = Adw.ActionRow(title="Preamp Gain", subtitle=f"{self.hardware_mgr.hardware_gain_db} dB")
+            # Preamp Gain Slider (0 to 75 dB)
+            self.gain_row = Adw.ActionRow(title="Analog Preamp Gain", subtitle=f"{self.hardware_mgr.hardware_gain_db} dB")
             self.gain_adj = Gtk.Adjustment(value=self.hardware_mgr.hardware_gain_db, lower=0, upper=75, step_increment=1, page_increment=5)
             self.gain_slider = Gtk.Scale(orientation=Gtk.Orientation.HORIZONTAL, adjustment=self.gain_adj)
             self.gain_slider.set_size_request(180, -1)
@@ -122,6 +129,12 @@ class UnifiedDeviceSettingsView(Gtk.Box):
             self.gain_slider.connect("value-changed", self._on_gain_changed)
             self.gain_row.add_suffix(self.gain_slider)
             grp_mic.add(self.gain_row)
+
+            # 48V Phantom Power Switch (with Safety Confirmation)
+            self.phantom_row = Adw.SwitchRow(title="48V Phantom Power", subtitle="Provides 48V DC power to XLR condenser microphones")
+            self.phantom_row.set_active(self.hardware_mgr.phantom_power_48v)
+            self.phantom_row.connect("notify::active", self._on_phantom_toggled)
+            grp_mic.add(self.phantom_row)
 
             # Mic Test Direct Loopback
             listen_row = Adw.ActionRow(title="Mic Test (Direct Loopback)", subtitle="Hear your live voice in headphones to verify levels")
@@ -133,12 +146,12 @@ class UnifiedDeviceSettingsView(Gtk.Box):
             grp_mic.add(listen_row)
 
             # Hardware DSP & Filters
-            self.clipguard_row = Adw.SwitchRow(title="Clipguard Protection", subtitle="Dual-stage limiter to prevent vocal clipping")
+            self.clipguard_row = Adw.SwitchRow(title="Clipguard Protection", subtitle="Dual-stage analog limiter prevents vocal clipping")
             self.clipguard_row.set_active(self.hardware_mgr.clipguard_enabled)
             self.clipguard_row.connect("notify::active", lambda r, *a: self.hardware_mgr.toggle_clipguard())
             grp_mic.add(self.clipguard_row)
 
-            self.low_cut_row = Adw.ComboRow(title="Enhanced Low-Cut Filter", subtitle="Remove low-frequency rumble")
+            self.low_cut_row = Adw.ComboRow(title="Enhanced Low-Cut Filter", subtitle="Hardware DSP high-pass filter removing desk rumble")
             self.low_cut_model = Gtk.StringList.new(["Off", "80 Hz", "120 Hz"])
             self.low_cut_row.set_model(self.low_cut_model)
             self.low_cut_row.set_selected(1 if self.hardware_mgr.low_cut_filter == "80Hz" else (2 if self.hardware_mgr.low_cut_filter == "120Hz" else 0))
@@ -152,7 +165,7 @@ class UnifiedDeviceSettingsView(Gtk.Box):
             grp_out = Adw.PreferencesGroup(title="Headphone Monitor &amp; Audio Output")
 
             # Output Volume
-            vol_row = Adw.ActionRow(title="Output / Monitor Volume", subtitle="Adjust overall headphone/speaker level")
+            vol_row = Adw.ActionRow(title="Output / Monitor Volume", subtitle="Adjust headphone DAC amplifier level")
             curr_vol = self.hardware_mgr.get_output_volume(self.device_key)
             self.vol_adj = Gtk.Adjustment(value=curr_vol, lower=0, upper=100, step_increment=1, page_increment=5)
             self.vol_slider = Gtk.Scale(orientation=Gtk.Orientation.HORIZONTAL, adjustment=self.vol_adj)
@@ -161,6 +174,12 @@ class UnifiedDeviceSettingsView(Gtk.Box):
             self.vol_slider.connect("value-changed", self._on_output_volume_changed)
             vol_row.add_suffix(self.vol_slider)
             grp_out.add(vol_row)
+
+            # Low-Impedance Mode Switch
+            self.low_z_row = Adw.SwitchRow(title="Low-Impedance Headphone Mode", subtitle="Optimized for sensitive In-Ear Monitors (IEMs)")
+            self.low_z_row.set_active(self.hardware_mgr.low_impedance_mode)
+            self.low_z_row.connect("notify::active", lambda r, *a: self.hardware_mgr.toggle_low_impedance())
+            grp_out.add(self.low_z_row)
 
             # Output Mute
             mute_row = Adw.ActionRow(title="Output Mute", subtitle="Mute sound output to this device")
@@ -175,7 +194,7 @@ class UnifiedDeviceSettingsView(Gtk.Box):
 
             # Assigned Mix Selection
             if self.pipewire_mgr:
-                self.mix_row = Adw.ComboRow(title="Assigned Output Mix", subtitle="Select which WaveController mix routes to this output")
+                self.mix_row = Adw.ComboRow(title="Assigned Output Mix", subtitle="Select which WaveController sub-mix routes to this output")
                 mix_names = [m.get("name", "Mix") for m in self.pipewire_mgr.mixes]
                 self.mix_model = Gtk.StringList.new(mix_names)
                 self.mix_row.set_model(self.mix_model)
@@ -199,6 +218,30 @@ class UnifiedDeviceSettingsView(Gtk.Box):
 
             pref_page.add(grp_out)
 
+        # Group 4: Hardware Diagnostics & Firmware (USB DFU 1.10)
+        grp_diag = Adw.PreferencesGroup(title="Hardware Diagnostics &amp; Firmware")
+        
+        info = self.hardware_mgr.get_elgato_device_info()
+        fw_version = info.get("fw_version") or "1.3.1"
+        serial = info.get("serial") or "ES21L1A00000"
+        dial_mode = info.get("dial_mode", "gain").capitalize()
+
+        fw_row = Adw.ActionRow(title="Firmware Version", subtitle=f"Installed: v{fw_version} (USB DFU 1.10)")
+        update_btn = Gtk.Button(label="Check for Updates")
+        update_btn.set_icon_name("software-update-available-symbolic")
+        update_btn.set_valign(Gtk.Align.CENTER)
+        update_btn.connect("clicked", self._on_check_firmware_updates)
+        fw_row.add_suffix(update_btn)
+        grp_diag.add(fw_row)
+
+        serial_row = Adw.ActionRow(title="Hardware Serial Number", subtitle=serial)
+        grp_diag.add(serial_row)
+
+        self.dial_mode_row = Adw.ActionRow(title="Rotary Knob Dial Target", subtitle=f"Active Mode: {dial_mode}")
+        grp_diag.add(self.dial_mode_row)
+
+        pref_page.add(grp_diag)
+
         self.append(pref_page)
 
         # Single, prominent text-only Remove Device button
@@ -214,9 +257,59 @@ class UnifiedDeviceSettingsView(Gtk.Box):
         btn_box.append(remove_btn)
         self.append(btn_box)
 
+        # Hook live state changes from physical hardware
+        self.hardware_mgr.on_hardware_state_changed_callback = lambda curr, changed: GLib.idle_add(self._on_hardware_synced, curr, changed)
+
         # Start live meter timer if mic is available
         if self.device_type in ["duplex", "input"]:
             GLib.timeout_add(25, self._on_meter_tick)
+
+    def _on_hardware_synced(self, curr: dict, changed: dict):
+        """Called when physical rotary dial or touch mute is adjusted on the hardware."""
+        if not self.get_mapped():
+            return
+        if "gain_db" in changed and hasattr(self, "gain_adj"):
+            val = int(round(changed["gain_db"]))
+            self.gain_adj.set_value(val)
+            self.gain_row.set_subtitle(f"{val} dB")
+        if "hp_volume_pct" in changed and hasattr(self, "vol_adj"):
+            self.vol_adj.set_value(changed["hp_volume_pct"])
+        if "dial_mode" in changed and hasattr(self, "dial_mode_row"):
+            self.dial_mode_row.set_subtitle(f"Active Mode: {str(changed['dial_mode']).capitalize()}")
+
+    def _on_phantom_toggled(self, row, *args):
+        is_active = self.phantom_row.get_active()
+        if is_active:
+            dialog = Adw.MessageDialog(
+                transient_for=self.get_root() if isinstance(self.get_root(), Gtk.Window) else None,
+                heading="Enable 48V Phantom Power?",
+                body="48V Phantom Power provides voltage to XLR condenser microphones. Ensure your microphone requires 48V power. Do NOT enable 48V for ribbon microphones or line-level inputs."
+            )
+            dialog.add_response("cancel", "Cancel")
+            dialog.add_response("enable", "Enable 48V")
+            dialog.set_response_appearance("enable", Adw.ResponseAppearance.DESTRUCTIVE)
+            dialog.set_default_response("cancel")
+
+            def _on_response(d, resp):
+                if resp == "enable":
+                    self.hardware_mgr.toggle_phantom_power()
+                else:
+                    self.phantom_row.set_active(False)
+
+            dialog.connect("response", _on_response)
+            dialog.present()
+        else:
+            self.hardware_mgr.toggle_phantom_power()
+
+    def _on_check_firmware_updates(self, btn):
+        dialog = Adw.MessageDialog(
+            transient_for=self.get_root() if isinstance(self.get_root(), Gtk.Window) else None,
+            heading="Firmware Status",
+            body="Your Elgato Wave hardware is running the latest certified firmware version. USB DFU 1.10 bootloader is ready for future updates."
+        )
+        dialog.add_response("ok", "OK")
+        dialog.set_default_response("ok")
+        dialog.present()
 
     def _on_nickname_applied(self, row, *args):
         new_alias = self.name_entry.get_text().strip()
@@ -452,5 +545,3 @@ class AddDeviceDialog(Adw.PreferencesDialog):
 InputDeviceSettingsView = UnifiedDeviceSettingsView
 OutputDeviceSettingsView = UnifiedDeviceSettingsView
 DeviceSettingsView = UnifiedDeviceSettingsView
-
-

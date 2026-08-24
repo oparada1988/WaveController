@@ -8,6 +8,14 @@ echo "Installing WaveController background daemon systemd service..."
 
 mkdir -p "$SYSTEMD_USER_DIR"
 
+# Deploy WirePlumber Studio Audio Profile (anti-suspend, 48kHz clock pinning)
+WIREPLUMBER_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/wireplumber/wireplumber.conf.d"
+mkdir -p "$WIREPLUMBER_DIR"
+if [ -f "$SCRIPT_DIR/data/51-wavecontroller-wave-xlr.conf" ]; then
+    echo "Deploying WaveController WirePlumber configuration..."
+    cp "$SCRIPT_DIR/data/51-wavecontroller-wave-xlr.conf" "$WIREPLUMBER_DIR/51-wavecontroller-wave-xlr.conf"
+fi
+
 cat << EOF_UNIT > "$SYSTEMD_USER_DIR/wavecontroller.service"
 [Unit]
 Description=WaveController Audio Routing Daemon

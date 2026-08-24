@@ -6,16 +6,17 @@ import json
 import re
 
 from .config_manager import config_manager
+from .elgato_wave import elgato_manager, ElgatoWaveDevice
 
 class USBHardwareManager:
     """
     Hardware integration layer managing physical Audio Input, Output, and Duplex devices.
-    Groups composite USB microphones with monitoring headphone outputs (e.g. Fifine, Wave:3).
+    Groups composite USB microphones with monitoring headphone outputs (e.g. Wave XLR, Wave:3, Fifine).
     Provides user-curated device management (Add/Remove devices, persistent nicknames, volume, gain, DSP).
     """
 
     def __init__(self):
-        self.device_name = "fifine Microphone"
+        self.device_name = "Elgato Wave XLR"
         self.device_type = "generic" # 'elgato' or 'generic'
         self.discovered_devices = {} # {device_key: dev_info_dict}
         self.input_devices = [] # Legacy compatibility
@@ -31,26 +32,52 @@ class USBHardwareManager:
         self.hardware_mute = False
         self.headphone_volume = 70
         self.mic_pc_crossfade = 50
+        self.low_impedance_mode = hw_settings.get("low_impedance", False)
         
         self.is_monitoring_mic = False
         self._loopback_proc = None
         self.on_device_renamed_callback = None
         self.on_devices_changed_callback = None
+        self.on_new_device_detected_callback = None
+        self.on_hardware_state_changed_callback = None
+
+        # Hook Elgato hardware dial & capacitive mute sync
+        elgato_manager.on_state_changed = self._on_elgato_hardware_sync
 
         self.detect_connected_hardware()
         self._ensure_default_tracked_devices()
+        self._start_hotplug_monitor()
 
     def _ensure_default_tracked_devices(self):
         """Initializes tracked devices list strictly on first install if config key is None."""
         tracked = config_manager.get("tracked_devices", None)
         if tracked is None:
             new_tracked = []
-            # Only track the primary microphone / duplex device (e.g. Fifine)
+            # Prioritize Elgato Wave XLR or primary input/duplex device
             for k, dev in self.discovered_devices.items():
-                if dev.get("type") in ["duplex", "input"]:
+                if dev.get("is_elgato") or dev.get("type") in ["duplex", "input"]:
                     new_tracked.append(k)
                     break
             config_manager.set("tracked_devices", new_tracked, immediate=True)
+
+    def _on_elgato_hardware_sync(self, curr: dict, changed: dict):
+        """Dispatched when physical dial or capacitive mute sensor changes on Elgato hardware."""
+        if "mute" in changed:
+            self.hardware_mute = changed["mute"]
+            target = self._resolve_source_target()
+            subprocess.run(["wpctl", "set-mute", target, "1" if self.hardware_mute else "0"], stderr=subprocess.DEVNULL)
+
+        if "gain_db" in changed:
+            self.hardware_gain_db = int(round(changed["gain_db"]))
+            hw = dict(config_manager.get("hardware_settings", {}))
+            hw["gain_db"] = self.hardware_gain_db
+            config_manager.set("hardware_settings", hw)
+
+        if "hp_volume_pct" in changed:
+            self.headphone_volume = changed["hp_volume_pct"]
+
+        if self.on_hardware_state_changed_callback:
+            self.on_hardware_state_changed_callback(curr, changed)
 
     def detect_connected_hardware(self):
         """
@@ -137,6 +164,10 @@ class USBHardwareManager:
             d["primary_source_id"] = d["sources"][0]["id"] if d["sources"] else None
             d["primary_sink_id"] = d["sinks"][0]["id"] if d["sinks"] else None
             d["connected"] = True
+            
+            # Check Elgato hardware identity
+            name_low = d["name"].lower()
+            d["is_elgato"] = "wave" in name_low or "0fd9" in str(d["device_key"]).lower() or "elgato" in name_low
             hw_map[d["device_key"]] = d
 
         # Check any orphaned nodes without a parent device
@@ -149,6 +180,8 @@ class USBHardwareManager:
                     name=n["description"] or n["name"],
                     dev_type=dtype
                 )
+                name_low = (n["description"] or n["name"]).lower()
+                is_el = "wave" in name_low or "elgato" in name_low
                 hw_map[key] = {
                     "device_id": n["id"],
                     "device_key": key,
@@ -163,7 +196,8 @@ class USBHardwareManager:
                     "sinks": [n] if dtype == "output" else [],
                     "primary_source_id": n["id"] if dtype == "input" else None,
                     "primary_sink_id": n["id"] if dtype == "output" else None,
-                    "connected": True
+                    "connected": True,
+                    "is_elgato": is_el
                 }
 
         self.discovered_devices = hw_map
@@ -181,12 +215,43 @@ class USBHardwareManager:
         self.output_devices = outputs
         self.connected_audio_devices = list(hw_map.values())
 
-        # Determine primary mic
+        # Determine primary device & try connecting Elgato USB protocol
+        has_elgato = False
         for k, d in hw_map.items():
-            if d.get("type") in ["duplex", "input"]:
+            if d.get("is_elgato"):
                 self.device_name = d["name"]
-                self.device_type = "elgato" if "wave" in d["name"].lower() else "generic"
+                self.device_type = "elgato"
+                has_elgato = True
                 break
+
+        if has_elgato:
+            elgato_manager.get_device()
+        else:
+            self.device_type = "generic"
+
+    def _start_hotplug_monitor(self):
+        """Background worker checking for newly attached hardware devices."""
+        def _monitor_loop():
+            known_keys = set(self.discovered_devices.keys())
+            while True:
+                time.sleep(2.5)
+                try:
+                    self.detect_connected_hardware()
+                    curr_keys = set(self.discovered_devices.keys())
+                    new_keys = curr_keys - known_keys
+                    if new_keys:
+                        tracked = set(config_manager.get("tracked_devices", []))
+                        for nk in new_keys:
+                            dev = self.discovered_devices.get(nk)
+                            if dev and nk not in tracked:
+                                if self.on_new_device_detected_callback:
+                                    self.on_new_device_detected_callback(dev)
+                    known_keys = curr_keys
+                except Exception:
+                    pass
+
+        t = threading.Thread(target=_monitor_loop, daemon=True)
+        t.start()
 
     def _detect_smart_icon(self, name: str, form_factor: str = "", icon_name: str = "", dev_type: str = "duplex") -> str:
         """Smart icon selector matching physical hardware form factors accurately."""
@@ -266,7 +331,8 @@ class USBHardwareManager:
                     "sinks": [],
                     "primary_source_id": None,
                     "primary_sink_id": None,
-                    "connected": False
+                    "connected": False,
+                    "is_elgato": False
                 }
             
             dev["icon"] = self.get_device_icon(key) if dev.get("connected", True) else "network-offline-symbolic"
@@ -277,7 +343,6 @@ class USBHardwareManager:
         return result
 
     def get_tracked_output_devices(self) -> list:
-        """Returns only user-configured/tracked devices that have output capability."""
         tracked = self.get_tracked_devices()
         outputs = []
         for dev in tracked:
@@ -286,7 +351,6 @@ class USBHardwareManager:
         return outputs
 
     def get_tracked_input_devices(self) -> list:
-        """Returns only user-configured/tracked devices that have input capability."""
         tracked = self.get_tracked_devices()
         inputs = []
         for dev in tracked:
@@ -295,7 +359,6 @@ class USBHardwareManager:
         return inputs
 
     def get_available_untracked_devices(self) -> list:
-        """Returns discovered hardware devices that are not currently tracked."""
         self.detect_connected_hardware()
         tracked_keys = set(config_manager.get("tracked_devices", []))
         untracked = []
@@ -307,7 +370,6 @@ class USBHardwareManager:
         return untracked
 
     def add_tracked_device(self, device_key: str):
-        """Adds a device to the user's tracked devices list."""
         tracked = list(config_manager.get("tracked_devices", []))
         if device_key not in tracked:
             tracked.append(device_key)
@@ -316,7 +378,6 @@ class USBHardwareManager:
                 self.on_devices_changed_callback()
 
     def remove_tracked_device(self, device_key: str):
-        """Removes a device from the user's tracked devices list."""
         tracked = list(config_manager.get("tracked_devices", []))
         if device_key in tracked:
             tracked.remove(device_key)
@@ -325,7 +386,6 @@ class USBHardwareManager:
                 self.on_devices_changed_callback()
 
     def get_device_display_name(self, dev_info_or_name_or_key) -> str:
-        """Returns the custom nickname for a device if configured, else the hardware name."""
         aliases = config_manager.get("device_aliases", {})
         if isinstance(dev_info_or_name_or_key, dict):
             key = dev_info_or_name_or_key.get("device_key", "")
@@ -343,13 +403,11 @@ class USBHardwareManager:
         if name and name in aliases and aliases[name]:
             return aliases[name]
 
-        # Lookup in discovered devices
         if key in self.discovered_devices:
             return self.discovered_devices[key]["name"]
         return name
 
     def set_device_custom_name(self, dev_key_or_name: str, custom_name: str):
-        """Sets a persistent custom nickname for an audio device."""
         aliases = dict(config_manager.get("device_aliases", {}))
         custom_name = custom_name.strip()
         if custom_name:
@@ -362,7 +420,6 @@ class USBHardwareManager:
             self.on_device_renamed_callback(dev_key_or_name, custom_name)
 
     def set_device_assigned_mix(self, device_key: str, mix_id: str):
-        """Saves which WaveController sub-mix feeds into this device's output sink."""
         mixes = dict(config_manager.get("device_assigned_mixes", {}))
         mixes[device_key] = mix_id
         config_manager.set("device_assigned_mixes", mixes, immediate=True)
@@ -381,15 +438,21 @@ class USBHardwareManager:
                 return int(round(float(m.group(1)) * 100))
         except Exception:
             pass
-        return 75
+        return self.headphone_volume
 
     def set_output_volume(self, sink_id_or_key: str = None, volume_pct: int = 75):
+        self.headphone_volume = max(0, min(100, volume_pct))
         target = self._resolve_sink_target(sink_id_or_key)
-        vol_frac = max(0.0, min(1.5, volume_pct / 100.0))
+        vol_frac = max(0.0, min(1.5, self.headphone_volume / 100.0))
         try:
             subprocess.run(["wpctl", "set-volume", target, f"{vol_frac:.2f}"], stderr=subprocess.DEVNULL)
         except Exception:
             pass
+
+        # Sync to Elgato hardware if applicable
+        elgato_dev = elgato_manager.get_device()
+        if elgato_dev and self._is_target_elgato(sink_id_or_key):
+            elgato_dev.set_headphone_volume_pct(self.headphone_volume)
 
     def get_output_mute(self, sink_id_or_key: str = None) -> bool:
         target = self._resolve_sink_target(sink_id_or_key)
@@ -431,6 +494,14 @@ class USBHardwareManager:
                 return str(dev["primary_source_id"])
         return "@DEFAULT_AUDIO_SOURCE@"
 
+    def _is_target_elgato(self, key_or_id: str = None) -> bool:
+        if not key_or_id:
+            return self.device_type == "elgato"
+        k = str(key_or_id)
+        if k in self.discovered_devices:
+            return self.discovered_devices[k].get("is_elgato", False)
+        return "wave" in k.lower() or "elgato" in k.lower()
+
     # Input Gain & Hardware DSP Controls
     def set_gain(self, gain_db: int, source_id_or_key: str = None):
         self.hardware_gain_db = max(0, min(75, gain_db))
@@ -438,8 +509,9 @@ class USBHardwareManager:
         hw["gain_db"] = self.hardware_gain_db
         config_manager.set("hardware_settings", hw)
 
-        if self.device_type == "elgato":
-            self._send_elgato_control(cmd=0x01, val=self.hardware_gain_db)
+        elgato_dev = elgato_manager.get_device()
+        if elgato_dev and self._is_target_elgato(source_id_or_key):
+            elgato_dev.set_gain_db(self.hardware_gain_db)
         else:
             vol_pct = self.hardware_gain_db / 75.0
             target = self._resolve_source_target(source_id_or_key)
@@ -449,12 +521,10 @@ class USBHardwareManager:
                 pass
 
     def toggle_phantom_power(self) -> bool:
-        if self.device_type == "elgato":
-            self.phantom_power_48v = not self.phantom_power_48v
-            hw = dict(config_manager.get("hardware_settings", {}))
-            hw["phantom_power"] = self.phantom_power_48v
-            config_manager.set("hardware_settings", hw)
-            self._send_elgato_control(cmd=0x02, val=1 if self.phantom_power_48v else 0)
+        self.phantom_power_48v = not self.phantom_power_48v
+        hw = dict(config_manager.get("hardware_settings", {}))
+        hw["phantom_power"] = self.phantom_power_48v
+        config_manager.set("hardware_settings", hw)
         return self.phantom_power_48v
 
     def set_low_cut(self, mode: str):
@@ -462,18 +532,23 @@ class USBHardwareManager:
         hw = dict(config_manager.get("hardware_settings", {}))
         hw["low_cut"] = mode
         config_manager.set("hardware_settings", hw)
-        if self.device_type == "elgato":
-            val = 0 if mode == "Off" else (1 if mode == "80Hz" else 2)
-            self._send_elgato_control(cmd=0x03, val=val)
 
     def toggle_clipguard(self) -> bool:
         self.clipguard_enabled = not self.clipguard_enabled
         hw = dict(config_manager.get("hardware_settings", {}))
         hw["clipguard"] = self.clipguard_enabled
         config_manager.set("hardware_settings", hw)
-        if self.device_type == "elgato":
-            self._send_elgato_control(cmd=0x04, val=1 if self.clipguard_enabled else 0)
         return self.clipguard_enabled
+
+    def toggle_low_impedance(self) -> bool:
+        self.low_impedance_mode = not self.low_impedance_mode
+        hw = dict(config_manager.get("hardware_settings", {}))
+        hw["low_impedance"] = self.low_impedance_mode
+        config_manager.set("hardware_settings", hw)
+        elgato_dev = elgato_manager.get_device()
+        if elgato_dev:
+            elgato_dev.set_low_impedance(self.low_impedance_mode)
+        return self.low_impedance_mode
 
     def toggle_mute(self, source_id_or_key: str = None) -> bool:
         self.hardware_mute = not self.hardware_mute
@@ -482,7 +557,17 @@ class USBHardwareManager:
             subprocess.run(["wpctl", "set-mute", target, "1" if self.hardware_mute else "0"], stderr=subprocess.DEVNULL)
         except Exception:
             pass
+        
+        elgato_dev = elgato_manager.get_device()
+        if elgato_dev and self._is_target_elgato(source_id_or_key):
+            elgato_dev.set_mute(self.hardware_mute)
         return self.hardware_mute
+
+    def get_elgato_device_info(self) -> dict:
+        elgato_dev = elgato_manager.get_device()
+        if elgato_dev:
+            return elgato_dev.get_all_state()
+        return {}
 
     def toggle_mic_monitoring(self) -> bool:
         """Toggles live microphone loopback to headphones for instant testing."""
@@ -528,7 +613,6 @@ class USBHardwareManager:
 
         target_dev = self._resolve_sink_target(sink_id_or_key)
 
-        # 1. Direct pw-play targeting the specific sink node
         if target_dev and target_dev.isdigit():
             try:
                 res = subprocess.run(["pw-play", f"--target={target_dev}", target_sound], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -537,7 +621,6 @@ class USBHardwareManager:
             except Exception:
                 pass
 
-        # 2. paplay with device parameter
         try:
             cmd = ["paplay"]
             if target_dev and target_dev != "@DEFAULT_AUDIO_SINK@":
@@ -549,24 +632,7 @@ class USBHardwareManager:
         except Exception:
             pass
 
-        # 3. Fallback to default pw-play
         try:
             subprocess.run(["pw-play", target_sound], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         except Exception:
             pass
-
-    # Legacy method compatibility
-    def set_active_input_device(self, device_id: str):
-        try:
-            subprocess.run(["wpctl", "set-default", str(device_id)], stderr=subprocess.DEVNULL)
-        except Exception:
-            pass
-
-    def set_active_output_device(self, device_id: str):
-        try:
-            subprocess.run(["wpctl", "set-default", str(device_id)], stderr=subprocess.DEVNULL)
-        except Exception:
-            pass
-
-    def _send_elgato_control(self, cmd: int, val: int):
-        pass
