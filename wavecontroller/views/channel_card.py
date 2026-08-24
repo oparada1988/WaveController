@@ -202,7 +202,9 @@ class ChannelCard(Gtk.Box):
             return
         is_active = self.hardware_mgr.phantom_power_48v
         if not is_active:
-            root_win = self.get_root() if isinstance(self.get_root(), Gtk.Window) else None
+            root_win = self.get_root()
+            if not isinstance(root_win, Gtk.Window):
+                root_win = self.get_native() if isinstance(self.get_native(), Gtk.Window) else None
             dialog = Adw.MessageDialog(
                 transient_for=root_win,
                 heading="Enable 48V Phantom Power?",
@@ -226,11 +228,12 @@ class ChannelCard(Gtk.Box):
 
     def _on_hardware_state_sync(self, curr: dict, changed: dict):
         if self.is_wave_channel:
+            dial_mode = curr.get("dial_mode", "gain")
             if "phantom_power" in changed:
                 self.update_phantom_state(bool(changed["phantom_power"]))
             if "mute" in changed:
                 self.set_muted(bool(changed["mute"]))
-            if "gain_db" in changed:
+            if "gain_db" in changed and dial_mode == "gain":
                 vol_pct = max(0, min(100, int(round((float(changed["gain_db"]) / 75.0) * 100))))
                 self.set_master_volume(vol_pct, self.pipewire_mgr.get_channel_master_mute(self.channel_info["id"]))
 

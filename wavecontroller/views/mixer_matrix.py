@@ -719,9 +719,14 @@ class MixerMatrixView(Gtk.Box):
         if "mute" in changed:
             is_muted = bool(changed["mute"])
             for ch_id, card in list(self.channel_cards.items()):
-                if getattr(card, "is_wave_channel", False):
+                if getattr(card, "is_wave_channel", False) or ch_id in ("mic", "elgato_wave_xlr"):
                     self.pipewire_mgr.set_channel_master_mute(ch_id, is_muted)
                     card.set_muted(is_muted)
+                    if self.pipewire_mgr.is_channel_linked(ch_id):
+                        for mx in self.pipewire_mgr.mixes:
+                            cell = self.matrix_cells.get((ch_id, mx["id"]))
+                            if cell and hasattr(cell, "update_ui_state"):
+                                cell.update_ui_state()
 
         # 3. Update Preamp Gain ONLY when knob is in Gain Mode (Mode 1 / 1st LED on Wave hardware)
         if "gain_db" in changed and dial_mode == "gain":
@@ -731,6 +736,11 @@ class MixerMatrixView(Gtk.Box):
                 if getattr(card, "is_wave_channel", False) or ch_id in ("mic", "elgato_wave_xlr"):
                     self.pipewire_mgr.set_channel_master_volume(ch_id, vol_pct)
                     card.set_master_volume(vol_pct, self.pipewire_mgr.get_channel_master_mute(ch_id))
+                    if self.pipewire_mgr.is_channel_linked(ch_id):
+                        for mx in self.pipewire_mgr.mixes:
+                            cell = self.matrix_cells.get((ch_id, mx["id"]))
+                            if cell and hasattr(cell, "update_ui_state"):
+                                cell.update_ui_state()
 
         # 4. Update Headphone Monitor Mix Header ONLY when knob is in Output / HP Mode (Mode 2 / 2nd LED on Wave hardware)
         if "hp_volume_pct" in changed and dial_mode == "hp":

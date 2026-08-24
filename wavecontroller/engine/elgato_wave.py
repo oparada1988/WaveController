@@ -12,11 +12,11 @@ import ctypes
 import ctypes.util
 import struct
 import threading
-import logging
 from dataclasses import dataclass
 from typing import Optional, Dict, Any, Tuple
+from wavecontroller.utils.logger import get_logger
 
-log = logging.getLogger("wavecontroller.elgato")
+log = get_logger("ElgatoWave")
 
 # USB Protocol Constants
 BREQUEST_READ = 0x85
@@ -117,7 +117,7 @@ PROFILE_WAVE_XLR = ElgatoProfile(
     gain_max_db=75.0,
     gain_raw_max=0x5000,
     off_mute=4,
-    off_phantom=5,
+    off_phantom=6,
     off_clipguard=7,
     off_low_cut=8,
     off_hp_vol=9,
@@ -500,9 +500,9 @@ class ElgatoManager:
 
     def _poll_loop(self):
         import time
-        last_state = {}
+        self.last_state = {}
         while not self._stop_poll:
-            time.sleep(0.08) # ~12.5 Hz polling for rapid dial and 48V sync
+            time.sleep(0.025) # 40 Hz polling for real-time, zero-latency dial and 48V sync
             dev = self.active_device
             if not dev or not dev.is_connected():
                 time.sleep(1.0)
@@ -511,18 +511,20 @@ class ElgatoManager:
                 curr = dev.get_all_state()
                 if not curr.get("connected"):
                     continue
-                if not last_state:
+                if not self.last_state:
                     # Broadcast initial full state snapshot immediately on connection
+                    self.last_state = dict(curr)
                     if self.on_state_changed:
                         self.on_state_changed(curr, dict(curr))
                 else:
                     changed = {}
                     for k, v in curr.items():
-                        if k in last_state and last_state[k] != v:
+                        if k in self.last_state and self.last_state[k] != v:
                             changed[k] = v
-                    if changed and self.on_state_changed:
-                        self.on_state_changed(curr, changed)
-                last_state = curr
+                    if changed:
+                        self.last_state.update(changed)
+                        if self.on_state_changed:
+                            self.on_state_changed(curr, changed)
             except Exception:
                 pass
 

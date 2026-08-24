@@ -126,7 +126,7 @@ class UnifiedDeviceSettingsView(Gtk.Box):
             self.gain_slider = Gtk.Scale(orientation=Gtk.Orientation.HORIZONTAL, adjustment=self.gain_adj)
             self.gain_slider.set_size_request(180, -1)
             self.gain_slider.set_valign(Gtk.Align.CENTER)
-            self.gain_slider.connect("value-changed", self._on_gain_changed)
+            self._gain_handler_id = self.gain_slider.connect("value-changed", self._on_gain_changed)
             self.gain_row.add_suffix(self.gain_slider)
             grp_mic.add(self.gain_row)
 
@@ -135,7 +135,7 @@ class UnifiedDeviceSettingsView(Gtk.Box):
             if is_wave_xlr:
                 self.phantom_row = Adw.SwitchRow(title="48V Phantom Power", subtitle="Provides 48V DC power to XLR condenser microphones")
                 self.phantom_row.set_active(self.hardware_mgr.phantom_power_48v)
-                self.phantom_row.connect("notify::active", self._on_phantom_toggled)
+                self._phantom_handler_id = self.phantom_row.connect("notify::active", self._on_phantom_toggled)
                 grp_mic.add(self.phantom_row)
 
             # Mic Test Direct Loopback
@@ -150,14 +150,14 @@ class UnifiedDeviceSettingsView(Gtk.Box):
             # Hardware DSP & Filters
             self.clipguard_row = Adw.SwitchRow(title="Clipguard Protection", subtitle="Dual-stage analog limiter prevents vocal clipping")
             self.clipguard_row.set_active(self.hardware_mgr.clipguard_enabled)
-            self.clipguard_row.connect("notify::active", lambda r, *a: self.hardware_mgr.toggle_clipguard())
+            self._clipguard_handler_id = self.clipguard_row.connect("notify::active", lambda r, *a: self.hardware_mgr.toggle_clipguard())
             grp_mic.add(self.clipguard_row)
 
             self.low_cut_row = Adw.ComboRow(title="Enhanced Low-Cut Filter", subtitle="Hardware DSP high-pass filter removing desk rumble")
             self.low_cut_model = Gtk.StringList.new(["Off", "80 Hz", "120 Hz"])
             self.low_cut_row.set_model(self.low_cut_model)
             self.low_cut_row.set_selected(1 if self.hardware_mgr.low_cut_filter == "80Hz" else (2 if self.hardware_mgr.low_cut_filter == "120Hz" else 0))
-            self.low_cut_row.connect("notify::selected", self._on_low_cut_changed)
+            self._low_cut_handler_id = self.low_cut_row.connect("notify::selected", self._on_low_cut_changed)
             grp_mic.add(self.low_cut_row)
 
             pref_page.add(grp_mic)
@@ -173,14 +173,14 @@ class UnifiedDeviceSettingsView(Gtk.Box):
             self.vol_slider = Gtk.Scale(orientation=Gtk.Orientation.HORIZONTAL, adjustment=self.vol_adj)
             self.vol_slider.set_size_request(180, -1)
             self.vol_slider.set_valign(Gtk.Align.CENTER)
-            self.vol_slider.connect("value-changed", self._on_output_volume_changed)
+            self._vol_handler_id = self.vol_slider.connect("value-changed", self._on_output_volume_changed)
             vol_row.add_suffix(self.vol_slider)
             grp_out.add(vol_row)
 
             # Low-Impedance Mode Switch
             self.low_z_row = Adw.SwitchRow(title="Low-Impedance Headphone Mode", subtitle="Optimized for sensitive In-Ear Monitors (IEMs)")
             self.low_z_row.set_active(self.hardware_mgr.low_impedance_mode)
-            self.low_z_row.connect("notify::active", lambda r, *a: self.hardware_mgr.toggle_low_impedance())
+            self._low_z_handler_id = self.low_z_row.connect("notify::active", lambda r, *a: self.hardware_mgr.toggle_low_impedance())
             grp_out.add(self.low_z_row)
 
             # Output Mute
@@ -271,35 +271,90 @@ class UnifiedDeviceSettingsView(Gtk.Box):
         """Called when physical rotary dial, 48V, or touch mute is adjusted on the hardware."""
         if not self.get_mapped():
             return
-        if "gain_db" in changed and hasattr(self, "gain_adj"):
+        if "gain_db" in changed and hasattr(self, "gain_adj") and hasattr(self, "gain_slider"):
             val = int(round(changed["gain_db"]))
-            self.gain_adj.set_value(val)
+            if hasattr(self, "_gain_handler_id") and self._gain_handler_id:
+                self.gain_slider.handler_block(self._gain_handler_id)
+                try:
+                    self.gain_adj.set_value(val)
+                finally:
+                    self.gain_slider.handler_unblock(self._gain_handler_id)
+            else:
+                self.gain_adj.set_value(val)
             self.gain_row.set_subtitle(f"{val} dB")
-        if "hp_volume_pct" in changed and hasattr(self, "vol_adj"):
-            self.vol_adj.set_value(changed["hp_volume_pct"])
+
+        if "hp_volume_pct" in changed and hasattr(self, "vol_adj") and hasattr(self, "vol_slider"):
+            val = int(round(changed["hp_volume_pct"]))
+            if hasattr(self, "_vol_handler_id") and self._vol_handler_id:
+                self.vol_slider.handler_block(self._vol_handler_id)
+                try:
+                    self.vol_adj.set_value(val)
+                finally:
+                    self.vol_slider.handler_unblock(self._vol_handler_id)
+            else:
+                self.vol_adj.set_value(val)
+
         if "dial_mode" in changed and hasattr(self, "dial_mode_row"):
             self.dial_mode_row.set_subtitle(f"Active Mode: {str(changed['dial_mode']).capitalize()}")
+
         if "phantom_power" in changed and hasattr(self, "phantom_row"):
-            if self.phantom_row.get_active() != bool(changed["phantom_power"]):
-                self.phantom_row.set_active(bool(changed["phantom_power"]))
+            val = bool(changed["phantom_power"])
+            if self.phantom_row.get_active() != val:
+                if hasattr(self, "_phantom_handler_id") and self._phantom_handler_id:
+                    self.phantom_row.handler_block(self._phantom_handler_id)
+                    try:
+                        self.phantom_row.set_active(val)
+                    finally:
+                        self.phantom_row.handler_unblock(self._phantom_handler_id)
+                else:
+                    self.phantom_row.set_active(val)
+
         if "clipguard" in changed and hasattr(self, "clipguard_row"):
-            if self.clipguard_row.get_active() != bool(changed["clipguard"]):
-                self.clipguard_row.set_active(bool(changed["clipguard"]))
+            val = bool(changed["clipguard"])
+            if self.clipguard_row.get_active() != val:
+                if hasattr(self, "_clipguard_handler_id") and self._clipguard_handler_id:
+                    self.clipguard_row.handler_block(self._clipguard_handler_id)
+                    try:
+                        self.clipguard_row.set_active(val)
+                    finally:
+                        self.clipguard_row.handler_unblock(self._clipguard_handler_id)
+                else:
+                    self.clipguard_row.set_active(val)
+
         if "low_cut" in changed and hasattr(self, "low_cut_row"):
             mode = str(changed["low_cut"])
             sel = 1 if mode == "80Hz" else (2 if mode == "120Hz" else 0)
             if self.low_cut_row.get_selected() != sel:
-                self.low_cut_row.set_selected(sel)
+                if hasattr(self, "_low_cut_handler_id") and self._low_cut_handler_id:
+                    self.low_cut_row.handler_block(self._low_cut_handler_id)
+                    try:
+                        self.low_cut_row.set_selected(sel)
+                    finally:
+                        self.low_cut_row.handler_unblock(self._low_cut_handler_id)
+                else:
+                    self.low_cut_row.set_selected(sel)
+
         if "low_impedance" in changed and hasattr(self, "low_z_row"):
-            if self.low_z_row.get_active() != bool(changed["low_impedance"]):
-                self.low_z_row.set_active(bool(changed["low_impedance"]))
+            val = bool(changed["low_impedance"])
+            if self.low_z_row.get_active() != val:
+                if hasattr(self, "_low_z_handler_id") and self._low_z_handler_id:
+                    self.low_z_row.handler_block(self._low_z_handler_id)
+                    try:
+                        self.low_z_row.set_active(val)
+                    finally:
+                        self.low_z_row.handler_unblock(self._low_z_handler_id)
+                else:
+                    self.low_z_row.set_active(val)
 
     def _on_phantom_toggled(self, row, *args):
         is_active = self.phantom_row.get_active()
         if is_active != self.hardware_mgr.phantom_power_48v:
             if is_active:
+                root_win = self.get_root()
+                if not isinstance(root_win, Gtk.Window):
+                    root_win = self.get_native() if isinstance(self.get_native(), Gtk.Window) else None
                 dialog = Adw.MessageDialog(
-                    transient_for=self.get_root() if isinstance(self.get_root(), Gtk.Window) else None,
+                    transient_for=root_win,
                     heading="Enable 48V Phantom Power?",
                     body="48V Phantom Power provides voltage to XLR condenser microphones. Ensure your microphone requires 48V power. Do NOT enable 48V for ribbon microphones or line-level inputs."
                 )
@@ -312,7 +367,14 @@ class UnifiedDeviceSettingsView(Gtk.Box):
                     if resp == "enable":
                         self.hardware_mgr.set_phantom_power(True)
                     else:
-                        self.phantom_row.set_active(False)
+                        if hasattr(self, "_phantom_handler_id") and self._phantom_handler_id:
+                            self.phantom_row.handler_block(self._phantom_handler_id)
+                            try:
+                                self.phantom_row.set_active(False)
+                            finally:
+                                self.phantom_row.handler_unblock(self._phantom_handler_id)
+                        else:
+                            self.phantom_row.set_active(False)
 
                 dialog.connect("response", _on_response)
                 dialog.present()

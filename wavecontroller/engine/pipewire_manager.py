@@ -896,11 +896,14 @@ class PipeWireManager:
                 vol_frac = max(0.0, min(1.5, volume_pct / 100.0))
 
                 if channel_id == "mic":
-                    try:
-                        subprocess.run(["wpctl", "set-volume", "@DEFAULT_AUDIO_SOURCE@", f"{vol_frac:.2f}"], stderr=subprocess.DEVNULL)
-                        subprocess.run(["wpctl", "set-mute", "@DEFAULT_AUDIO_SOURCE@", "1" if is_muted else "0"], stderr=subprocess.DEVNULL)
-                    except Exception:
-                        pass
+                    last_v, last_m = getattr(self, "_last_mic_dispatch", (-1.0, None))
+                    if abs(last_v - vol_frac) > 0.005 or last_m != is_muted:
+                        self._last_mic_dispatch = (vol_frac, is_muted)
+                        try:
+                            subprocess.Popen(["wpctl", "set-volume", "@DEFAULT_AUDIO_SOURCE@", f"{vol_frac:.2f}"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                            subprocess.Popen(["wpctl", "set-mute", "@DEFAULT_AUDIO_SOURCE@", "1" if is_muted else "0"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                        except Exception:
+                            pass
                     continue
 
                 assigned_app_names = self.get_assigned_apps(channel_id)
