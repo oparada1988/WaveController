@@ -22,6 +22,22 @@ class WaveControllerApp(Adw.Application):
         )
         self.is_daemon = is_daemon
         self._daemon_started = False
+        self.hardware_mgr = None
+        self.pipewire_mgr = None
+        self.peak_monitor = None
+        self.ipc_server = None
+        self.tray_mgr = None
+
+    def do_startup(self):
+        Adw.Application.do_startup(self)
+        self.hold() # Keep application process & PipeWire routing alive in background
+        display = Gdk.Display.get_default()
+        if display:
+            theme = Gtk.IconTheme.get_for_display(display)
+            icons_dir = os.path.join(os.path.dirname(__file__), "..", "assets", "icons")
+            if os.path.exists(icons_dir):
+                theme.add_search_path(icons_dir)
+
         self.hardware_mgr = USBHardwareManager()
         self.pipewire_mgr = PipeWireManager(hardware_mgr=self.hardware_mgr)
         self.hardware_mgr.set_pipewire_manager(self.pipewire_mgr)
@@ -37,15 +53,6 @@ class WaveControllerApp(Adw.Application):
             on_quit=self._on_tray_quit
         )
 
-    def do_startup(self):
-        Adw.Application.do_startup(self)
-        self.hold() # Keep application process & PipeWire routing alive in background
-        display = Gdk.Display.get_default()
-        if display:
-            theme = Gtk.IconTheme.get_for_display(display)
-            icons_dir = os.path.join(os.path.dirname(__file__), "..", "assets", "icons")
-            if os.path.exists(icons_dir):
-                theme.add_search_path(icons_dir)
         self.pipewire_mgr.start()
         self.peak_monitor.start()
         self.ipc_server.start()

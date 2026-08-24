@@ -340,10 +340,9 @@ class ElgatoWaveDevice:
         curr_mode = self.get_dial_mode()
         try:
             cfg = self.read_config()
-            is_mic_muted = self._mode_mutes.get("gain", False)
             curr_mode_muted = self._mode_mutes.get(curr_mode, False)
-            # Physical mic preamp is hardware-muted if mic is muted OR current mode is muted
-            cfg[self.profile.off_mute] = 0x01 if (is_mic_muted or curr_mode_muted) else 0x00
+            # Physical hardware mute register controls both LED ring state and mode mute
+            cfg[self.profile.off_mute] = 0x01 if curr_mode_muted else 0x00
             self._apply_led_colors_to_config(cfg, active_mode=curr_mode)
             self.write_config(cfg)
             self._last_raw_hw_mute = bool(cfg[self.profile.off_mute])
@@ -445,9 +444,8 @@ class ElgatoWaveDevice:
             if transient:
                 self._trigger_transient_peek("hp", cfg)
             else:
-                is_mic_muted = self.get_mode_mute("gain")
                 is_hp_muted = self.get_mode_mute("hp")
-                cfg[self.profile.off_mute] = 0x01 if (is_mic_muted or is_hp_muted) else 0x00
+                cfg[self.profile.off_mute] = 0x01 if is_hp_muted else 0x00
                 self._apply_led_colors_to_config(cfg, active_mode="hp")
                 self.write_config(cfg)
                 self._last_raw_hw_mute = bool(cfg[self.profile.off_mute])
@@ -483,9 +481,8 @@ class ElgatoWaveDevice:
             if transient:
                 self._trigger_transient_peek("mix", cfg)
             else:
-                is_mic_muted = self.get_mode_mute("gain")
                 is_mix_muted = self.get_mode_mute("mix")
-                cfg[self.profile.off_mute] = 0x01 if (is_mic_muted or is_mix_muted) else 0x00
+                cfg[self.profile.off_mute] = 0x01 if is_mix_muted else 0x00
                 self._apply_led_colors_to_config(cfg, active_mode="mix")
                 self.write_config(cfg)
                 self._last_raw_hw_mute = bool(cfg[self.profile.off_mute])
@@ -535,12 +532,16 @@ class ElgatoWaveDevice:
         try:
             cfg = self.read_config()
             cfg[self.profile.off_vol_select] = val
+            is_mode_muted = self.get_mode_mute(mode)
+            cfg[self.profile.off_mute] = 0x01 if is_mode_muted else 0x00
             if permanent:
                 self._steady_dial_mode = mode
                 self._cancel_revert_timer()
             self._apply_led_colors_to_config(cfg, active_mode=mode)
             self.write_config(cfg)
+            self._last_raw_hw_mute = bool(cfg[self.profile.off_mute])
             self._last_state["dial_mode"] = mode
+            self._last_state["mute"] = is_mode_muted
         except Exception as e:
             log.warning(f"Failed to set dial mode: {e}")
 
@@ -556,9 +557,8 @@ class ElgatoWaveDevice:
 
         if target_val is not None:
             cfg[self.profile.off_vol_select] = target_val
-            is_mic_muted = self.get_mode_mute("gain")
             is_target_muted = self.get_mode_mute(target_mode)
-            cfg[self.profile.off_mute] = 0x01 if (is_mic_muted or is_target_muted) else 0x00
+            cfg[self.profile.off_mute] = 0x01 if is_target_muted else 0x00
             self._apply_led_colors_to_config(cfg, active_mode=target_mode)
 
         self.write_config(cfg)
@@ -577,11 +577,11 @@ class ElgatoWaveDevice:
             if val is not None and self.profile.off_vol_select is not None:
                 cfg = self.read_config()
                 cfg[self.profile.off_vol_select] = val
-                is_mic_muted = self.get_mode_mute("gain")
                 is_steady_muted = self.get_mode_mute(steady)
-                cfg[self.profile.off_mute] = 0x01 if (is_mic_muted or is_steady_muted) else 0x00
+                cfg[self.profile.off_mute] = 0x01 if is_steady_muted else 0x00
                 self._apply_led_colors_to_config(cfg, active_mode=steady)
                 self.write_config(cfg)
+                self._last_raw_hw_mute = bool(cfg[self.profile.off_mute])
                 self._last_state["dial_mode"] = steady
                 self._last_state["mute"] = is_steady_muted
         except Exception as e:
@@ -693,10 +693,9 @@ class ElgatoWaveDevice:
                     self._mode_mutes["gain"] = toggled_mute
                     self._mode_mutes["hp"] = toggled_mute
 
-                is_mic_muted = self._mode_mutes.get("gain", False)
                 is_curr_muted = self._mode_mutes.get(active_mode, False)
 
-                cfg[self.profile.off_mute] = 0x01 if (is_mic_muted or is_curr_muted) else 0x00
+                cfg[self.profile.off_mute] = 0x01 if is_curr_muted else 0x00
                 self._apply_led_colors_to_config(cfg, active_mode=active_mode)
                 try:
                     self.write_config(cfg)
@@ -817,11 +816,10 @@ class ElgatoManager:
                             if not timer or not timer.is_alive():
                                 new_mode = curr["dial_mode"]
                                 dev._steady_dial_mode = new_mode
-                                is_mic_muted = dev.get_mode_mute("gain")
                                 is_mode_muted = dev.get_mode_mute(new_mode)
                                 try:
                                     c = dev.read_config()
-                                    c[dev.profile.off_mute] = 0x01 if (is_mic_muted or is_mode_muted) else 0x00
+                                    c[dev.profile.off_mute] = 0x01 if is_mode_muted else 0x00
                                     dev._apply_led_colors_to_config(c, active_mode=new_mode)
                                     dev.write_config(c)
                                     dev._last_raw_hw_mute = bool(c[dev.profile.off_mute])
