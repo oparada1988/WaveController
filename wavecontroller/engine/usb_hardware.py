@@ -116,6 +116,7 @@ class USBHardwareManager:
             self.hardware_mute = bool(changed["mute"])
             dial_mode = curr.get("dial_mode", "gain")
             if dial_mode == "gain":
+                # Setting 1 (LED 1): Mute Microphone ONLY
                 target = self._resolve_source_target()
                 try:
                     subprocess.Popen(["wpctl", "set-mute", target, "1" if self.hardware_mute else "0"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -124,29 +125,33 @@ class USBHardwareManager:
                 if getattr(self, "pipewire_mgr", None):
                     for ch_key in ("elgato_wave_xlr", "mic", "microphone"):
                         self.pipewire_mgr.set_channel_master_mute(ch_key, self.hardware_mute)
-            elif dial_mode in ("hp", "mix"):
+
+            elif dial_mode == "hp":
+                # Setting 2 (LED 2): Mute Headphone Output Mix ONLY
                 target = self._resolve_sink_target()
                 try:
                     subprocess.Popen(["wpctl", "set-mute", target, "1" if self.hardware_mute else "0"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 except Exception:
                     pass
                 if getattr(self, "pipewire_mgr", None):
-                    # Dynamically find the mix assigned to Elgato Wave output or personal_mix
-                    target_mix_id = None
-                    for m in self.pipewire_mgr.mixes:
-                        t_dev = m.get("target_device", "")
-                        if "elgato" in t_dev.lower() or "wave" in t_dev.lower():
-                            target_mix_id = m["id"]
-                            break
-                    if not target_mix_id:
-                        for m in self.pipewire_mgr.mixes:
-                            if m.get("type") == "sink" or m["id"] in ("personal_mix", "personal", "beta"):
-                                target_mix_id = m["id"]
-                                break
-                    if not target_mix_id:
-                        target_mix_id = "personal_mix"
-
+                    target_mix_id = self._get_elgato_output_mix_id()
                     self.pipewire_mgr.set_mix_master_mute(target_mix_id, self.hardware_mute)
+
+            elif dial_mode == "mix":
+                # Setting 3 (LED 3): Mute BOTH Microphone AND Headphone Output
+                src_target = self._resolve_source_target()
+                sink_target = self._resolve_sink_target()
+                try:
+                    subprocess.Popen(["wpctl", "set-mute", src_target, "1" if self.hardware_mute else "0"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    subprocess.Popen(["wpctl", "set-mute", sink_target, "1" if self.hardware_mute else "0"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                except Exception:
+                    pass
+                if getattr(self, "pipewire_mgr", None):
+                    for ch_key in ("elgato_wave_xlr", "mic", "microphone"):
+                        self.pipewire_mgr.set_channel_master_mute(ch_key, self.hardware_mute)
+                    target_mix_id = self._get_elgato_output_mix_id()
+                    self.pipewire_mgr.set_mix_master_mute(target_mix_id, self.hardware_mute)
+
             self.notify_hardware_listeners({"mute": self.hardware_mute}, {"mute": self.hardware_mute})
 
         if "gain_db" in changed:
@@ -693,6 +698,18 @@ class USBHardwareManager:
             return is_muted
         except Exception:
             return False
+
+    def _get_elgato_output_mix_id(self) -> str:
+        """Finds the mix bus mapped to the physical Elgato headphone DAC, or defaults to personal_mix."""
+        if getattr(self, "pipewire_mgr", None):
+            for m in self.pipewire_mgr.mixes:
+                t_dev = m.get("target_device", "")
+                if "elgato" in t_dev.lower() or "wave" in t_dev.lower():
+                    return m["id"]
+            for m in self.pipewire_mgr.mixes:
+                if m.get("type") == "sink" or m["id"] in ("personal_mix", "personal", "beta"):
+                    return m["id"]
+        return "personal_mix"
 
     def _resolve_sink_target(self, sink_id_or_key: str = None) -> str:
         if not sink_id_or_key:
