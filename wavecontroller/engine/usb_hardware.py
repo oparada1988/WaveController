@@ -446,6 +446,22 @@ class USBHardwareManager:
         mixes = config_manager.get("device_assigned_mixes", {})
         return mixes.get(device_key, "personal_mix")
 
+    def set_active_output_device(self, sink_id_or_key: str):
+        """Sets the selected primary hardware output device in configuration."""
+        if not sink_id_or_key:
+            return
+        hw = dict(config_manager.get("hardware_settings", {}))
+        hw["selected_output_id"] = str(sink_id_or_key)
+        config_manager.set("hardware_settings", hw, immediate=True)
+
+    def set_active_input_device(self, source_id_or_key: str):
+        """Sets the selected primary hardware input device in configuration."""
+        if not source_id_or_key:
+            return
+        hw = dict(config_manager.get("hardware_settings", {}))
+        hw["selected_input_id"] = str(source_id_or_key)
+        config_manager.set("hardware_settings", hw, immediate=True)
+
     # Volume & Mute Controls
     def get_output_volume(self, sink_id_or_key: str = None) -> int:
         target = self._resolve_sink_target(sink_id_or_key)
