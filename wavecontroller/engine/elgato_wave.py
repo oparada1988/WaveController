@@ -313,6 +313,9 @@ class ElgatoWaveDevice:
             if transient:
                 self._trigger_transient_peek("gain", cfg)
             else:
+                is_muted = self.get_mode_mute("gain")
+                cfg[self.profile.off_mute] = 0x01 if is_muted else 0x00
+                self._apply_led_colors_to_config(cfg, active_mode="gain")
                 self.write_config(cfg)
             self._last_state["gain_db"] = gain_db
         except Exception as e:
@@ -437,6 +440,9 @@ class ElgatoWaveDevice:
             if transient:
                 self._trigger_transient_peek("hp", cfg)
             else:
+                is_muted = self.get_mode_mute("hp")
+                cfg[self.profile.off_mute] = 0x01 if is_muted else 0x00
+                self._apply_led_colors_to_config(cfg, active_mode="hp")
                 self.write_config(cfg)
             self._last_state["hp_pct"] = pct
         except Exception as e:
@@ -470,6 +476,9 @@ class ElgatoWaveDevice:
             if transient:
                 self._trigger_transient_peek("mix", cfg)
             else:
+                is_muted = self.get_mode_mute("mix")
+                cfg[self.profile.off_mute] = 0x01 if is_muted else 0x00
+                self._apply_led_colors_to_config(cfg, active_mode="mix")
                 self.write_config(cfg)
             self._last_state["monitor_mix"] = pct
         except Exception as e:
@@ -655,15 +664,24 @@ class ElgatoWaveDevice:
             cfg = self.read_config()
             raw_gain = struct.unpack_from("<H", cfg, self.profile.off_gain)[0]
             read_gain_db = round((raw_gain / float(self.profile.gain_raw_max)) * self.profile.gain_max_db, 1)
-            mute = bool(cfg[self.profile.off_mute])
-            
-            raw_hp = struct.unpack_from(self.profile.hp_fmt, cfg, self.profile.off_hp_vol)[0]
-            hp_db = raw_hp / self.profile.hp_scale
-            read_hp_pct = max(0, min(100, int(round((hp_db + 60.0) / 60.0 * 100.0))))
 
             dial_mode = "gain"
             if self.profile.off_vol_select is not None:
                 dial_mode = self.profile.vol_select_map.get(cfg[self.profile.off_vol_select], "gain")
+
+            raw_hw_mute = bool(cfg[self.profile.off_mute])
+            # If physical touch mute toggled on hardware in current active mode
+            if raw_hw_mute != self._mode_mutes.get(dial_mode, False):
+                self._mode_mutes[dial_mode] = raw_hw_mute
+                if dial_mode == "mix":
+                    self._mode_mutes["gain"] = raw_hw_mute
+                    self._mode_mutes["hp"] = raw_hw_mute
+
+            mute = self._mode_mutes.get(dial_mode, False)
+            
+            raw_hp = struct.unpack_from(self.profile.hp_fmt, cfg, self.profile.off_hp_vol)[0]
+            hp_db = raw_hp / self.profile.hp_scale
+            read_hp_pct = max(0, min(100, int(round((hp_db + 60.0) / 60.0 * 100.0))))
 
             monitor_mix = 50
             if self.profile.off_monitor_mix is not None:
