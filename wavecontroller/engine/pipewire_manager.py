@@ -214,7 +214,7 @@ class PipeWireManager:
 
             if default_phys_in:
                 for ch in self.channels:
-                    if ch["id"] != "mic":
+                    if ch.get("type") != "source" and not any(k in ch["id"].lower() for k in ("mic", "fefine", "microphone", "wave", "elgato", "input", "capture")):
                         ch_out = []
                         assigned = self.get_assigned_apps(ch["id"])
                         for app in assigned:
@@ -297,7 +297,7 @@ class PipeWireManager:
                 channels_to_check = []
                 with self._lock:
                     for ch in self.channels:
-                        if ch["id"] != "mic":
+                        if ch.get("type") != "source" and not any(k in ch["id"].lower() for k in ("mic", "fefine", "microphone", "wave", "elgato", "input", "capture")):
                             assigned = self.assigned_apps.get(ch["id"], [ch["name"]])
                             channels_to_check.append((ch["id"], assigned))
 
@@ -1079,7 +1079,7 @@ class PipeWireManager:
         for ch in channels_to_sync:
             ch_id = ch["id"]
             is_linked = self.is_channel_linked(ch_id)
-            is_source_channel = (ch.get("type") == "source") or ch_id in ("mic", "fefine", "microphone")
+            is_source_channel = (ch.get("type") == "source") or any(k in ch_id.lower() for k in ("mic", "fefine", "microphone", "wave", "elgato", "input", "capture"))
             
             # Find output ports for this channel
             ch_out_ports = []

@@ -109,7 +109,7 @@ class MultiChannelPeakMonitor:
     def _link_sink_monitor(self):
         """Discovers active monitor output ports (virtual mix sinks + hardware outputs) and links wave_sink_monitor to them."""
         try:
-            # 1. Unlink any default microphone capture ports that WirePlumber auto-linked to wave_sink_monitor
+            # 1. Unlink any default microphone capture ports or virtual source mixes from wave_sink_monitor
             try:
                 links_out = subprocess.check_output(['pw-link', '-l'], text=True, stderr=subprocess.DEVNULL)
                 current_node = None
@@ -119,7 +119,8 @@ class MultiChannelPeakMonitor:
                         current_node = line_str
                     elif '|<-' in line_str and current_node and 'wave_sink_monitor' in current_node:
                         src_port = line_str.replace('|<-', '').strip()
-                        if 'capture' in src_port.lower() and 'wavecontroller' not in src_port.lower():
+                        # Unlink if capture port or if it is a virtual Source mix (e.g. Chat Mix Source)
+                        if 'capture' in src_port.lower() or 'source' in src_port.lower() or 'input' in src_port.lower():
                             subprocess.run(['pw-link', '-d', src_port, current_node], stderr=subprocess.DEVNULL)
             except Exception:
                 pass
@@ -275,10 +276,9 @@ class MultiChannelPeakMonitor:
                 s_r = 0.0 if sink_r < 0.002 else sink_r
 
                 with self._lock:
-                    # Physical microphone channels (mic, fefine, etc.) ONLY get physical microphone level
-                    self.peaks["mic"] = {"left": m_l, "right": m_r, "peak": max(m_l, m_r)}
-                    self.peaks["fefine"] = {"left": m_l, "right": m_r, "peak": max(m_l, m_r)}
-                    self.peaks["microphone"] = {"left": m_l, "right": m_r, "peak": max(m_l, m_r)}
+                    # Physical microphone channels ONLY get physical microphone level
+                    for ch in ["mic", "microphone", "fefine", "fifine", "elgato_wave_xlr", "wave", "wave_xlr", "input", "system_capture"]:
+                        self.peaks[ch] = {"left": m_l, "right": m_r, "peak": max(m_l, m_r)}
                     
                     # Application & System Playback channels (Spotify, Discord, Games, etc.) get sink monitor level
                     for ch in ["spotify", "music", "game", "chat", "browser", "system", "sfx", "master"]:
@@ -295,17 +295,25 @@ class MultiChannelPeakMonitor:
     def get_channel_stereo_peaks(self, channel_id: str) -> tuple:
         with self._lock:
             ch_low = str(channel_id).lower().strip()
+            
+            # 1. Physical Microphone / Input Channels
+            is_mic = any(k in ch_low for k in ("mic", "microphone", "wave", "elgato", "fefine", "fifine", "input", "capture"))
+            if is_mic:
+                if ch_low in self.peaks:
+                    p = self.peaks[ch_low]
+                    return p.get("left", 0.0), p.get("right", 0.0)
+                p = self.peaks.get("mic", self.peaks.get("elgato_wave_xlr", {}))
+                return p.get("left", 0.0), p.get("right", 0.0)
+
+            # 2. Playback Channels
             if ch_low in self.peaks:
                 p = self.peaks[ch_low]
                 return p.get("left", 0.0), p.get("right", 0.0)
             for k, p in self.peaks.items():
                 if k in ch_low or ch_low in k:
                     return p.get("left", 0.0), p.get("right", 0.0)
-            # Default fallback for playback channels
-            if ch_low not in ("mic", "microphone", "fefine", "input"):
-                p = self.peaks.get("system", self.peaks.get("spotify", {}))
-                return p.get("left", 0.0), p.get("right", 0.0)
-            return (0.0, 0.0)
+            p = self.peaks.get("system", self.peaks.get("spotify", {}))
+            return p.get("left", 0.0), p.get("right", 0.0)
 
     def get_channel_peak(self, channel_id: str) -> float:
         l, r = self.get_channel_stereo_peaks(channel_id)
