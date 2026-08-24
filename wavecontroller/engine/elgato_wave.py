@@ -201,6 +201,7 @@ class ElgatoWaveDevice:
         self._interaction_timer: Optional[threading.Timer] = None
         self._last_vu_time: float = 0.0
         self._vu_ballistics_level: float = 0.0
+        self._last_raw_hw_mute: Optional[bool] = None
 
     def is_connected(self) -> bool:
         return self._handle is not None
@@ -317,6 +318,7 @@ class ElgatoWaveDevice:
                 cfg[self.profile.off_mute] = 0x01 if is_muted else 0x00
                 self._apply_led_colors_to_config(cfg, active_mode="gain")
                 self.write_config(cfg)
+                self._last_raw_hw_mute = bool(cfg[self.profile.off_mute])
             self._last_state["gain_db"] = gain_db
         except Exception as e:
             log.warning(f"Failed to set hardware gain: {e}")
@@ -344,6 +346,7 @@ class ElgatoWaveDevice:
             cfg[self.profile.off_mute] = 0x01 if (is_mic_muted or curr_mode_muted) else 0x00
             self._apply_led_colors_to_config(cfg, active_mode=curr_mode)
             self.write_config(cfg)
+            self._last_raw_hw_mute = bool(cfg[self.profile.off_mute])
             self._last_state["mute"] = curr_mode_muted
         except Exception as e:
             log.warning(f"Failed to set hardware mute for mode {mode}: {e}")
@@ -447,6 +450,7 @@ class ElgatoWaveDevice:
                 cfg[self.profile.off_mute] = 0x01 if (is_mic_muted or is_hp_muted) else 0x00
                 self._apply_led_colors_to_config(cfg, active_mode="hp")
                 self.write_config(cfg)
+                self._last_raw_hw_mute = bool(cfg[self.profile.off_mute])
             self._last_state["hp_pct"] = pct
         except Exception as e:
             log.warning(f"Failed to set headphone volume: {e}")
@@ -484,6 +488,7 @@ class ElgatoWaveDevice:
                 cfg[self.profile.off_mute] = 0x01 if (is_mic_muted or is_mix_muted) else 0x00
                 self._apply_led_colors_to_config(cfg, active_mode="mix")
                 self.write_config(cfg)
+                self._last_raw_hw_mute = bool(cfg[self.profile.off_mute])
             self._last_state["monitor_mix"] = pct
         except Exception as e:
             log.warning(f"Failed to set monitor mix: {e}")
@@ -677,15 +682,30 @@ class ElgatoWaveDevice:
                 dial_mode = self.profile.vol_select_map.get(cfg[self.profile.off_vol_select], "gain")
 
             raw_hw_mute = bool(cfg[self.profile.off_mute])
-            # If physical touch mute toggled on hardware in current active mode
-            if raw_hw_mute != self._mode_mutes.get(dial_mode, False):
-                self._mode_mutes[dial_mode] = raw_hw_mute
-                if dial_mode == "mix":
-                    self._mode_mutes["gain"] = raw_hw_mute
-                    self._mode_mutes["hp"] = raw_hw_mute
+            if self._last_raw_hw_mute is None:
+                self._last_raw_hw_mute = raw_hw_mute
+            elif raw_hw_mute != self._last_raw_hw_mute:
+                # User physically touched capacitive mute button on hardware
+                active_mode = dial_mode
+                toggled_mute = not self._mode_mutes.get(active_mode, False)
+                self._mode_mutes[active_mode] = toggled_mute
+                if active_mode == "mix":
+                    self._mode_mutes["gain"] = toggled_mute
+                    self._mode_mutes["hp"] = toggled_mute
+
+                is_mic_muted = self._mode_mutes.get("gain", False)
+                is_curr_muted = self._mode_mutes.get(active_mode, False)
+
+                cfg[self.profile.off_mute] = 0x01 if (is_mic_muted or is_curr_muted) else 0x00
+                self._apply_led_colors_to_config(cfg, active_mode=active_mode)
+                try:
+                    self.write_config(cfg)
+                except Exception:
+                    pass
+                self._last_raw_hw_mute = bool(cfg[self.profile.off_mute])
 
             mute = self._mode_mutes.get(dial_mode, False)
-            
+
             raw_hp = struct.unpack_from(self.profile.hp_fmt, cfg, self.profile.off_hp_vol)[0]
             hp_db = raw_hp / self.profile.hp_scale
             read_hp_pct = max(0, min(100, int(round((hp_db + 60.0) / 60.0 * 100.0))))
@@ -698,19 +718,9 @@ class ElgatoWaveDevice:
             else:
                 read_mix_pct = 50
 
-            # When streaming VU meter, state returns steady user parameter values to prevent slider bounce
-            gain_db = self._steady_gain_db if self._is_streaming_vu else read_gain_db
-            hp_pct = self._steady_hp_pct if self._is_streaming_vu else read_hp_pct
-            monitor_mix = self._steady_mix_pct if self._is_streaming_vu else read_mix_pct
-
-            # Update steady parameters during active user interaction
-            if self._user_interacting:
-                self._steady_gain_db = read_gain_db
-                self._steady_hp_pct = read_hp_pct
-                self._steady_mix_pct = read_mix_pct
-                gain_db = read_gain_db
-                hp_pct = read_hp_pct
-                monitor_mix = read_mix_pct
+            gain_db = read_gain_db
+            hp_pct = read_hp_pct
+            monitor_mix = read_mix_pct
 
             low_z = False
             if self.profile.off_low_z is not None:
@@ -814,28 +824,11 @@ class ElgatoManager:
                                     c[dev.profile.off_mute] = 0x01 if (is_mic_muted or is_mode_muted) else 0x00
                                     dev._apply_led_colors_to_config(c, active_mode=new_mode)
                                     dev.write_config(c)
+                                    dev._last_raw_hw_mute = bool(c[dev.profile.off_mute])
                                     dev._last_state["mute"] = is_mode_muted
                                     self.last_state["mute"] = is_mode_muted
                                 except Exception:
                                     pass
-                        elif "mute" in changed:
-                            # User tapped the capacitive mute sensor
-                            active_mode = curr.get("dial_mode", "gain")
-                            new_mute = bool(changed["mute"])
-                            dev._mode_mutes[active_mode] = new_mute
-                            if active_mode == "mix":
-                                dev._mode_mutes["gain"] = new_mute
-                                dev._mode_mutes["hp"] = new_mute
-
-                            is_mic_muted = dev.get_mode_mute("gain")
-                            is_active_muted = dev.get_mode_mute(active_mode)
-                            try:
-                                c = dev.read_config()
-                                c[dev.profile.off_mute] = 0x01 if (is_mic_muted or is_active_muted) else 0x00
-                                dev._apply_led_colors_to_config(c, active_mode=active_mode)
-                                dev.write_config(c)
-                            except Exception:
-                                pass
 
                         if self.on_state_changed:
                             self.on_state_changed(curr, changed)
