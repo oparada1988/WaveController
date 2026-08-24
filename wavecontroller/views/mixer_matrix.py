@@ -748,36 +748,57 @@ class MixerMatrixView(Gtk.Box):
                 if getattr(card, "is_wave_channel", False):
                     card.update_phantom_state(bool(changed["phantom_power"]))
 
-        # 2. Update hardware mute based on dial mode (Gain Mode -> Mic Input, HP/Output Mode -> Monitor Mix / Output)
+        # 2. Update hardware mute badges in UI based on dial mode
         if "mute" in changed:
             is_muted = bool(changed["mute"])
             if dial_mode == "gain":
+                # Setting 1 (LED 1): Mic Input only
                 for ch_id, card in list(self.channel_cards.items()):
                     if getattr(card, "is_wave_channel", False) or ch_id in ("mic", "elgato_wave_xlr"):
-                        self.pipewire_mgr.set_channel_master_mute(ch_id, is_muted)
                         card.set_muted(is_muted)
-                        if self.pipewire_mgr.is_channel_linked(ch_id):
-                            for mx in self.pipewire_mgr.mixes:
-                                cell = self.matrix_cells.get((ch_id, mx["id"]))
-                                if cell and hasattr(cell, "update_ui_state"):
-                                    cell.update_ui_state()
-            elif dial_mode in ("hp", "mix"):
-                assigned_mix = "personal"
-                if self.hardware_mgr:
-                    assigned_mix = self.hardware_mgr.get_device_assigned_mix("Wave XLR") or self.hardware_mgr.get_device_assigned_mix(self.hardware_mgr.device_name) or "personal"
-                target_header = self.mix_headers.get(assigned_mix)
+                        for mx in self.pipewire_mgr.mixes:
+                            cell = self.matrix_cells.get((ch_id, mx["id"]))
+                            if cell and hasattr(cell, "update_ui_state"):
+                                cell.update_ui_state()
+
+            elif dial_mode == "hp":
+                # Setting 2 (LED 2): Headphone Output Mix only
+                elgato_mix_id = "personal_mix"
+                if self.hardware_mgr and hasattr(self.hardware_mgr, "_get_elgato_output_mix_id"):
+                    elgato_mix_id = self.hardware_mgr._get_elgato_output_mix_id()
+                target_header = self.mix_headers.get(elgato_mix_id)
                 if not target_header:
                     for m_id, header in self.mix_headers.items():
-                        if m_id in (assigned_mix, "personal", "personal_mix") or "personal" in str(header.mix_info.get("name", "")).lower() or "wave" in str(header.mix_info.get("name", "")).lower():
+                        if m_id in (elgato_mix_id, "personal", "personal_mix"):
                             target_header = header
-                            assigned_mix = m_id
                             break
-                if not target_header and self.mix_headers:
-                    target_header = list(self.mix_headers.values())[0]
-                    assigned_mix = list(self.mix_headers.keys())[0]
-
                 if target_header:
-                    self.pipewire_mgr.set_mix_master_mute(assigned_mix, is_muted)
+                    target_header.update_ui_state()
+
+                sink_id = self._get_selected_output_sink_id()
+                if sink_id and self.hardware_mgr:
+                    self._update_out_mute_btn(is_muted)
+
+            elif dial_mode == "mix":
+                # Setting 3 (LED 3): BOTH Mic Input and Headphone Output Mix
+                for ch_id, card in list(self.channel_cards.items()):
+                    if getattr(card, "is_wave_channel", False) or ch_id in ("mic", "elgato_wave_xlr"):
+                        card.set_muted(is_muted)
+                        for mx in self.pipewire_mgr.mixes:
+                            cell = self.matrix_cells.get((ch_id, mx["id"]))
+                            if cell and hasattr(cell, "update_ui_state"):
+                                cell.update_ui_state()
+
+                elgato_mix_id = "personal_mix"
+                if self.hardware_mgr and hasattr(self.hardware_mgr, "_get_elgato_output_mix_id"):
+                    elgato_mix_id = self.hardware_mgr._get_elgato_output_mix_id()
+                target_header = self.mix_headers.get(elgato_mix_id)
+                if not target_header:
+                    for m_id, header in self.mix_headers.items():
+                        if m_id in (elgato_mix_id, "personal", "personal_mix"):
+                            target_header = header
+                            break
+                if target_header:
                     target_header.update_ui_state()
 
                 sink_id = self._get_selected_output_sink_id()

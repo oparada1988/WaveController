@@ -174,7 +174,7 @@ class USBHardwareManager:
                     target_mix_id = self._get_elgato_output_mix_id()
                     self.pipewire_mgr.set_mix_master_mute(target_mix_id, self.hardware_mute)
 
-            self.notify_hardware_listeners({"mute": self.hardware_mute}, {"mute": self.hardware_mute})
+            self.notify_hardware_listeners(curr, changed)
 
         if "gain_db" in changed:
             self.hardware_gain_db = int(round(changed["gain_db"]))
