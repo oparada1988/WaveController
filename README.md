@@ -36,6 +36,11 @@ To allow non-root access to Elgato Wave hardware controls (Gain, 48V Phantom Pow
 curl -fsSL https://raw.githubusercontent.com/oparada1988/WaveController/main/data/99-elgato-wave.rules | sudo tee /etc/udev/rules.d/99-elgato-wave.rules > /dev/null && sudo udevadm control --reload-rules && sudo udevadm trigger && echo "✔ Elgato Wave udev rules successfully installed and activated!"
 ```
 
+### 📚 Documentation
+
+For in-depth reverse-engineered USB memory maps, mode-isolated capacitive muting architecture, and PipeWire graph diagrams, review the technical documentation:
+* [**Elgato Wave Hardware & PipeWire Audio Architecture**](docs/WaveController_Elgato_Hardware_Technical_Architecture.md)
+
 ---
 
 ### 🚀 Running WaveController
