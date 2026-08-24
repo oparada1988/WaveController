@@ -131,9 +131,22 @@ class USBHardwareManager:
                 except Exception:
                     pass
                 if getattr(self, "pipewire_mgr", None):
-                    for m_key in ("personal_mix", "personal", "beta"):
-                        if m_key in self.pipewire_mgr.mix_states:
-                            self.pipewire_mgr.set_mix_master_mute(m_key, self.hardware_mute)
+                    # Dynamically find the mix assigned to Elgato Wave output or personal_mix
+                    target_mix_id = None
+                    for m in self.pipewire_mgr.mixes:
+                        t_dev = m.get("target_device", "")
+                        if "elgato" in t_dev.lower() or "wave" in t_dev.lower():
+                            target_mix_id = m["id"]
+                            break
+                    if not target_mix_id:
+                        for m in self.pipewire_mgr.mixes:
+                            if m.get("type") == "sink" or m["id"] in ("personal_mix", "personal", "beta"):
+                                target_mix_id = m["id"]
+                                break
+                    if not target_mix_id:
+                        target_mix_id = "personal_mix"
+
+                    self.pipewire_mgr.set_mix_master_mute(target_mix_id, self.hardware_mute)
             self.notify_hardware_listeners({"mute": self.hardware_mute}, {"mute": self.hardware_mute})
 
         if "gain_db" in changed:

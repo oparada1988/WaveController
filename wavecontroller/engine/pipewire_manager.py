@@ -1294,7 +1294,8 @@ class PipeWireManager:
             desired_fl = set()
             desired_fr = set()
 
-            if target_dev and target_dev != "none":
+            is_mix_muted = self.get_mix_master_mute(m_id)
+            if target_dev and target_dev != "none" and not is_mix_muted:
                 clean_target = target_dev.replace("alsa_card.", "").replace("alsa_output.", "").replace("alsa_input.", "").strip().lower()
                 for p in in_ports:
                     if p.startswith("WaveController_"):
