@@ -92,6 +92,20 @@ class USBHardwareManager:
         if cb:
             self.add_hardware_listener(cb)
 
+    @property
+    def is_elgato(self) -> bool:
+        elgato_dev = elgato_manager.get_device()
+        if elgato_dev and elgato_dev.is_connected():
+            return True
+        return any(d.get("is_elgato", False) for d in self.discovered_devices.values())
+
+    @property
+    def current_dial_mode(self) -> str:
+        elgato_dev = elgato_manager.get_device()
+        if elgato_dev and elgato_dev.is_connected():
+            return elgato_dev.get_dial_mode()
+        return "gain"
+
     def _ensure_default_tracked_devices(self):
         """Initializes tracked devices list strictly on first install if config key is None."""
         tracked = config_manager.get("tracked_devices", None)
@@ -127,15 +141,23 @@ class USBHardwareManager:
                         self.pipewire_mgr.set_channel_master_mute(ch_key, self.hardware_mute)
 
             elif dial_mode == "hp":
-                # Setting 2 (LED 2): Mute Headphone Output Mix ONLY
+                # Setting 2 (LED 2): Mute Headphone Output Mix ONLY (Shield mic from UAC2 hardware mute packet)
                 target = self._resolve_sink_target()
                 try:
                     subprocess.Popen(["wpctl", "set-mute", target, "1" if self.hardware_mute else "0"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 except Exception:
                     pass
+                src_target = self._resolve_source_target()
+                try:
+                    subprocess.Popen(["wpctl", "set-mute", src_target, "0"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                except Exception:
+                    pass
                 if getattr(self, "pipewire_mgr", None):
                     target_mix_id = self._get_elgato_output_mix_id()
                     self.pipewire_mgr.set_mix_master_mute(target_mix_id, self.hardware_mute)
+                    for ch_key in ("elgato_wave_xlr", "mic", "microphone"):
+                        if self.pipewire_mgr.get_channel_master_mute(ch_key):
+                            self.pipewire_mgr.set_channel_master_mute(ch_key, False)
 
             elif dial_mode == "mix":
                 # Setting 3 (LED 3): Mute BOTH Microphone AND Headphone Output
