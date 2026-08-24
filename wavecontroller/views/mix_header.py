@@ -110,6 +110,18 @@ class MixHeaderCard(Gtk.Box):
         self._apply_indicator_color(mix_info.get("color", "#9146ff"))
         self.append(self.color_bar)
 
+    def set_volume(self, volume: int):
+        vol = max(0, min(100, int(volume)))
+        if hasattr(self, "_scale_handler_id") and self._scale_handler_id:
+            self.scale.handler_block(self._scale_handler_id)
+            try:
+                self.scale.set_value(vol)
+            finally:
+                self.scale.handler_unblock(self._scale_handler_id)
+        else:
+            self.scale.set_value(vol)
+        self.vol_lbl.set_text(f"{vol}%")
+
     def update_ui_state(self):
         if not self.pipewire_mgr:
             return

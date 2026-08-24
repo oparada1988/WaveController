@@ -691,6 +691,12 @@ class PipeWireManager:
             self._volume_event.set()
             self._save_state_to_config(immediate=False)
 
+    def set_mix_volume(self, mix_id: str, volume: int):
+        self.set_mix_master_volume(mix_id, volume)
+
+    def get_mix_volume(self, mix_id: str) -> int:
+        return self.get_mix_master_volume(mix_id)
+
     def set_mix_master_mute(self, mix_id: str, muted: bool):
         canon_mix = self._match_mix_id(mix_id)
         with self._lock:

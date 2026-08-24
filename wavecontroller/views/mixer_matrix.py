@@ -707,7 +707,7 @@ class MixerMatrixView(Gtk.Box):
             header.update_ui_state()
 
     def _on_hardware_sync(self, curr: dict, changed: dict):
-        # 1. Update all matching Wave microphone channel cards live
+        # 1. Update all matching Wave microphone channel cards live (Gain Mode & Mute)
         for ch_id, card in list(self.channel_cards.items()):
             ch_name = str(card.channel_info.get("name", "")).lower()
             if ch_id in ("mic", "elgato_wave_xlr") or "wave" in ch_id.lower() or "wave" in ch_name or (card.channel_info.get("type") == "source" and getattr(self.hardware_mgr, "is_elgato", False)):
@@ -723,13 +723,23 @@ class MixerMatrixView(Gtk.Box):
                     self.pipewire_mgr.set_channel_master_mute(ch_id, is_muted)
                     card.set_muted(is_muted)
 
-        # 2. Update headphone monitor mix headers live if knob dial mode is hp
+        # 2. Update headphone monitor mix headers live when knob is clicked to Output / HP Mode
         if "hp_volume_pct" in changed:
             hp_vol = changed["hp_volume_pct"]
+            target_headers = []
             for m_id, header in list(self.mix_headers.items()):
-                if m_id in ("personal", "personal_mix") or "personal" in m_id.lower() or "headphone" in header.mix_info.get("name", "").lower():
-                    self.pipewire_mgr.set_mix_volume(m_id, hp_vol)
-                    header.set_volume(hp_vol)
+                m_name = str(header.mix_info.get("name", "")).lower()
+                m_target = str(header.mix_info.get("target_device", "")).lower()
+                if "wave" in m_target or "personal" in m_id.lower() or "beta" in m_name or m_id in ("personal", "personal_mix") or "headphone" in m_name:
+                    target_headers.append((m_id, header))
+            if not target_headers and self.mix_headers:
+                for m_id, header in list(self.mix_headers.items()):
+                    if header.mix_info.get("type", "sink") == "sink":
+                        target_headers.append((m_id, header))
+                        break
+            for m_id, header in target_headers:
+                self.pipewire_mgr.set_mix_master_volume(m_id, hp_vol)
+                header.set_volume(hp_vol)
 
     def _on_channel_deleted(self, ch_id: str):
         self.pipewire_mgr.remove_channel(ch_id)
