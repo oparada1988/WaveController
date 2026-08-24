@@ -6,6 +6,7 @@ from gi.repository import Gtk, Adw, Gio, GLib
 
 from ..engine.config_manager import config_manager
 from ..utils.logger import get_log_file_path, get_log_dir_path, get_log_size_str, export_logs_to, clear_logs
+from ..utils.autostart import is_autostart_enabled, set_autostart_enabled
 from .. import __version__, __github__, __issues__
 
 class SettingsView(Gtk.Box):
@@ -49,7 +50,8 @@ class SettingsView(Gtk.Box):
         grp_gen = Adw.PreferencesGroup(title="General")
 
         autostart_row = Adw.SwitchRow(title="Start Automatically on Login", subtitle="Launch WaveController daemon in background")
-        autostart_row.set_active(True)
+        autostart_row.set_active(is_autostart_enabled())
+        autostart_row.connect("notify::active", lambda r, p: set_autostart_enabled(r.get_active()))
         grp_gen.add(autostart_row)
 
         tray_active = config_manager.get("close_to_tray", True)

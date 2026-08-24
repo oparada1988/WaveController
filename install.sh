@@ -22,6 +22,7 @@ ICON_PNG_DIR="${HOME}/.local/share/icons/hicolor/512x512/apps"
 ICON_SVG_DIR="${HOME}/.local/share/icons/hicolor/scalable/apps"
 SYSTEMD_USER_DIR="${HOME}/.config/systemd/user"
 CONFIG_DIR="${HOME}/.config/WaveController"
+AUTOSTART_DIR="${HOME}/.config/autostart"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if [ -f "${SCRIPT_DIR}/main.py" ]; then
@@ -179,34 +180,32 @@ upgrade_app() {
     echo -e "${GREEN}${BOLD}✔ Upgrade complete! Saved configurations were preserved.${NC}"
 }
 
-# Autostart Service
+# Autostart Management
 enable_autostart() {
-    mkdir -p "${SYSTEMD_USER_DIR}"
-    cat << EOF > "${SYSTEMD_USER_DIR}/wavecontroller.service"
-[Unit]
-Description=WaveController Linux Multi-Track Audio Mixing Engine
-After=pipewire.service wireplumber.service
-
-[Service]
-Type=simple
-ExecStart=${BIN_DIR}/wavecontroller
-Restart=on-failure
-RestartSec=3
-
-[Install]
-WantedBy=default.target
+    mkdir -p "${AUTOSTART_DIR}"
+    cat << EOF > "${AUTOSTART_DIR}/com.oparada.WaveController.desktop"
+[Desktop Entry]
+Type=Application
+Name=WaveController
+GenericName=Audio Mixer
+Comment=Elgato Wave Link & Advanced Multi-Track Virtual Mixer for Linux
+Exec=${BIN_DIR}/wavecontroller --daemon
+Icon=com.oparada.WaveController
+Terminal=false
+Categories=AudioVideo;Audio;Mixer;GTK;
+StartupWMClass=com.oparada.WaveController
+X-GNOME-Autostart-enabled=true
 EOF
-    systemctl --user daemon-reload
-    systemctl --user enable wavecontroller.service
-    echo -e "${GREEN}✔ WaveController background auto-start service enabled.${NC}"
+    chmod +x "${AUTOSTART_DIR}/com.oparada.WaveController.desktop"
+    echo -e "${GREEN}✔ WaveController background auto-start enabled in ~/.config/autostart.${NC}"
 }
 
 disable_autostart() {
+    rm -f "${AUTOSTART_DIR}/com.oparada.WaveController.desktop"
     systemctl --user stop wavecontroller.service 2>/dev/null || true
     systemctl --user disable wavecontroller.service 2>/dev/null || true
-    rm -f "${SYSTEMD_USER_DIR}/wavecontroller.service"
-    systemctl --user daemon-reload
-    echo -e "${YELLOW}✔ WaveController background service disabled.${NC}"
+    rm -f "${SYSTEMD_USER_DIR}/wavecontroller.service" 2>/dev/null || true
+    echo -e "${YELLOW}✔ WaveController background auto-start disabled.${NC}"
 }
 
 # Uninstallation
@@ -223,6 +222,7 @@ uninstall_app() {
     rm -rf "${INSTALL_DIR}"
     rm -f "${BIN_DIR}/wavecontroller"
     rm -f "${DESKTOP_DIR}/com.oparada.WaveController.desktop"
+    rm -f "${AUTOSTART_DIR}/com.oparada.WaveController.desktop"
     rm -f "${ICON_PNG_DIR}/com.oparada.WaveController.png"
     rm -f "${ICON_SVG_DIR}/com.oparada.WaveController.svg"
 

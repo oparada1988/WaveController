@@ -34,8 +34,12 @@ def main():
     else:
         logger.info("Starting WaveController Application...")
 
-    app = WaveControllerApp(is_daemon=is_daemon)
-    return app.run(clean_argv)
+    try:
+        app = WaveControllerApp(is_daemon=is_daemon)
+        return app.run(clean_argv)
+    except KeyboardInterrupt:
+        logger.info("WaveController process terminated gracefully by user (SIGINT).")
+        return 0
 
 if __name__ == "__main__":
     sys.exit(main())
