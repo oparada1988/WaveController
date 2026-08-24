@@ -22,6 +22,8 @@ class MixerMatrixView(Gtk.Box):
         self.matrix_cells = {} # {(channel_id, mix_id): MatrixCell}
         self.mix_headers = {} # {mix_id: MixHeaderCard}
         self.pipewire_mgr.on_external_change_callback = self._on_external_sync
+        if self.hardware_mgr:
+            self.hardware_mgr.on_hardware_state_changed_callback = lambda curr, changed: GLib.idle_add(self._on_hardware_sync, curr, changed)
         
         self.set_margin_top(16)
         self.set_margin_bottom(16)
@@ -703,6 +705,29 @@ class MixerMatrixView(Gtk.Box):
             cell.update_ui_state()
         for header in self.mix_headers.values():
             header.update_ui_state()
+
+    def _on_hardware_sync(self, curr: dict, changed: dict):
+        # 1. Update microphone channel card live
+        if "mic" in self.channel_cards:
+            mic_card = self.channel_cards["mic"]
+            if "phantom_power" in changed:
+                mic_card.update_phantom_state(changed["phantom_power"])
+            if "gain_db" in changed:
+                val = int(round(changed["gain_db"]))
+                vol_pct = max(0, min(100, int(round((val / 75.0) * 100))))
+                self.pipewire_mgr.set_channel_master_volume("mic", vol_pct)
+                mic_card.set_master_volume(vol_pct, self.pipewire_mgr.get_channel_master_mute("mic"))
+            if "mute" in changed:
+                is_muted = changed["mute"]
+                self.pipewire_mgr.set_channel_master_mute("mic", is_muted)
+                mic_card.set_muted(is_muted)
+
+        # 2. Update headphone monitor mix headers live if knob dial mode is hp
+        if "hp_volume_pct" in changed:
+            hp_vol = changed["hp_volume_pct"]
+            if "personal" in self.mix_headers:
+                self.pipewire_mgr.set_mix_volume("personal", hp_vol)
+                self.mix_headers["personal"].set_volume(hp_vol)
 
     def _on_link_toggled(self, channel_id: str, is_linked: bool):
         for m in self.pipewire_mgr.mixes:

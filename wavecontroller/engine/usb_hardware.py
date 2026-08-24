@@ -61,7 +61,13 @@ class USBHardwareManager:
             config_manager.set("tracked_devices", new_tracked, immediate=True)
 
     def _on_elgato_hardware_sync(self, curr: dict, changed: dict):
-        """Dispatched when physical dial or capacitive mute sensor changes on Elgato hardware."""
+        """Dispatched when physical dial, 2-sec 48V hold, or capacitive mute sensor changes on Elgato hardware."""
+        if "phantom_power" in changed:
+            self.phantom_power_48v = changed["phantom_power"]
+            hw = dict(config_manager.get("hardware_settings", {}))
+            hw["phantom_power"] = self.phantom_power_48v
+            config_manager.set("hardware_settings", hw)
+
         if "mute" in changed:
             self.hardware_mute = changed["mute"]
             target = self._resolve_source_target()
@@ -258,6 +264,10 @@ class USBHardwareManager:
         name_low = name.lower()
         form_factor = form_factor.lower()
         icon_name = icon_name.lower()
+
+        # 0. Elgato Wave XLR Dedicated Hardware
+        if "wave xlr" in name_low or "wave_xlr" in name_low:
+            return "elgato-wave-xlr-symbolic"
 
         # 1. Desktop Standalone Microphones (Fifine, Wave, Blue Yeti, Rode, Shure, QuadCast, etc.)
         if form_factor == "microphone" or any(x in name_low for x in ["mic", "fifine", "wave", "yeti", "shure", "rode", "quadcast", "seiren"]):
@@ -525,6 +535,9 @@ class USBHardwareManager:
         hw = dict(config_manager.get("hardware_settings", {}))
         hw["phantom_power"] = self.phantom_power_48v
         config_manager.set("hardware_settings", hw)
+        elgato_dev = elgato_manager.get_device()
+        if elgato_dev:
+            elgato_dev.set_phantom_power(self.phantom_power_48v)
         return self.phantom_power_48v
 
     def set_low_cut(self, mode: str):
@@ -532,12 +545,18 @@ class USBHardwareManager:
         hw = dict(config_manager.get("hardware_settings", {}))
         hw["low_cut"] = mode
         config_manager.set("hardware_settings", hw)
+        elgato_dev = elgato_manager.get_device()
+        if elgato_dev:
+            elgato_dev.set_low_cut(mode)
 
     def toggle_clipguard(self) -> bool:
         self.clipguard_enabled = not self.clipguard_enabled
         hw = dict(config_manager.get("hardware_settings", {}))
         hw["clipguard"] = self.clipguard_enabled
         config_manager.set("hardware_settings", hw)
+        elgato_dev = elgato_manager.get_device()
+        if elgato_dev:
+            elgato_dev.set_clipguard(self.clipguard_enabled)
         return self.clipguard_enabled
 
     def toggle_low_impedance(self) -> bool:

@@ -3,8 +3,9 @@ Elgato Wave Hardware Protocol Driver (Wave XLR, Wave:3, Wave:1).
 
 Communicates via raw libusb USB Class Control Transfers on Endpoint 0.
 Uses wIndex=0x3303 to bypass Linux kernel snd-usb-audio interface claiming,
-enabling seamless hardware DSP control, gain, mute, 48V, and dial sync
-without interrupting audio capture or playback.
+enabling seamless hardware DSP control, gain (0-75dB), 48V phantom power,
+Clipguard limiter, low-cut filter, and rotary dial synchronization without
+interrupting audio capture or playback.
 """
 
 import ctypes
@@ -80,6 +81,9 @@ class ElgatoProfile:
     gain_max_db: float
     gain_raw_max: int
     off_mute: int
+    off_phantom: Optional[int]
+    off_clipguard: Optional[int]
+    off_low_cut: Optional[int]
     off_hp_vol: int
     hp_fmt: str
     hp_scale: float
@@ -109,6 +113,9 @@ PROFILE_WAVE_XLR = ElgatoProfile(
     gain_max_db=75.0,
     gain_raw_max=0x5000,
     off_mute=4,
+    off_phantom=5,
+    off_clipguard=7,
+    off_low_cut=8,
     off_hp_vol=9,
     hp_fmt="<h",
     hp_scale=256.0,
@@ -138,6 +145,9 @@ PROFILE_WAVE_3 = ElgatoProfile(
     gain_max_db=40.0,
     gain_raw_max=0x2800,
     off_mute=4,
+    off_phantom=None,
+    off_clipguard=5,
+    off_low_cut=6,
     off_hp_vol=7,
     hp_fmt="<h",
     hp_scale=256.0,
@@ -154,8 +164,8 @@ ELGATO_PROFILES = [PROFILE_WAVE_XLR, PROFILE_WAVE_3]
 class ElgatoWaveDevice:
     """
     Direct user-space hardware controller for an Elgato Wave device.
-    Manages USB control transfers, hardware preamp gain (0-75dB), capacitive mute,
-    headphone volume, low-impedance mode, and rotary dial state synchronization.
+    Manages USB control transfers, hardware preamp gain (0-75dB), 48V phantom power,
+    capacitive mute, headphone volume, Clipguard, low-cut filter, and rotary dial sync.
     """
 
     def __init__(self, profile: ElgatoProfile):
@@ -283,6 +293,72 @@ class ElgatoWaveDevice:
         except Exception as e:
             log.warning(f"Failed to set hardware mute: {e}")
 
+    # --- 48V Phantom Power ---
+    def get_phantom_power(self) -> bool:
+        if self.profile.off_phantom is None:
+            return False
+        try:
+            cfg = self.read_config()
+            return bool(cfg[self.profile.off_phantom])
+        except Exception:
+            return False
+
+    def set_phantom_power(self, enabled: bool):
+        if self.profile.off_phantom is None:
+            return
+        try:
+            cfg = self.read_config()
+            cfg[self.profile.off_phantom] = 0x01 if enabled else 0x00
+            self.write_config(cfg)
+            self._last_state["phantom_power"] = enabled
+            log.info(f"Elgato 48V Phantom Power set to {'ON' if enabled else 'OFF'}")
+        except Exception as e:
+            log.warning(f"Failed to set 48V phantom power: {e}")
+
+    # --- Clipguard Dual-Stage Limiter ---
+    def get_clipguard(self) -> bool:
+        if self.profile.off_clipguard is None:
+            return True
+        try:
+            cfg = self.read_config()
+            return bool(cfg[self.profile.off_clipguard])
+        except Exception:
+            return True
+
+    def set_clipguard(self, enabled: bool):
+        if self.profile.off_clipguard is None:
+            return
+        try:
+            cfg = self.read_config()
+            cfg[self.profile.off_clipguard] = 0x01 if enabled else 0x00
+            self.write_config(cfg)
+            self._last_state["clipguard"] = enabled
+        except Exception as e:
+            log.warning(f"Failed to set Clipguard: {e}")
+
+    # --- Enhanced Low-Cut Filter ---
+    def get_low_cut(self) -> str:
+        if self.profile.off_low_cut is None:
+            return "Off"
+        try:
+            cfg = self.read_config()
+            val = cfg[self.profile.off_low_cut]
+            return "Off" if val == 0 else ("80Hz" if val == 1 else "120Hz")
+        except Exception:
+            return "80Hz"
+
+    def set_low_cut(self, mode: str):
+        if self.profile.off_low_cut is None:
+            return
+        try:
+            val = 0 if mode == "Off" else (1 if mode == "80Hz" else 2)
+            cfg = self.read_config()
+            cfg[self.profile.off_low_cut] = val
+            self.write_config(cfg)
+            self._last_state["low_cut"] = mode
+        except Exception as e:
+            log.warning(f"Failed to set low cut filter: {e}")
+
     # --- Headphone Volume ---
     def get_headphone_volume_pct(self) -> int:
         try:
@@ -357,11 +433,18 @@ class ElgatoWaveDevice:
             if self.profile.off_low_z is not None:
                 low_z = bool(cfg[self.profile.off_low_z])
 
+            phantom = self.get_phantom_power()
+            clipguard = self.get_clipguard()
+            low_cut = self.get_low_cut()
+
             return {
                 "connected": True,
                 "name": self.profile.display_name,
                 "gain_db": gain_db,
                 "mute": mute,
+                "phantom_power": phantom,
+                "clipguard": clipguard,
+                "low_cut": low_cut,
                 "hp_volume_pct": hp_pct,
                 "dial_mode": dial_mode,
                 "low_impedance": low_z,
@@ -379,7 +462,7 @@ class ElgatoManager:
         self.active_device: Optional[ElgatoWaveDevice] = None
         self._stop_poll = False
         self._poll_thread: Optional[threading.Thread] = None
-        self.on_state_changed = None # Callback when hardware dial/mute changes physically
+        self.on_state_changed = None # Callback when hardware dial/mute/48V changes physically
 
     def detect_device(self) -> Optional[ElgatoWaveDevice]:
         for p in ELGATO_PROFILES:
@@ -406,7 +489,7 @@ class ElgatoManager:
         import time
         last_state = {}
         while not self._stop_poll:
-            time.sleep(0.1) # 10 Hz polling for smooth dial and mute response
+            time.sleep(0.08) # ~12.5 Hz polling for rapid dial and 48V sync
             dev = self.active_device
             if not dev or not dev.is_connected():
                 time.sleep(1.0)

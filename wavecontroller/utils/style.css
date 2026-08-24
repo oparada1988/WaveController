@@ -459,3 +459,41 @@ popover.wave-popover entry:focus {
     background-color: alpha(@warning_color, 0.22);
     color: @warning_color;
 }
+
+/* 48V Phantom Power Badge Button */
+.wave-48v-badge {
+    font-size: 10px;
+    font-weight: 800;
+    letter-spacing: 0.5px;
+    border-radius: 6px;
+    padding: 2px 6px;
+    min-width: 32px;
+    min-height: 22px;
+    transition: all 150ms cubic-bezier(0.2, 0, 0, 1);
+}
+
+.wave-48v-badge.dimmed-48v {
+    background-color: rgba(255, 255, 255, 0.06);
+    color: rgba(255, 255, 255, 0.45);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.wave-48v-badge.dimmed-48v:hover {
+    background-color: rgba(255, 255, 255, 0.12);
+    color: rgba(255, 255, 255, 0.85);
+    border-color: rgba(255, 255, 255, 0.25);
+}
+
+.wave-48v-badge.active-48v {
+    background-color: rgba(245, 158, 11, 0.25);
+    color: #fbbf24;
+    border: 1px solid rgba(245, 158, 11, 0.6);
+    box-shadow: 0 0 10px rgba(245, 158, 11, 0.35);
+}
+
+.wave-48v-badge.active-48v:hover {
+    background-color: rgba(245, 158, 11, 0.35);
+    color: #fef08a;
+    border-color: #fbbf24;
+    box-shadow: 0 0 14px rgba(245, 158, 11, 0.55);
+}

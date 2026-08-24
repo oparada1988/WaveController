@@ -59,7 +59,7 @@ class MultiChannelPeakMonitor:
     def _link_mic_monitor(self):
         """Discovers physical hardware microphone ports and links wave_mic_monitor to them directly."""
         try:
-            # 1. Unlink any virtual sources (e.g. WaveController_chat_mix_Source) that WirePlumber auto-linked
+            # 1. Unlink any virtual sources or sink monitors that WirePlumber auto-linked
             try:
                 links_out = subprocess.check_output(['pw-link', '-l'], text=True, stderr=subprocess.DEVNULL)
                 current_node = None
@@ -69,46 +69,40 @@ class MultiChannelPeakMonitor:
                         current_node = line_str
                     elif '|<-' in line_str and current_node and 'wave_mic_monitor' in current_node:
                         src_port = line_str.replace('|<-', '').strip()
-                        # Unlink if not an alsa_input physical hardware port
-                        if not src_port.startswith("alsa_input."):
+                        # Unlink if not an alsa_input physical hardware port or if it is a monitor port
+                        if not src_port.startswith("alsa_input.") or "monitor" in src_port.lower():
                             subprocess.run(['pw-link', '-d', src_port, current_node], stderr=subprocess.DEVNULL)
             except Exception:
                 pass
 
             # 2. Discover physical alsa_input capture ports
             out = subprocess.check_output(['pw-link', '-o'], text=True, stderr=subprocess.DEVNULL)
-            mic_fl = None
-            mic_fr = None
+            all_ports = [line.strip() for line in out.splitlines() if line.strip().startswith("alsa_input.") and ":capture_" in line.strip()]
 
-            candidate_mic_fls = []
-            candidate_mic_frs = []
-            for line in out.splitlines():
-                l = line.strip()
-                if l.startswith("alsa_input.") and ":capture_" in l:
-                    if l.endswith("FL") or l.endswith("1") or l.endswith("mono") or l.endswith("stereo"):
-                        candidate_mic_fls.append(l)
-                    if l.endswith("FR") or l.endswith("2") or l.endswith("stereo"):
-                        candidate_mic_frs.append(l)
+            # Prioritize Elgato Wave XLR, then other USB microphones, then PCI
+            elgato_ports = [p for p in all_ports if 'wave' in p.lower() or 'elgato' in p.lower()]
+            usb_ports = [p for p in all_ports if 'usb' in p.lower() and p not in elgato_ports]
+            other_ports = [p for p in all_ports if p not in elgato_ports and p not in usb_ports]
 
-            # Prioritize usb mic (e.g. fifine / usb) then pci
-            for fl in candidate_mic_fls:
-                if 'usb' in fl.lower() or 'fifine' in fl.lower():
-                    mic_fl = fl
-                    break
-            if not mic_fl and candidate_mic_fls:
-                mic_fl = candidate_mic_fls[0]
+            selected_ports = elgato_ports or usb_ports or other_ports
+            if not selected_ports:
+                return
 
-            for fr in candidate_mic_frs:
-                if 'usb' in fr.lower() or 'fifine' in fr.lower():
-                    mic_fr = fr
-                    break
-            if not mic_fr and candidate_mic_frs:
-                mic_fr = candidate_mic_frs[0]
+            # Check for MONO capture (e.g. Wave XLR capture_MONO)
+            mono_port = next((p for p in selected_ports if p.lower().endswith("mono") or "mono" in p.lower()), None)
+            if mono_port:
+                subprocess.run(['pw-link', mono_port, 'wave_mic_monitor:input_FL'], stderr=subprocess.DEVNULL)
+                subprocess.run(['pw-link', mono_port, 'wave_mic_monitor:input_FR'], stderr=subprocess.DEVNULL)
+                return
 
-            if mic_fl:
-                subprocess.run(['pw-link', mic_fl, 'wave_mic_monitor:input_FL'], stderr=subprocess.DEVNULL)
-            if mic_fr:
-                subprocess.run(['pw-link', mic_fr, 'wave_mic_monitor:input_FR'], stderr=subprocess.DEVNULL)
+            # Stereo capture
+            fl_port = next((p for p in selected_ports if p.lower().endswith("fl") or p.endswith("1")), selected_ports[0])
+            fr_port = next((p for p in selected_ports if p.lower().endswith("fr") or p.endswith("2")), fl_port)
+
+            if fl_port:
+                subprocess.run(['pw-link', fl_port, 'wave_mic_monitor:input_FL'], stderr=subprocess.DEVNULL)
+            if fr_port:
+                subprocess.run(['pw-link', fr_port, 'wave_mic_monitor:input_FR'], stderr=subprocess.DEVNULL)
         except Exception:
             pass
 
