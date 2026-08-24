@@ -748,18 +748,41 @@ class MixerMatrixView(Gtk.Box):
                 if getattr(card, "is_wave_channel", False):
                     card.update_phantom_state(bool(changed["phantom_power"]))
 
-        # 2. Update hardware mute
+        # 2. Update hardware mute based on dial mode (Gain Mode -> Mic Input, HP/Output Mode -> Monitor Mix / Output)
         if "mute" in changed:
             is_muted = bool(changed["mute"])
-            for ch_id, card in list(self.channel_cards.items()):
-                if getattr(card, "is_wave_channel", False) or ch_id in ("mic", "elgato_wave_xlr"):
-                    self.pipewire_mgr.set_channel_master_mute(ch_id, is_muted)
-                    card.set_muted(is_muted)
-                    if self.pipewire_mgr.is_channel_linked(ch_id):
-                        for mx in self.pipewire_mgr.mixes:
-                            cell = self.matrix_cells.get((ch_id, mx["id"]))
-                            if cell and hasattr(cell, "update_ui_state"):
-                                cell.update_ui_state()
+            if dial_mode == "gain":
+                for ch_id, card in list(self.channel_cards.items()):
+                    if getattr(card, "is_wave_channel", False) or ch_id in ("mic", "elgato_wave_xlr"):
+                        self.pipewire_mgr.set_channel_master_mute(ch_id, is_muted)
+                        card.set_muted(is_muted)
+                        if self.pipewire_mgr.is_channel_linked(ch_id):
+                            for mx in self.pipewire_mgr.mixes:
+                                cell = self.matrix_cells.get((ch_id, mx["id"]))
+                                if cell and hasattr(cell, "update_ui_state"):
+                                    cell.update_ui_state()
+            elif dial_mode in ("hp", "mix"):
+                assigned_mix = "personal"
+                if self.hardware_mgr:
+                    assigned_mix = self.hardware_mgr.get_device_assigned_mix("Wave XLR") or self.hardware_mgr.get_device_assigned_mix(self.hardware_mgr.device_name) or "personal"
+                target_header = self.mix_headers.get(assigned_mix)
+                if not target_header:
+                    for m_id, header in self.mix_headers.items():
+                        if m_id in (assigned_mix, "personal", "personal_mix") or "personal" in str(header.mix_info.get("name", "")).lower() or "wave" in str(header.mix_info.get("name", "")).lower():
+                            target_header = header
+                            assigned_mix = m_id
+                            break
+                if not target_header and self.mix_headers:
+                    target_header = list(self.mix_headers.values())[0]
+                    assigned_mix = list(self.mix_headers.keys())[0]
+
+                if target_header:
+                    self.pipewire_mgr.set_mix_master_mute(assigned_mix, is_muted)
+                    target_header.update_ui_state()
+
+                sink_id = self._get_selected_output_sink_id()
+                if sink_id and self.hardware_mgr:
+                    self._update_out_mute_btn(is_muted)
 
         # 3. Update Preamp Gain ONLY when knob is in Gain Mode (Mode 1 / 1st LED on Wave hardware)
         if "gain_db" in changed and dial_mode == "gain":

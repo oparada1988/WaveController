@@ -105,11 +105,19 @@ class USBHardwareManager:
 
         if "mute" in changed:
             self.hardware_mute = bool(changed["mute"])
-            target = self._resolve_source_target()
-            try:
-                subprocess.Popen(["wpctl", "set-mute", target, "1" if self.hardware_mute else "0"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            except Exception:
-                pass
+            dial_mode = curr.get("dial_mode", "gain")
+            if dial_mode == "gain":
+                target = self._resolve_source_target()
+                try:
+                    subprocess.Popen(["wpctl", "set-mute", target, "1" if self.hardware_mute else "0"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                except Exception:
+                    pass
+            elif dial_mode in ("hp", "mix"):
+                target = self._resolve_sink_target()
+                try:
+                    subprocess.Popen(["wpctl", "set-mute", target, "1" if self.hardware_mute else "0"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                except Exception:
+                    pass
 
         if "gain_db" in changed:
             self.hardware_gain_db = int(round(changed["gain_db"]))

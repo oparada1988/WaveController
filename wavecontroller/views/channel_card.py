@@ -248,6 +248,8 @@ class ChannelCard(Gtk.Box):
 
     def _setup_channel_popover(self):
         popover = Gtk.Popover()
+        popover.set_autohide(True)
+        popover.set_cascade_popdown(True)
         popover.add_css_class("wave-popover")
 
         vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
