@@ -317,7 +317,7 @@ class ElgatoWaveDevice:
                 self._trigger_transient_peek("gain", cfg)
             else:
                 is_muted = self.get_mode_mute("gain")
-                cfg[self.profile.off_mute] = 0x01 if is_muted else 0x00
+                cfg[self.profile.off_mute] = self._calc_hw_mute_byte("gain")
                 self._apply_led_colors_to_config(cfg, active_mode="gain")
                 self.write_config(cfg)
                 self._last_raw_hw_mute = bool(cfg[self.profile.off_mute])
@@ -326,6 +326,16 @@ class ElgatoWaveDevice:
             log.warning(f"Failed to set hardware gain: {e}")
 
     # --- Capacitive Mute & Hardware Per-Mode Mute ---
+    def _calc_hw_mute_byte(self, active_mode: str) -> int:
+        """
+        Hardware Byte 4 (off_mute) controls the physical XLR analog mic preamp relay.
+        It must remain 0x01 (Muted) whenever Mic is muted OR whenever the active mode is muted.
+        Active mode LED color (Green/Orange/Red) is dynamically driven via off_rgb_mute / off_rgb_ring.
+        """
+        is_mic_muted = bool(self._mode_mutes.get("gain", False))
+        is_curr_muted = bool(self.get_mode_mute(active_mode))
+        return 0x01 if (is_mic_muted or is_curr_muted) else 0x00
+
     def get_mute(self) -> bool:
         curr_mode = self.get_dial_mode()
         return self._mode_mutes.get(curr_mode, False)
@@ -345,8 +355,7 @@ class ElgatoWaveDevice:
         try:
             cfg = self.read_config()
             curr_mode_muted = self.get_mode_mute(curr_mode)
-            # Physical hardware mute register controls both LED ring state and mode mute
-            cfg[self.profile.off_mute] = 0x01 if curr_mode_muted else 0x00
+            cfg[self.profile.off_mute] = self._calc_hw_mute_byte(curr_mode)
             self._apply_led_colors_to_config(cfg, active_mode=curr_mode)
             self.write_config(cfg)
             self._last_raw_hw_mute = bool(cfg[self.profile.off_mute])
@@ -449,7 +458,7 @@ class ElgatoWaveDevice:
                 self._trigger_transient_peek("hp", cfg)
             else:
                 is_hp_muted = self.get_mode_mute("hp")
-                cfg[self.profile.off_mute] = 0x01 if is_hp_muted else 0x00
+                cfg[self.profile.off_mute] = self._calc_hw_mute_byte("hp")
                 self._apply_led_colors_to_config(cfg, active_mode="hp")
                 self.write_config(cfg)
                 self._last_raw_hw_mute = bool(cfg[self.profile.off_mute])
@@ -486,7 +495,7 @@ class ElgatoWaveDevice:
                 self._trigger_transient_peek("mix", cfg)
             else:
                 is_mix_muted = self.get_mode_mute("mix")
-                cfg[self.profile.off_mute] = 0x01 if is_mix_muted else 0x00
+                cfg[self.profile.off_mute] = self._calc_hw_mute_byte("mix")
                 self._apply_led_colors_to_config(cfg, active_mode="mix")
                 self.write_config(cfg)
                 self._last_raw_hw_mute = bool(cfg[self.profile.off_mute])
@@ -537,7 +546,7 @@ class ElgatoWaveDevice:
             cfg = self.read_config()
             cfg[self.profile.off_vol_select] = val
             is_mode_muted = self.get_mode_mute(mode)
-            cfg[self.profile.off_mute] = 0x01 if is_mode_muted else 0x00
+            cfg[self.profile.off_mute] = self._calc_hw_mute_byte(mode)
             if permanent:
                 self._steady_dial_mode = mode
                 self._cancel_revert_timer()
@@ -562,7 +571,7 @@ class ElgatoWaveDevice:
         if target_val is not None:
             cfg[self.profile.off_vol_select] = target_val
             is_target_muted = self.get_mode_mute(target_mode)
-            cfg[self.profile.off_mute] = 0x01 if is_target_muted else 0x00
+            cfg[self.profile.off_mute] = self._calc_hw_mute_byte(target_mode)
             self._apply_led_colors_to_config(cfg, active_mode=target_mode)
 
         self.write_config(cfg)
@@ -583,7 +592,7 @@ class ElgatoWaveDevice:
                 cfg = self.read_config()
                 cfg[self.profile.off_vol_select] = val
                 is_steady_muted = self.get_mode_mute(steady)
-                cfg[self.profile.off_mute] = 0x01 if is_steady_muted else 0x00
+                cfg[self.profile.off_mute] = self._calc_hw_mute_byte(steady)
                 self._apply_led_colors_to_config(cfg, active_mode=steady)
                 self.write_config(cfg)
                 self._last_raw_hw_mute = bool(cfg[self.profile.off_mute])
@@ -704,7 +713,7 @@ class ElgatoWaveDevice:
 
                 is_curr_muted = self.get_mode_mute(active_mode)
 
-                cfg[self.profile.off_mute] = 0x01 if is_curr_muted else 0x00
+                cfg[self.profile.off_mute] = self._calc_hw_mute_byte(active_mode)
                 self._apply_led_colors_to_config(cfg, active_mode=active_mode)
                 try:
                     self.write_config(cfg)
@@ -830,7 +839,7 @@ class ElgatoManager:
                                 is_mode_muted = dev.get_mode_mute(new_mode)
                                 try:
                                     c = dev.read_config()
-                                    c[dev.profile.off_mute] = 0x01 if is_mode_muted else 0x00
+                                    c[dev.profile.off_mute] = dev._calc_hw_mute_byte(new_mode)
                                     dev._apply_led_colors_to_config(c, active_mode=new_mode)
                                     dev.write_config(c)
                                     dev._last_raw_hw_mute = bool(c[dev.profile.off_mute])
