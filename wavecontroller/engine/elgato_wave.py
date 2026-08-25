@@ -329,7 +329,9 @@ class ElgatoWaveDevice:
         return self._mode_mutes.get(curr_mode, False)
 
     def get_mode_mute(self, mode: str) -> bool:
-        return self._mode_mutes.get(mode, False)
+        if mode == "mix":
+            return bool(self._mode_mutes.get("gain", False) and self._mode_mutes.get("hp", False))
+        return bool(self._mode_mutes.get(mode, False))
 
     def set_mode_mute(self, mode: str, muted: bool):
         self._mode_mutes[mode] = bool(muted)
@@ -340,7 +342,7 @@ class ElgatoWaveDevice:
         curr_mode = self.get_dial_mode()
         try:
             cfg = self.read_config()
-            curr_mode_muted = self._mode_mutes.get(curr_mode, False)
+            curr_mode_muted = self.get_mode_mute(curr_mode)
             # Physical hardware mute register controls both LED ring state and mode mute
             cfg[self.profile.off_mute] = 0x01 if curr_mode_muted else 0x00
             self._apply_led_colors_to_config(cfg, active_mode=curr_mode)
@@ -687,13 +689,17 @@ class ElgatoWaveDevice:
             elif raw_hw_mute != self._last_raw_hw_mute:
                 # User physically touched capacitive mute button on hardware
                 active_mode = dial_mode
-                toggled_mute = not self._mode_mutes.get(active_mode, False)
-                self._mode_mutes[active_mode] = toggled_mute
                 if active_mode == "mix":
+                    curr_mix_muted = self.get_mode_mute("mix")
+                    toggled_mute = not curr_mix_muted
                     self._mode_mutes["gain"] = toggled_mute
                     self._mode_mutes["hp"] = toggled_mute
+                    self._mode_mutes["mix"] = toggled_mute
+                else:
+                    toggled_mute = not self._mode_mutes.get(active_mode, False)
+                    self._mode_mutes[active_mode] = toggled_mute
 
-                is_curr_muted = self._mode_mutes.get(active_mode, False)
+                is_curr_muted = self.get_mode_mute(active_mode)
 
                 cfg[self.profile.off_mute] = 0x01 if is_curr_muted else 0x00
                 self._apply_led_colors_to_config(cfg, active_mode=active_mode)
@@ -703,7 +709,7 @@ class ElgatoWaveDevice:
                     pass
                 self._last_raw_hw_mute = bool(cfg[self.profile.off_mute])
 
-            mute = self._mode_mutes.get(dial_mode, False)
+            mute = self.get_mode_mute(dial_mode)
 
             raw_hp = struct.unpack_from(self.profile.hp_fmt, cfg, self.profile.off_hp_vol)[0]
             hp_db = raw_hp / self.profile.hp_scale
