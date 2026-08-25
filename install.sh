@@ -70,9 +70,11 @@ install_udev_rules() {
     local init_dest="/usr/local/bin/wavecontroller-hw-init"
     
     if [ -f "${init_script}" ]; then
-        echo -e "${YELLOW}Installing WaveController hardware boot pre-init helper (sudo password required)...${NC}"
-        sudo cp "${init_script}" "${init_dest}"
-        sudo chmod +x "${init_dest}"
+        if [ ! -f "${init_dest}" ] || ! cmp -s "${init_script}" "${init_dest}"; then
+            echo -e "${YELLOW}Installing WaveController hardware boot pre-init helper (sudo password required)...${NC}"
+            sudo cp "${init_script}" "${init_dest}"
+            sudo chmod +x "${init_dest}"
+        fi
     fi
 
     if [ -f "${udev_file}" ]; then

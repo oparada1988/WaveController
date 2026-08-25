@@ -67,13 +67,24 @@ install_udev_rules() {
     local udev_file="${REPO_DIR}/data/99-elgato-wave.rules"
     local udev_dest="/etc/udev/rules.d/99-elgato-wave.rules"
     
+    local init_script="${REPO_DIR}/scripts/wavecontroller_hw_init.py"
+    local init_dest="/usr/local/bin/wavecontroller-hw-init"
+    
+    if [ -f "${init_script}" ]; then
+        if [ ! -f "${init_dest}" ] || ! cmp -s "${init_script}" "${init_dest}"; then
+            echo -e "${YELLOW}Installing WaveController hardware boot pre-init helper (sudo password required)...${NC}"
+            sudo cp "${init_script}" "${init_dest}"
+            sudo chmod +x "${init_dest}"
+        fi
+    fi
+
     if [ -f "${udev_file}" ]; then
         if [ ! -f "${udev_dest}" ] || ! cmp -s "${udev_file}" "${udev_dest}"; then
-            echo -e "${YELLOW}Installing Elgato Wave hardware udev rules (sudo password required)...${NC}"
+            echo -e "${YELLOW}Installing Elgato Wave hardware udev rules...${NC}"
             sudo cp "${udev_file}" "${udev_dest}"
             sudo udevadm control --reload-rules
             sudo udevadm trigger
-            echo -e "${GREEN}✔ udev rules installed and activated successfully.${NC}"
+            echo -e "${GREEN}✔ udev rules & boot pre-init helper installed and activated successfully.${NC}"
         else
             echo -e "${GREEN}✔ Hardware udev rules are up to date.${NC}"
         fi
