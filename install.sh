@@ -61,19 +61,27 @@ show_help() {
     echo ""
 }
 
-# Install / Update Udev Rules
+# Install / Update Udev Rules & Boot Pre-Init Helper
 install_udev_rules() {
-    echo -e "${BLUE}[1/5] Checking hardware USB permissions (udev rules)...${NC}"
+    echo -e "${BLUE}[1/5] Checking hardware USB permissions & boot pre-init helper (udev rules)...${NC}"
     local udev_file="${REPO_DIR}/data/99-elgato-wave.rules"
     local udev_dest="/etc/udev/rules.d/99-elgato-wave.rules"
+    local init_script="${REPO_DIR}/scripts/wavecontroller_hw_init.py"
+    local init_dest="/usr/local/bin/wavecontroller-hw-init"
     
+    if [ -f "${init_script}" ]; then
+        echo -e "${YELLOW}Installing WaveController hardware boot pre-init helper (sudo password required)...${NC}"
+        sudo cp "${init_script}" "${init_dest}"
+        sudo chmod +x "${init_dest}"
+    fi
+
     if [ -f "${udev_file}" ]; then
         if [ ! -f "${udev_dest}" ] || ! cmp -s "${udev_file}" "${udev_dest}"; then
-            echo -e "${YELLOW}Installing Elgato Wave hardware udev rules (sudo password required)...${NC}"
+            echo -e "${YELLOW}Installing Elgato Wave hardware udev rules...${NC}"
             sudo cp "${udev_file}" "${udev_dest}"
             sudo udevadm control --reload-rules
             sudo udevadm trigger
-            echo -e "${GREEN}✔ udev rules installed and activated successfully.${NC}"
+            echo -e "${GREEN}✔ udev rules & boot pre-init helper installed and activated successfully.${NC}"
         else
             echo -e "${GREEN}✔ Hardware udev rules are up to date.${NC}"
         fi
@@ -221,6 +229,7 @@ uninstall_app() {
     # 2. Remove files
     rm -rf "${INSTALL_DIR}"
     rm -f "${BIN_DIR}/wavecontroller"
+    sudo rm -f "/usr/local/bin/wavecontroller-hw-init" 2>/dev/null || true
     rm -f "${DESKTOP_DIR}/com.oparada.WaveController.desktop"
     rm -f "${AUTOSTART_DIR}/com.oparada.WaveController.desktop"
     rm -f "${ICON_PNG_DIR}/com.oparada.WaveController.png"
