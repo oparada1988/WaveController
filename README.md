@@ -1,16 +1,22 @@
 # WaveController
 
-**WaveController** is a modern, native Linux multi-track audio mixing engine and hardware manager designed to provide the complete **Elgato Wave Link** experience on Linux with 1-to-1 integration for **Stream Deck Plus** and **[Volume Controller Plus](https://github.com/oparada1988/Volume-Controller-Plus)**.
+**WaveController** is a modern, native Linux multi-track audio mixing engine, PipeWire compatible, and hardware manager, designed to provide the complete **Elgato Wave Link**, **Wave Device** tier-1, first class experience on Linux. It also supports other 3rd party USB devices. It is **HEAVILY** developed using Google Antigravity, but heavily tested, and troubleshoot by a real human! Currently only supports the Wave XLR(non MK2) and aiming to support the other wave devices.
 
-![WaveController Screenshot](assets/screenshot.png)
+Want to help test and develop? make sure to join my Discord server
+https://discord.gg/FMtTbBr3Xe
+
+<img width="1750" height="1185" alt="Screenshot From 2026-08-25 13-45-00" src="https://github.com/user-attachments/assets/ab713660-c190-4dc0-9c23-c9409d873834" />
+<img width="1750" height="1185" alt="Screenshot From 2026-08-25 13-45-06" src="https://github.com/user-attachments/assets/ea92b5b0-ddcb-46d2-90d4-3115ebcae015" />
+
+
 
 ---
 
-### ✨ Features
+### Features
 
 * **Multi-Track Virtual Sub-Mixing**:
-  * 9 Virtual Audio Input Channels (`Microphone`, `Games`, `Music`, `Voice Chat`, `Stream Deck / SFX`, `Browser`, `System Audio`).
-  * Dual Independent Output Buses (`Personal Mix` / Headphones and `Record Mix` / Stream Mix for OBS/Discord).
+  * Virtual Audio Input Channels
+  * Independent Output Buses
   * Independent Faders & Mute Controls per channel and mix bus.
 * **Tier 1 First-Class Elgato Hardware Integration**:
   * Native USB Control Transfers (`wIndex=0x3303`) without needing custom kernel modules.
@@ -20,17 +26,14 @@
   * Clipguard dual-stage analog/digital limiter.
   * Bi-directional Capacitive Touch Mute synchronization.
   * Hardware Headphone Volume and Mic/PC Crossfade.
+  * Gain, Volume, Mute peak on Wave XLR
 * **Tier 2 Universal Microphone & Interface Support**:
   * Compatible with any USB microphone (Fifine, Blue Yeti, Rode, Shure, Audio-Technica).
   * Software-emulated Clipguard limiter and Low-Cut filters via PipeWire.
-* **1-to-1 Volume Controller Plus Integration**:
-  * Built-in local IPC server at `/tmp/wavecontroller.sock`.
-  * Adjust any sub-mix channel directly from Stream Deck Plus physical dials.
-  * Live audio VU meters on Stream Deck Plus LCD screens.
 * **GNOME Microphone Icon Bypass**:
   * Real-time VU peak monitoring and helper sub-mix streams are spoofed with `application.id=org.PulseAudio.pavucontrol` and `media.role=volume-control` to prevent GNOME Shell from displaying a persistent orange recording microphone indicator on the top panel.
 
-### 📦 Installation & Setup
+### Installation & Setup
 
 #### 1. One-Line Remote Installer
 Install WaveController, desktop launcher, application icons, and `udev` hardware permissions in a single command:
@@ -48,7 +51,7 @@ cd WaveController
 
 ---
 
-### ⚙️ Management Script Options (`install.sh`)
+### Management Script Options (`install.sh`)
 
 The unified installer script supports the following flags:
 
@@ -63,7 +66,7 @@ The unified installer script supports the following flags:
 
 ---
 
-### 📂 Standard Installation Paths
+### Standard Installation Paths
 
 * **Application Codebase**: `~/.local/share/wavecontroller/`
 * **CLI Executable**: `~/.local/bin/wavecontroller`
@@ -74,7 +77,7 @@ The unified installer script supports the following flags:
 
 ---
 
-### 🔌 Hardware Permissions (udev rules)
+### Hardware Permissions (udev rules)
 
 If you only need to install or update the hardware USB permissions manually:
 
@@ -82,14 +85,14 @@ If you only need to install or update the hardware USB permissions manually:
 curl -fsSL https://raw.githubusercontent.com/oparada1988/WaveController/main/data/99-elgato-wave.rules | sudo tee /etc/udev/rules.d/99-elgato-wave.rules > /dev/null && sudo udevadm control --reload-rules && sudo udevadm trigger && echo "✔ Elgato Wave udev rules successfully installed and activated!"
 ```
 
-### 📚 Documentation
+### Documentation
 
 For in-depth reverse-engineered USB memory maps, mode-isolated capacitive muting architecture, and PipeWire graph diagrams, review the technical documentation:
 * [**Elgato Wave Hardware & PipeWire Audio Architecture**](docs/WaveController_Elgato_Hardware_Technical_Architecture.md)
 
 ---
 
-### 🚀 Running WaveController
+### Running WaveController
 
 Once installed, launch it directly from your desktop application launcher or run:
 ```bash
