@@ -291,6 +291,8 @@ class ElgatoWaveDevice:
 
     def write_config(self, config: bytearray):
         self._ctrl_write(self.profile.wvalue_config, bytes(config))
+        if self.profile.off_mute is not None and len(config) > self.profile.off_mute:
+            self._last_raw_hw_mute = bool(config[self.profile.off_mute])
 
     # --- Gain (0 to 75 dB) ---
     def get_gain_db(self) -> float:
@@ -564,6 +566,7 @@ class ElgatoWaveDevice:
             self._apply_led_colors_to_config(cfg, active_mode=target_mode)
 
         self.write_config(cfg)
+        self._last_raw_hw_mute = bool(cfg[self.profile.off_mute])
 
         if target_mode != current_steady:
             self._cancel_revert_timer()
