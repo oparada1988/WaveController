@@ -123,7 +123,7 @@ class USBHardwareManager:
             hw["phantom_power"] = self.phantom_power_48v
             config_manager.set("hardware_settings", hw, immediate=False)
 
-        if "mute" in changed:
+        if "mute" in changed and "dial_mode" not in changed:
             self.hardware_mute = bool(changed["mute"])
             active_mode = curr.get("dial_mode", "gain")
 

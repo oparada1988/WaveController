@@ -227,7 +227,7 @@ class ChannelCard(Gtk.Box):
             dial_mode = curr.get("dial_mode", "gain")
             if "phantom_power" in changed:
                 self.update_phantom_state(bool(changed["phantom_power"]))
-            if "mute" in changed:
+            if "mute" in changed and "dial_mode" not in changed and dial_mode == "gain":
                 self.set_muted(bool(changed["mute"]))
             if "gain_db" in changed and dial_mode == "gain":
                 vol_pct = max(0, min(100, int(round((float(changed["gain_db"]) / 75.0) * 100))))

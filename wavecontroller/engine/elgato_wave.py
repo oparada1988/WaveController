@@ -816,13 +816,15 @@ class ElgatoManager:
                             changed[k] = v
                     if changed:
                         self.last_state.update(changed)
-                        if any(k in changed for k in ("gain_db", "hp_volume_pct", "monitor_mix_pct", "dial_mode")):
-                            dev.notify_user_interaction()
+                        timer = getattr(dev, "_revert_timer", None)
+                        is_peeking = bool(timer and timer.is_alive())
 
-                        if "dial_mode" in changed:
-                            # User switched mode via knob click
-                            timer = getattr(dev, "_revert_timer", None)
-                            if not timer or not timer.is_alive():
+                        if not is_peeking:
+                            if any(k in changed for k in ("gain_db", "hp_volume_pct", "monitor_mix_pct", "dial_mode")):
+                                dev.notify_user_interaction()
+
+                            if "dial_mode" in changed:
+                                # User switched mode via knob click
                                 new_mode = curr["dial_mode"]
                                 dev._steady_dial_mode = new_mode
                                 is_mode_muted = dev.get_mode_mute(new_mode)
@@ -837,8 +839,8 @@ class ElgatoManager:
                                 except Exception:
                                     pass
 
-                        if self.on_state_changed:
-                            self.on_state_changed(curr, changed)
+                            if self.on_state_changed:
+                                self.on_state_changed(curr, changed)
             except Exception:
                 pass
 

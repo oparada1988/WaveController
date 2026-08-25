@@ -749,7 +749,7 @@ class MixerMatrixView(Gtk.Box):
                     card.update_phantom_state(bool(changed["phantom_power"]))
 
         # 2. Update hardware mute badges in UI based on dial mode
-        if "mute" in changed:
+        if "mute" in changed and "dial_mode" not in changed:
             is_muted = bool(changed["mute"])
             if dial_mode == "gain":
                 # Setting 1 (LED 1): Mic Input only
