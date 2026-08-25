@@ -68,10 +68,8 @@ class UnifiedDeviceSettingsView(Gtk.Box):
         if self.is_elgato:
             hero_path = self._get_device_hero_image_path()
             if hero_path and os.path.exists(hero_path):
-                self.hero_pic = Gtk.Picture.new_for_filename(hero_path)
-                self.hero_pic.set_can_shrink(True)
-                self.hero_pic.set_content_fit(Gtk.ContentFit.CONTAIN)
-                self.hero_pic.set_size_request(120, 80)
+                self.hero_pic = Gtk.Image.new_from_file(hero_path)
+                self.hero_pic.set_pixel_size(88)
                 self.hero_pic.set_halign(Gtk.Align.CENTER)
                 self.hero_pic.set_valign(Gtk.Align.CENTER)
                 self.hero_pic.set_margin_top(4)
@@ -658,8 +656,10 @@ class UnifiedDeviceSettingsView(Gtk.Box):
 
     def _get_device_hero_image_path(self) -> str:
         candidates = [
+            os.path.join(os.path.dirname(__file__), "..", "..", "assets", "icons", "ElgatoWaveXLR_small.png"),
             os.path.join(os.path.dirname(__file__), "..", "..", "assets", "icons", "ElgatoWaveXLR.png"),
             os.path.join(os.path.dirname(__file__), "..", "..", "assets", "icons", "elgato-wave-xlr.png"),
+            os.path.expanduser("~/.local/share/wavecontroller/assets/icons/ElgatoWaveXLR_small.png"),
             os.path.expanduser("~/.local/share/wavecontroller/assets/icons/ElgatoWaveXLR.png"),
             os.path.expanduser("~/Documents/WaveController real time test/ElgatoWaveXLR.png"),
         ]
