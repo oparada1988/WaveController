@@ -39,8 +39,9 @@ class USBHardwareManager:
         self.clipguard_enabled = hw_settings.get("clipguard", True)
         self.low_cut_filter = hw_settings.get("low_cut", "80Hz")
         self.hardware_mute = False
-        self.headphone_volume = 70
-        self.mic_pc_crossfade = 50
+        self.headphone_volume = hw_settings.get("headphone_volume", 70)
+        self.monitor_mix = hw_settings.get("monitor_mix", 50)
+        self.mic_pc_crossfade = self.monitor_mix
         self.low_impedance_mode = hw_settings.get("low_impedance", False)
         
         self.is_monitoring_mic = False
@@ -50,6 +51,18 @@ class USBHardwareManager:
         self.on_devices_changed_callback = None
         self.on_new_device_detected_callback = None
         self._hardware_listeners = []
+        self._elgato_initialized = False
+
+    def _ensure_elgato_card_profile(self, card_id: int):
+        """Ensures the ALSA device profile is locked to 'Analog Stereo Output + Mono Input'."""
+        try:
+            subprocess.run(
+                ["wpctl", "set-profile", str(card_id), "output:analog-stereo+input:mono-fallback"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL
+            )
+        except Exception:
+            pass
 
     def set_pipewire_manager(self, pw_mgr):
         """Sets reference to PipeWireManager for bi-directional hardware/software mute sync."""
@@ -174,9 +187,16 @@ class USBHardwareManager:
 
         if "hp_volume_pct" in changed:
             self.headphone_volume = int(round(changed["hp_volume_pct"]))
+            hw = dict(config_manager.get("hardware_settings", {}))
+            hw["headphone_volume"] = self.headphone_volume
+            config_manager.set("hardware_settings", hw, immediate=False)
 
         if "monitor_mix_pct" in changed:
             self.monitor_mix = int(round(changed["monitor_mix_pct"]))
+            self.mic_pc_crossfade = self.monitor_mix
+            hw = dict(config_manager.get("hardware_settings", {}))
+            hw["monitor_mix"] = self.monitor_mix
+            config_manager.set("hardware_settings", hw, immediate=False)
 
         if "led_colors" in changed:
             self.led_colors.update(changed["led_colors"])
@@ -335,17 +355,25 @@ class USBHardwareManager:
                 self.device_name = d["name"]
                 self.device_type = "elgato"
                 has_elgato = True
+                dev_card_id = d.get("device_id")
+                if dev_card_id:
+                    self._ensure_elgato_card_profile(dev_card_id)
                 break
 
         if has_elgato:
             dev = elgato_manager.get_device()
             if dev and dev.is_connected():
+                if not self._elgato_initialized:
+                    self.apply_saved_hardware_settings(dev)
+                    self._elgato_initialized = True
                 try:
                     init_st = dev.get_all_state()
                     if init_st.get("connected"):
                         self.phantom_power_48v = bool(init_st.get("phantom_power", self.phantom_power_48v))
                         self.hardware_gain_db = int(round(init_st.get("gain_db", self.hardware_gain_db)))
                         self.headphone_volume = int(round(init_st.get("hp_volume_pct", self.headphone_volume)))
+                        self.monitor_mix = int(round(init_st.get("monitor_mix_pct", self.monitor_mix)))
+                        self.mic_pc_crossfade = self.monitor_mix
                         self.clipguard_enabled = bool(init_st.get("clipguard", self.clipguard_enabled))
                         self.low_cut_filter = str(init_st.get("low_cut", self.low_cut_filter))
                         self.low_impedance_mode = bool(init_st.get("low_impedance", self.low_impedance_mode))
@@ -354,6 +382,63 @@ class USBHardwareManager:
                     pass
         else:
             self.device_type = "generic"
+            self._elgato_initialized = False
+
+    def apply_saved_hardware_settings(self, dev=None):
+        """Applies all saved persistent hardware configurations (phantom power, gain, clipguard, low cut, LED colors, headphone volume, monitor mix) to the physical Elgato device."""
+        if dev is None:
+            dev = elgato_manager.get_device()
+        if not dev or not dev.is_connected():
+            return
+        
+        try:
+            hw_settings = config_manager.get("hardware_settings", {})
+            
+            # 1. 48V Phantom Power
+            saved_phantom = hw_settings.get("phantom_power", self.phantom_power_48v)
+            self.phantom_power_48v = bool(saved_phantom)
+            dev.set_phantom_power(self.phantom_power_48v)
+            
+            # 2. Analog Preamp Gain
+            saved_gain = hw_settings.get("gain_db", self.hardware_gain_db)
+            self.hardware_gain_db = int(round(float(saved_gain)))
+            dev.set_gain_db(self.hardware_gain_db)
+            
+            # 3. Clipguard
+            saved_clip = hw_settings.get("clipguard", self.clipguard_enabled)
+            self.clipguard_enabled = bool(saved_clip)
+            dev.set_clipguard(self.clipguard_enabled)
+            
+            # 4. Low-Cut Filter
+            saved_lc = hw_settings.get("low_cut", self.low_cut_filter)
+            self.low_cut_filter = str(saved_lc)
+            dev.set_low_cut(self.low_cut_filter)
+            
+            # 5. Low Impedance
+            saved_lz = hw_settings.get("low_impedance", self.low_impedance_mode)
+            self.low_impedance_mode = bool(saved_lz)
+            dev.set_low_impedance(self.low_impedance_mode)
+            
+            # 6. LED Colors
+            if self.led_colors:
+                dev.set_led_colors(self.led_colors)
+                
+            # 7. Headphone Volume & Monitor Mix
+            saved_hp = hw_settings.get("headphone_volume", self.headphone_volume)
+            self.headphone_volume = int(round(float(saved_hp)))
+            dev.set_headphone_volume_pct(self.headphone_volume)
+
+            saved_mix = hw_settings.get("monitor_mix", self.monitor_mix)
+            self.monitor_mix = int(round(float(saved_mix)))
+            self.mic_pc_crossfade = self.monitor_mix
+            dev.set_monitor_mix(self.monitor_mix)
+            
+            # 8. Unmute physical hardware unless explicitly set to muted
+            dev.set_mode_mute("gain", self.hardware_mute)
+            dev.set_mode_mute("hp", False)
+            dev.set_mode_mute("mix", False)
+        except Exception:
+            pass
 
     def _start_hotplug_monitor(self):
         """Background worker checking for newly attached hardware devices."""
@@ -596,6 +681,10 @@ class USBHardwareManager:
 
     def set_output_volume(self, sink_id_or_key: str = None, volume_pct: int = 75, transient: bool = False):
         self.headphone_volume = max(0, min(100, volume_pct))
+        if not transient:
+            hw = dict(config_manager.get("hardware_settings", {}))
+            hw["headphone_volume"] = self.headphone_volume
+            config_manager.set("hardware_settings", hw, immediate=False)
         target = self._resolve_sink_target(sink_id_or_key)
         vol_frac = max(0.0, min(1.5, self.headphone_volume / 100.0))
         if not self._is_target_elgato(sink_id_or_key):
@@ -617,6 +706,11 @@ class USBHardwareManager:
 
     def set_monitor_mix(self, pct: int, transient: bool = False):
         self.monitor_mix = max(0, min(100, int(pct)))
+        self.mic_pc_crossfade = self.monitor_mix
+        if not transient:
+            hw = dict(config_manager.get("hardware_settings", {}))
+            hw["monitor_mix"] = self.monitor_mix
+            config_manager.set("hardware_settings", hw, immediate=False)
         elgato_dev = elgato_manager.get_device()
         if elgato_dev:
             elgato_dev.set_monitor_mix(self.monitor_mix, transient=transient)

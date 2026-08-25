@@ -1,3 +1,4 @@
+import os
 import gi
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
@@ -35,22 +36,19 @@ class UnifiedDeviceSettingsView(Gtk.Box):
         self.set_margin_start(24)
         self.set_margin_end(24)
 
-        # 1. Header Area with Device Title, Status & Remove Action
-        header_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
-        
-        curr_icon = self.hardware_mgr.get_device_icon(self.device_key)
-        self.header_icon_img = Gtk.Image.new_from_icon_name(curr_icon)
-        self.header_icon_img.set_pixel_size(32)
-        self.header_icon_img.set_valign(Gtk.Align.CENTER)
-        header_box.append(self.header_icon_img)
+        # 1. Header Area with Device Title, Status & Big Centered Graphic
+        header_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        header_box.set_halign(Gtk.Align.CENTER)
+        header_box.set_margin_top(8)
+        header_box.set_margin_bottom(16)
 
-        title_vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
-        title_vbox.set_hexpand(True)
+        title_vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        title_vbox.set_halign(Gtk.Align.CENTER)
 
         display_name = self.hardware_mgr.get_device_display_name(self.device_key)
         self.title_lbl = Gtk.Label(label=display_name)
         self.title_lbl.add_css_class("wave-main-title")
-        self.title_lbl.set_halign(Gtk.Align.START)
+        self.title_lbl.set_halign(Gtk.Align.CENTER)
         title_vbox.append(self.title_lbl)
 
         # Status & Capabilities subtitle
@@ -61,10 +59,24 @@ class UnifiedDeviceSettingsView(Gtk.Box):
         status_text = f"🟢 Connected • {badge_text} ({desc}){hw_tag}" if is_conn else "🟡 Disconnected / Offline"
         self.sub_lbl = Gtk.Label(label=status_text)
         self.sub_lbl.add_css_class("mix-header-subtitle")
-        self.sub_lbl.set_halign(Gtk.Align.START)
+        self.sub_lbl.set_halign(Gtk.Align.CENTER)
         title_vbox.append(self.sub_lbl)
 
         header_box.append(title_vbox)
+
+        # Big Device Graphic for Elgato Wave Devices
+        if self.is_elgato:
+            hero_path = self._get_device_hero_image_path()
+            if hero_path and os.path.exists(hero_path):
+                self.hero_pic = Gtk.Picture.new_for_filename(hero_path)
+                self.hero_pic.set_content_fit(Gtk.ContentFit.CONTAIN)
+                self.hero_pic.set_size_request(300, 200)
+                self.hero_pic.set_halign(Gtk.Align.CENTER)
+                self.hero_pic.set_margin_top(8)
+                self.hero_pic.set_margin_bottom(8)
+                self.hero_pic.add_css_class("wave-device-hero-image")
+                header_box.append(self.hero_pic)
+
         self.append(header_box)
 
         # 2. Preferences Page
@@ -641,63 +653,108 @@ class UnifiedDeviceSettingsView(Gtk.Box):
         if self.on_device_renamed:
             self.on_device_renamed()
 
+    def _get_device_hero_image_path(self) -> str:
+        candidates = [
+            os.path.join(os.path.dirname(__file__), "..", "..", "assets", "icons", "ElgatoWaveXLR.png"),
+            os.path.join(os.path.dirname(__file__), "..", "..", "assets", "icons", "elgato-wave-xlr.png"),
+            os.path.expanduser("~/.local/share/wavecontroller/assets/icons/ElgatoWaveXLR.png"),
+            os.path.expanduser("~/Documents/WaveController real time test/ElgatoWaveXLR.png"),
+        ]
+        for c in candidates:
+            if os.path.isfile(c):
+                return c
+        return ""
+
     def refresh_device_names(self):
         display_name = self.hardware_mgr.get_device_display_name(self.device_key)
         self.title_lbl.set_text(display_name)
         curr_icon = self.hardware_mgr.get_device_icon(self.device_key)
-        self.header_icon_img.set_from_icon_name(curr_icon)
+        if hasattr(self, "header_icon_img"):
+            self.header_icon_img.set_from_icon_name(curr_icon)
         if hasattr(self, "icon_btn"):
             self.icon_btn.set_icon_name(curr_icon)
 
 
-class AddDeviceDialog(Adw.PreferencesDialog):
+class AddDeviceDialog(Adw.Window):
     """
     Modal preferences dialog allowing users to discover and add untracked
     hardware audio devices (Duplex, Input Only, Output Only) into WaveController.
     """
     def __init__(self, hardware_mgr, on_device_added_callback=None, **kwargs):
-        super().__init__(title="Add Audio Device", **kwargs)
+        super().__init__(title="Add Audio Device", modal=True, **kwargs)
         self.hardware_mgr = hardware_mgr
         self.on_device_added_callback = on_device_added_callback
-        self.set_size_request(540, 480)
+        self.set_default_size(560, 520)
 
-        self._build_content()
+        toolbar_view = Adw.ToolbarView()
 
-    def _build_content(self):
+        # HeaderBar with Window Controls and Cancel Action Button
+        header = Adw.HeaderBar()
+        header.set_show_title(True)
+
+        cancel_btn = Gtk.Button(label="Cancel")
+        cancel_btn.add_css_class("flat")
+        cancel_btn.connect("clicked", lambda b: self.close())
+        header.pack_start(cancel_btn)
+
+        toolbar_view.add_top_bar(header)
+
+        # Scrolled content with PreferencesPage
+        scrolled = Gtk.ScrolledWindow()
+        scrolled.set_vexpand(True)
+        scrolled.set_hexpand(True)
+
+        content_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=16)
+        content_box.set_margin_top(16)
+        content_box.set_margin_bottom(24)
+        content_box.set_margin_start(20)
+        content_box.set_margin_end(20)
+
         untracked = self.hardware_mgr.get_available_untracked_devices()
-        page = Adw.PreferencesPage()
-
         if not untracked:
             status = Adw.StatusPage()
             status.set_icon_name("audio-volume-high-symbolic")
             status.set_title("All Devices Added")
             status.set_description("All detected physical audio devices are currently added to WaveController.")
-            self.set_child(status)
-            return
 
-        duplex_devs = [d for d in untracked if d.get("type") == "duplex"]
-        input_devs = [d for d in untracked if d.get("type") == "input"]
-        output_devs = [d for d in untracked if d.get("type") == "output"]
+            close_btn = Gtk.Button(label="Close")
+            close_btn.add_css_class("suggested-action")
+            close_btn.add_css_class("pill")
+            close_btn.set_halign(Gtk.Align.CENTER)
+            close_btn.connect("clicked", lambda b: self.close())
+            status.set_child(close_btn)
 
-        if duplex_devs:
-            grp = Adw.PreferencesGroup(title="Duplex Devices (Microphone + Headphone Monitor)")
-            for dev in duplex_devs:
-                grp.add(self._create_device_row(dev))
-            page.add(grp)
+            content_box.append(status)
+        else:
+            page = Adw.PreferencesPage()
 
-        if input_devs:
-            grp = Adw.PreferencesGroup(title="Microphones &amp; Vocal Inputs")
-            for dev in input_devs:
-                grp.add(self._create_device_row(dev))
-            page.add(grp)
+            duplex_devs = [d for d in untracked if d.get("type") == "duplex"]
+            input_devs = [d for d in untracked if d.get("type") == "input"]
+            output_devs = [d for d in untracked if d.get("type") == "output"]
 
-        if output_devs:
-            grp = Adw.PreferencesGroup(title="Speakers &amp; Headphones (Outputs)")
-            for dev in output_devs:
-                grp.add(self._create_device_row(dev))
-            page.add(grp)
+            if duplex_devs:
+                grp = Adw.PreferencesGroup(title="Duplex Devices (Microphone + Headphone Monitor)")
+                for dev in duplex_devs:
+                    grp.add(self._create_device_row(dev))
+                page.add(grp)
 
-        self.add(page)
+            if input_devs:
+                grp = Adw.PreferencesGroup(title="Microphones &amp; Vocal Inputs")
+                for dev in input_devs:
+                    grp.add(self._create_device_row(dev))
+                page.add(grp)
+
+            if output_devs:
+                grp = Adw.PreferencesGroup(title="Speakers &amp; Headphones (Outputs)")
+                for dev in output_devs:
+                    grp.add(self._create_device_row(dev))
+                page.add(grp)
+
+            content_box.append(page)
+
+        scrolled.set_child(content_box)
+        toolbar_view.set_content(scrolled)
+        self.set_content(toolbar_view)
 
     def _create_device_row(self, dev: dict) -> Adw.ActionRow:
         row = Adw.ActionRow(title=dev.get("name", "Audio Device"))

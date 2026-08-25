@@ -812,12 +812,8 @@ class ElgatoManager:
                 if not curr.get("connected"):
                     continue
                 if not self.last_state:
-                    # Broadcast initial full state snapshot immediately on connection (filter mute from initial trigger)
+                    # Establish baseline snapshot on connection
                     self.last_state = dict(curr)
-                    if self.on_state_changed:
-                        init_diff = dict(curr)
-                        init_diff.pop("mute", None)
-                        self.on_state_changed(curr, init_diff)
                 else:
                     changed = {}
                     for k, v in curr.items():

@@ -107,6 +107,8 @@ class ChannelCard(Gtk.Box):
 
         # 7. Stereo Split Volume Slider & VU Meter (Master Channel Gain)
         vol = self.pipewire_mgr.get_channel_master_volume(self.channel_info["id"])
+        if self.is_wave_channel and self.hardware_mgr:
+            vol = max(0, min(100, int(round((self.hardware_mgr.hardware_gain_db / 75.0) * 100))))
         muted = self.pipewire_mgr.get_channel_master_mute(self.channel_info["id"])
         is_synced = self.pipewire_mgr.get_channel_sync_meter(self.channel_info["id"])
         self.slider = StereoSlider(

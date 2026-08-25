@@ -358,7 +358,8 @@ class WaveMainWindow(Adw.ApplicationWindow):
 
     def _open_add_device_dialog(self):
         dialog = AddDeviceDialog(self.hardware_mgr, on_device_added_callback=self._on_device_added)
-        dialog.present(self)
+        dialog.set_transient_for(self)
+        dialog.present()
 
     def _on_device_added(self, device_key: str):
         self._rebuild_device_views(select_device_key=device_key)

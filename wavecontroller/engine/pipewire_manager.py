@@ -91,7 +91,7 @@ class PipeWireManager:
             if ch_id not in self.channel_master_states:
                 self.channel_master_states[ch_id] = {
                     "volume": mic_vol if ch_id == "mic" else ch.get("default_vol", 80),
-                    "muted": mic_muted if ch_id == "mic" else False
+                    "muted": False
                 }
             if ch_id not in self.channel_states:
                 self.channel_states[ch_id] = {}
@@ -102,7 +102,7 @@ class PipeWireManager:
                 if mx_id not in self.channel_states[ch_id]:
                     self.channel_states[ch_id][mx_id] = {
                         "volume": mic_vol if ch_id == "mic" else ch.get("default_vol", 80),
-                        "muted": mic_muted if ch_id == "mic" else False,
+                        "muted": False,
                         "linked": True
                     }
         self._save_state_to_config(immediate=False)
@@ -365,34 +365,33 @@ class PipeWireManager:
             except Exception:
                 pass
 
-        # Enforce Output Sink Lock (100% volume, unmuted in ALSA/PipeWire)
-        for sink_id in out_node_ids:
-            try:
-                out = subprocess.check_output(["wpctl", "get-volume", str(sink_id)], text=True, stderr=subprocess.DEVNULL).strip()
-                import re
-                m = re.search(r'Volume:\s*([\d\.]+)', out)
-                is_muted = "[MUTED]" in out
-                if m:
-                    vol_val = float(m.group(1))
-                    if abs(vol_val - 1.0) > 0.005:
-                        subprocess.run(["wpctl", "set-volume", str(sink_id), "1.0"], stderr=subprocess.DEVNULL)
-                    if is_muted:
-                        subprocess.run(["wpctl", "set-mute", str(sink_id), "0"], stderr=subprocess.DEVNULL)
-            except Exception:
-                pass
+        # Enforce Output Sink Lock (100% volume in ALSA/PipeWire if exclusive_output_lock is True)
+        if excl_out:
+            for sink_id in out_node_ids:
+                try:
+                    out = subprocess.check_output(["wpctl", "get-volume", str(sink_id)], text=True, stderr=subprocess.DEVNULL).strip()
+                    import re
+                    m = re.search(r'Volume:\s*([\d\.]+)', out)
+                    if m:
+                        vol_val = float(m.group(1))
+                        if abs(vol_val - 1.0) > 0.005:
+                            subprocess.run(["wpctl", "set-volume", str(sink_id), "1.0"], stderr=subprocess.DEVNULL)
+                except Exception:
+                    pass
 
-        # Enforce Mic Capture Lock (100% capture volume in ALSA/PipeWire)
-        for src_id in in_node_ids:
-            try:
-                out = subprocess.check_output(["wpctl", "get-volume", str(src_id)], text=True, stderr=subprocess.DEVNULL).strip()
-                import re
-                m = re.search(r'Volume:\s*([\d\.]+)', out)
-                if m:
-                    vol_val = float(m.group(1))
-                    if abs(vol_val - 1.0) > 0.005:
-                        subprocess.run(["wpctl", "set-volume", str(src_id), "1.0"], stderr=subprocess.DEVNULL)
-            except Exception:
-                pass
+        # Enforce Mic Capture Lock (100% capture volume in ALSA/PipeWire if exclusive_mic_lock is True)
+        if excl_mic:
+            for src_id in in_node_ids:
+                try:
+                    out = subprocess.check_output(["wpctl", "get-volume", str(src_id)], text=True, stderr=subprocess.DEVNULL).strip()
+                    import re
+                    m = re.search(r'Volume:\s*([\d\.]+)', out)
+                    if m:
+                        vol_val = float(m.group(1))
+                        if abs(vol_val - 1.0) > 0.005:
+                            subprocess.run(["wpctl", "set-volume", str(src_id), "1.0"], stderr=subprocess.DEVNULL)
+                except Exception:
+                    pass
 
     def _ensure_mix_sinks_unmuted(self):
         """Enforces unmuted state on PipeWire virtual null-sinks so audio always passes to physical outputs."""
