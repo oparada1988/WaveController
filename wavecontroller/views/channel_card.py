@@ -358,7 +358,7 @@ class ChannelCard(Gtk.Box):
         ch_id = self.channel_info["id"]
         is_muted = self.pipewire_mgr.toggle_channel_master_mute(ch_id)
         if self.is_wave_channel and self.hardware_mgr:
-            self.hardware_mgr.set_mode_mute("gain", is_muted)
+            self.hardware_mgr.set_mode_mute("gain", is_muted, transient=True)
         self.update_ui_state()
         if self.pipewire_mgr.is_channel_linked(ch_id) and self.on_link_toggle_callback:
             self.on_link_toggle_callback(ch_id, True)

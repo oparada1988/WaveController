@@ -563,7 +563,7 @@ class UnifiedDeviceSettingsView(Gtk.Box):
         self.hardware_mgr.set_output_volume(self.device_key, val, transient=True)
 
     def _on_output_mute_clicked(self, btn):
-        self.hardware_mgr.toggle_output_mute(self.device_key)
+        self.hardware_mgr.toggle_output_mute(self.device_key, transient=True)
         self._update_mute_button_state()
 
     def _update_mute_button_state(self):

@@ -929,7 +929,7 @@ class MixerMatrixView(Gtk.Box):
 
     def _on_output_mute_clicked(self, btn):
         sink_id = self._get_selected_output_sink_id()
-        is_muted = self.hardware_mgr.toggle_output_mute(sink_id)
+        is_muted = self.hardware_mgr.toggle_output_mute(sink_id, transient=True)
         self._update_out_mute_btn(is_muted)
 
     def _update_out_mute_btn(self, is_muted: bool):

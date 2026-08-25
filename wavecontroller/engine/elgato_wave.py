@@ -345,7 +345,7 @@ class ElgatoWaveDevice:
             return bool(self._mode_mutes.get("gain", False) and self._mode_mutes.get("hp", False))
         return bool(self._mode_mutes.get(mode, False))
 
-    def set_mode_mute(self, mode: str, muted: bool):
+    def set_mode_mute(self, mode: str, muted: bool, transient: bool = False):
         self._mode_mutes[mode] = bool(muted)
         if mode == "mix":
             self._mode_mutes["gain"] = bool(muted)
@@ -355,17 +355,21 @@ class ElgatoWaveDevice:
         try:
             cfg = self.read_config()
             curr_mode_muted = self.get_mode_mute(curr_mode)
-            cfg[self.profile.off_mute] = self._calc_hw_mute_byte(curr_mode)
-            self._apply_led_colors_to_config(cfg, active_mode=curr_mode)
-            self.write_config(cfg)
-            self._last_raw_hw_mute = bool(cfg[self.profile.off_mute])
+            if transient:
+                self.notify_user_interaction(mode)
+                self._trigger_transient_peek(mode, cfg)
+            else:
+                cfg[self.profile.off_mute] = self._calc_hw_mute_byte(curr_mode)
+                self._apply_led_colors_to_config(cfg, active_mode=curr_mode)
+                self.write_config(cfg)
+                self._last_raw_hw_mute = bool(cfg[self.profile.off_mute])
             self._last_state["mute"] = curr_mode_muted
         except Exception as e:
             log.warning(f"Failed to set hardware mute for mode {mode}: {e}")
 
-    def set_mute(self, muted: bool):
+    def set_mute(self, muted: bool, transient: bool = False):
         curr_mode = self.get_dial_mode()
-        self.set_mode_mute(curr_mode, muted)
+        self.set_mode_mute(curr_mode, muted, transient=transient)
 
     # --- 48V Phantom Power ---
     def get_phantom_power(self) -> bool:
@@ -820,6 +824,10 @@ class ElgatoManager:
                         self.last_state.update(changed)
                         timer = getattr(dev, "_revert_timer", None)
                         is_peeking = bool(timer and timer.is_alive())
+
+                        if is_peeking and any(k in changed for k in ("gain_db", "hp_volume_pct", "monitor_mix_pct", "dial_mode", "mute")):
+                            dev._cancel_revert_timer()
+                            is_peeking = False
 
                         if not is_peeking:
                             if any(k in changed for k in ("gain_db", "hp_volume_pct", "monitor_mix_pct", "dial_mode")):

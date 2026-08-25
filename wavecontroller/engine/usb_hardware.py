@@ -775,10 +775,10 @@ class USBHardwareManager:
             self.pipewire_mgr._enforce_exclusive_volume_guard()
         self.notify_hardware_listeners({"exclusive_output_lock": self.exclusive_output_lock}, {"exclusive_output_lock": self.exclusive_output_lock})
 
-    def set_mode_mute(self, mode: str, muted: bool):
+    def set_mode_mute(self, mode: str, muted: bool, transient: bool = False):
         elgato_dev = elgato_manager.get_device()
         if elgato_dev:
-            elgato_dev.set_mode_mute(mode, muted)
+            elgato_dev.set_mode_mute(mode, muted, transient=transient)
 
     def get_output_mute(self, sink_id_or_key: str = None) -> bool:
         target = self._resolve_sink_target(sink_id_or_key)
@@ -788,12 +788,12 @@ class USBHardwareManager:
         except Exception:
             return False
 
-    def toggle_output_mute(self, sink_id_or_key: str = None) -> bool:
+    def toggle_output_mute(self, sink_id_or_key: str = None, transient: bool = False) -> bool:
         target = self._resolve_sink_target(sink_id_or_key)
         try:
             subprocess.run(["wpctl", "set-mute", target, "toggle"], stderr=subprocess.DEVNULL)
             is_muted = self.get_output_mute(sink_id_or_key)
-            self.set_mode_mute("hp", is_muted)
+            self.set_mode_mute("hp", is_muted, transient=transient)
             return is_muted
         except Exception:
             return False
@@ -910,7 +910,7 @@ class USBHardwareManager:
         self.notify_hardware_listeners({"low_impedance": self.low_impedance_mode}, {"low_impedance": self.low_impedance_mode})
         return self.low_impedance_mode
 
-    def toggle_mute(self, source_id_or_key: str = None) -> bool:
+    def toggle_mute(self, source_id_or_key: str = None, transient: bool = False) -> bool:
         self.hardware_mute = not self.hardware_mute
         target = self._resolve_source_target(source_id_or_key)
         try:
@@ -918,7 +918,7 @@ class USBHardwareManager:
         except Exception:
             pass
         
-        self.set_mode_mute("gain", self.hardware_mute)
+        self.set_mode_mute("gain", self.hardware_mute, transient=transient)
         return self.hardware_mute
 
     def get_elgato_device_info(self) -> dict:

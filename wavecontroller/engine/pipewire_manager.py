@@ -692,7 +692,7 @@ class PipeWireManager:
 
             # Sync physical Elgato hardware mute if this is a mic channel
             if self.hardware_mgr and any(k in channel_id.lower() for k in ("elgato", "wave", "mic", "microphone")):
-                self.hardware_mgr.set_mode_mute("gain", muted)
+                self.hardware_mgr.set_mode_mute("gain", muted, transient=True)
 
     def toggle_channel_master_mute(self, channel_id: str) -> bool:
         with self._lock:
@@ -717,7 +717,7 @@ class PipeWireManager:
 
             # Sync physical Elgato hardware mute if this is a mic channel
             if self.hardware_mgr and any(k in channel_id.lower() for k in ("elgato", "wave", "mic", "microphone")):
-                self.hardware_mgr.set_mode_mute("gain", new_mute)
+                self.hardware_mgr.set_mode_mute("gain", new_mute, transient=True)
 
             return new_mute
 
