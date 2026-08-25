@@ -328,13 +328,13 @@ class ElgatoWaveDevice:
     # --- Capacitive Mute & Hardware Per-Mode Mute ---
     def _calc_hw_mute_byte(self, active_mode: str) -> int:
         """
-        Hardware Byte 4 (off_mute) controls the physical XLR analog mic preamp relay.
-        It must remain 0x01 (Muted) whenever Mic is muted OR whenever the active mode is muted.
-        Active mode LED color (Green/Orange/Red) is dynamically driven via off_rgb_mute / off_rgb_ring.
+        Hardware Byte 4 (off_mute) controls the physical XLR analog mic preamp relay
+        and hardware LED ring mute display mode.
+        It should only be 0x01 (Muted) if the active mode currently displayed on the dial is muted.
+        This allows Mode 2 (Headphone) and Mode 3 (Balance) to display their true level arcs
+        even when Mic (Mode 1) is muted in software.
         """
-        is_mic_muted = bool(self._mode_mutes.get("gain", False))
-        is_curr_muted = bool(self.get_mode_mute(active_mode))
-        return 0x01 if (is_mic_muted or is_curr_muted) else 0x00
+        return 0x01 if bool(self.get_mode_mute(active_mode)) else 0x00
 
     def get_mute(self) -> bool:
         curr_mode = self.get_dial_mode()
@@ -629,10 +629,7 @@ class ElgatoWaveDevice:
 
     def _apply_led_colors_to_config(self, cfg: bytearray, active_mode: str = "gain"):
         if self.profile.off_rgb_mute is not None:
-            mode_is_muted = self.get_mode_mute(active_mode)
-            # If the current mode is muted, illuminate Red.
-            # If the current mode is unmuted (even if mic is muted in hardware), illuminate in active mode's color!
-            mute_hex = self._led_colors.get("mute", "#FF0000").lstrip("#") if mode_is_muted else self._led_colors.get(active_mode, "#FFFFFF").lstrip("#")
+            mute_hex = self._led_colors.get("mute", "#FF0000").lstrip("#")
             if len(mute_hex) == 6:
                 try:
                     mr, mg, mb = int(mute_hex[0:2], 16), int(mute_hex[2:4], 16), int(mute_hex[4:6], 16)
