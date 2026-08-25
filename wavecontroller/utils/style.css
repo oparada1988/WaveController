@@ -536,6 +536,6 @@ popover.wave-popover entry:focus {
 }
 
 .wave-device-hero-image {
-    max-width: 120px;
-    max-height: 80px;
+    margin-top: 4px;
+    margin-bottom: 6px;
 }

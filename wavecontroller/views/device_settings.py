@@ -36,11 +36,17 @@ class UnifiedDeviceSettingsView(Gtk.Box):
         self.set_margin_start(24)
         self.set_margin_end(24)
 
-        # 1. Header Area with Device Title, Status & Big Centered Graphic
+        # 1. Main Scrollable Preferences Page (Unified Scroll Container)
+        pref_page = Adw.PreferencesPage()
+        pref_page.set_vexpand(True)
+        pref_page.set_hexpand(True)
+
+        # Top Header Group (Centered Title, Status Subtitle & Device Badge Graphic)
+        grp_header = Adw.PreferencesGroup()
         header_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
         header_box.set_halign(Gtk.Align.CENTER)
         header_box.set_margin_top(8)
-        header_box.set_margin_bottom(16)
+        header_box.set_margin_bottom(8)
 
         title_vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
         title_vbox.set_halign(Gtk.Align.CENTER)
@@ -77,10 +83,8 @@ class UnifiedDeviceSettingsView(Gtk.Box):
                 self.hero_pic.add_css_class("wave-device-hero-image")
                 header_box.append(self.hero_pic)
 
-        self.append(header_box)
-
-        # 2. Preferences Page
-        pref_page = Adw.PreferencesPage()
+        grp_header.add(header_box)
+        pref_page.add(grp_header)
 
         # Group 1: Nickname & Identification
         grp_ident = Adw.PreferencesGroup(title="Device Identification &amp; Appearance")
@@ -331,20 +335,22 @@ class UnifiedDeviceSettingsView(Gtk.Box):
 
         pref_page.add(grp_diag)
 
-        self.append(pref_page)
-
-        # Single, prominent text-only Remove Device button
+        # Single, prominent text-only Remove Device button in footer group
+        grp_remove = Adw.PreferencesGroup()
         btn_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
         btn_box.set_halign(Gtk.Align.CENTER)
-        btn_box.set_margin_top(20)
-        btn_box.set_margin_bottom(28)
+        btn_box.set_margin_top(16)
+        btn_box.set_margin_bottom(32)
 
         remove_btn = Gtk.Button(label="Remove Device")
         remove_btn.add_css_class("destructive-action")
         remove_btn.set_size_request(220, 42)
         remove_btn.connect("clicked", self._on_remove_clicked)
         btn_box.append(remove_btn)
-        self.append(btn_box)
+        grp_remove.add(btn_box)
+        pref_page.add(grp_remove)
+
+        self.append(pref_page)
 
         # Hook live state changes from physical hardware
         if self.hardware_mgr and hasattr(self.hardware_mgr, "add_hardware_listener"):
