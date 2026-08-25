@@ -96,6 +96,7 @@ class UnifiedDeviceSettingsView(Gtk.Box):
 
         # Device Icon Picker Row
         icon_row = Adw.ActionRow(title="Device Icon", subtitle="Customize icon displayed across WaveController")
+        curr_icon = self.hardware_mgr.get_device_icon(self.device_key)
         self.icon_btn = Gtk.MenuButton()
         self.icon_btn.set_icon_name(curr_icon)
         self.icon_btn.add_css_class("flat")
