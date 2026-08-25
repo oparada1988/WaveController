@@ -189,6 +189,8 @@ class ElgatoWaveDevice:
         self._steady_hp_pct: int = 70
         self._steady_mix_pct: int = 50
         self._is_streaming_vu: bool = False
+        self._is_peeking: bool = False
+        self._peek_mode: Optional[str] = None
         self._revert_timer: Optional[threading.Timer] = None
         self._mode_mutes: Dict[str, bool] = {"gain": False, "hp": False, "mix": False}
         self._led_colors: Dict[str, str] = {
@@ -582,13 +584,24 @@ class ElgatoWaveDevice:
         self._last_raw_hw_mute = bool(cfg[self.profile.off_mute])
 
         if target_mode != current_steady:
-            self._cancel_revert_timer()
+            self._is_peeking = True
+            self._peek_mode = target_mode
+            if self._revert_timer and self._revert_timer.is_alive():
+                self._revert_timer.cancel()
             self._revert_timer = threading.Timer(1.8, self._revert_to_steady_mode)
             self._revert_timer.daemon = True
             self._revert_timer.start()
+        else:
+            self._is_peeking = False
+            self._peek_mode = None
+            if self._revert_timer and self._revert_timer.is_alive():
+                self._revert_timer.cancel()
+            self._revert_timer = None
 
     def _revert_to_steady_mode(self):
         try:
+            self._is_peeking = False
+            self._peek_mode = None
             steady = getattr(self, "_steady_dial_mode", "gain")
             rev_map = {v: k for k, v in self.profile.vol_select_map.items()}
             val = rev_map.get(steady)
@@ -610,6 +623,8 @@ class ElgatoWaveDevice:
         if timer and timer.is_alive():
             timer.cancel()
         self._revert_timer = None
+        self._is_peeking = False
+        self._peek_mode = None
 
     # --- Hardware RGB LED Ring Customization ---
     def set_led_colors(self, colors: Dict[str, str]):
@@ -823,13 +838,33 @@ class ElgatoManager:
                     if changed:
                         self.last_state.update(changed)
                         timer = getattr(dev, "_revert_timer", None)
-                        is_peeking = bool(timer and timer.is_alive())
+                        is_peeking = bool(timer and timer.is_alive() and getattr(dev, "_is_peeking", False))
 
-                        if is_peeking and any(k in changed for k in ("gain_db", "hp_volume_pct", "monitor_mix_pct", "dial_mode", "mute")):
-                            dev._cancel_revert_timer()
-                            is_peeking = False
+                        if is_peeking:
+                            # During a transient peek:
+                            # Only if dial_mode changed physically on hardware to a mode DIFFERENT from the peek mode,
+                            # the user physically clicked the dial knob on the hardware.
+                            if "dial_mode" in changed and curr.get("dial_mode") != getattr(dev, "_peek_mode", None):
+                                dev._cancel_revert_timer()
+                                is_peeking = False
+                                new_mode = curr["dial_mode"]
+                                dev._steady_dial_mode = new_mode
+                                is_mode_muted = dev.get_mode_mute(new_mode)
+                                try:
+                                    c = dev.read_config()
+                                    c[dev.profile.off_mute] = dev._calc_hw_mute_byte(new_mode)
+                                    dev._apply_led_colors_to_config(c, active_mode=new_mode)
+                                    dev.write_config(c)
+                                    dev._last_raw_hw_mute = bool(c[dev.profile.off_mute])
+                                    dev._last_state["mute"] = is_mode_muted
+                                    self.last_state["mute"] = is_mode_muted
+                                except Exception:
+                                    pass
+                                if self.on_state_changed:
+                                    self.on_state_changed(curr, changed)
 
-                        if not is_peeking:
+                        else:
+                            # Steady state (not peeking)
                             if any(k in changed for k in ("gain_db", "hp_volume_pct", "monitor_mix_pct", "dial_mode")):
                                 dev.notify_user_interaction()
 
