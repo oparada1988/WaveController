@@ -565,7 +565,7 @@ class ElgatoWaveDevice:
             log.warning(f"Failed to set dial mode: {e}")
 
     def _trigger_transient_peek(self, target_mode: str, cfg: bytearray):
-        """Temporarily illuminates target mode and reverts after 1.8s."""
+        """Temporarily illuminates target mode and reverts after 2.0s."""
         if self.profile.off_vol_select is None:
             self.write_config(cfg)
             return
@@ -580,15 +580,12 @@ class ElgatoWaveDevice:
             cfg[self.profile.off_mute] = self._calc_hw_mute_byte(target_mode)
             self._apply_led_colors_to_config(cfg, active_mode=target_mode)
 
-        self.write_config(cfg)
-        self._last_raw_hw_mute = bool(cfg[self.profile.off_mute])
-
         if target_mode != current_steady:
             self._is_peeking = True
             self._peek_mode = target_mode
             if self._revert_timer and self._revert_timer.is_alive():
                 self._revert_timer.cancel()
-            self._revert_timer = threading.Timer(1.8, self._revert_to_steady_mode)
+            self._revert_timer = threading.Timer(2.0, self._revert_to_steady_mode)
             self._revert_timer.daemon = True
             self._revert_timer.start()
         else:
@@ -597,6 +594,11 @@ class ElgatoWaveDevice:
             if self._revert_timer and self._revert_timer.is_alive():
                 self._revert_timer.cancel()
             self._revert_timer = None
+
+        self.write_config(cfg)
+        self._last_raw_hw_mute = bool(cfg[self.profile.off_mute])
+        self._last_state["dial_mode"] = target_mode
+        self._last_state["mute"] = bool(self.get_mode_mute(target_mode))
 
     def _revert_to_steady_mode(self):
         try:
@@ -615,6 +617,11 @@ class ElgatoWaveDevice:
                 self._last_raw_hw_mute = bool(cfg[self.profile.off_mute])
                 self._last_state["dial_mode"] = steady
                 self._last_state["mute"] = is_steady_muted
+                
+                # Atomically sync elgato_manager's last_state to prevent false click triggers
+                if hasattr(elgato_manager, "last_state") and isinstance(elgato_manager.last_state, dict):
+                    elgato_manager.last_state["dial_mode"] = steady
+                    elgato_manager.last_state["mute"] = is_steady_muted
         except Exception as e:
             log.debug(f"Transient revert ignored: {e}")
 
@@ -685,8 +692,9 @@ class ElgatoWaveDevice:
         self._user_interacting = False
         self._is_streaming_vu = False
         try:
-            curr_mode = self.get_dial_mode()
-            self.apply_mode_color(curr_mode)
+            if not getattr(self, "_is_peeking", False):
+                curr_mode = self.get_dial_mode()
+                self.apply_mode_color(curr_mode)
         except Exception:
             pass
 
@@ -841,9 +849,7 @@ class ElgatoManager:
                         is_peeking = bool(timer and timer.is_alive() and getattr(dev, "_is_peeking", False))
 
                         if is_peeking:
-                            # During a transient peek:
-                            # Only if dial_mode changed physically on hardware to a mode DIFFERENT from the peek mode,
-                            # the user physically clicked the dial knob on the hardware.
+                            # 1. Hardware dial knob clicked physically to a different mode
                             if "dial_mode" in changed and curr.get("dial_mode") != getattr(dev, "_peek_mode", None):
                                 dev._cancel_revert_timer()
                                 is_peeking = False
@@ -860,6 +866,12 @@ class ElgatoManager:
                                     self.last_state["mute"] = is_mode_muted
                                 except Exception:
                                     pass
+                                if self.on_state_changed:
+                                    self.on_state_changed(curr, changed)
+
+                            # 2. Hardware knob rotated or mute sensor touched during peek
+                            elif any(k in changed for k in ("gain_db", "hp_volume_pct", "monitor_mix_pct", "mute")):
+                                dev.notify_user_interaction()
                                 if self.on_state_changed:
                                     self.on_state_changed(curr, changed)
 
