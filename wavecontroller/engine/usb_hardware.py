@@ -56,11 +56,21 @@ class USBHardwareManager:
     def _ensure_elgato_card_profile(self, card_id: int):
         """Ensures the ALSA device profile is locked to 'Analog Stereo Output + Mono Input'."""
         try:
-            subprocess.run(
-                ["wpctl", "set-profile", str(card_id), "output:analog-stereo+input:mono-fallback"],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL
-            )
+            out = subprocess.check_output(["pw-dump", str(card_id)], text=True, stderr=subprocess.DEVNULL)
+            data = json.loads(out)
+            if not data:
+                return
+            params = data[0].get("info", {}).get("params", {})
+            active_list = params.get("Profile", [])
+            if active_list and active_list[0].get("name") == "output:analog-stereo+input:mono-fallback":
+                return
+            enum_profs = params.get("EnumProfile", [])
+            for p in enum_profs:
+                if p.get("name") == "output:analog-stereo+input:mono-fallback":
+                    idx = p.get("index")
+                    if idx is not None:
+                        subprocess.run(["wpctl", "set-profile", str(card_id), str(idx)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    break
         except Exception:
             pass
 
