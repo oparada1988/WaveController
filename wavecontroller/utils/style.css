@@ -534,3 +534,8 @@ popover.wave-popover entry:focus {
     border-radius: 4px;
     border: 1px solid rgba(255, 255, 255, 0.3);
 }
+
+.wave-device-hero-image {
+    max-width: 120px;
+    max-height: 80px;
+}

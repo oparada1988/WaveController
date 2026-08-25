@@ -64,16 +64,18 @@ class UnifiedDeviceSettingsView(Gtk.Box):
 
         header_box.append(title_vbox)
 
-        # Big Device Graphic for Elgato Wave Devices
+        # Device Graphic for Elgato Wave Devices
         if self.is_elgato:
             hero_path = self._get_device_hero_image_path()
             if hero_path and os.path.exists(hero_path):
                 self.hero_pic = Gtk.Picture.new_for_filename(hero_path)
+                self.hero_pic.set_can_shrink(True)
                 self.hero_pic.set_content_fit(Gtk.ContentFit.CONTAIN)
-                self.hero_pic.set_size_request(300, 200)
+                self.hero_pic.set_size_request(120, 80)
                 self.hero_pic.set_halign(Gtk.Align.CENTER)
-                self.hero_pic.set_margin_top(8)
-                self.hero_pic.set_margin_bottom(8)
+                self.hero_pic.set_valign(Gtk.Align.CENTER)
+                self.hero_pic.set_margin_top(4)
+                self.hero_pic.set_margin_bottom(6)
                 self.hero_pic.add_css_class("wave-device-hero-image")
                 header_box.append(self.hero_pic)
 
