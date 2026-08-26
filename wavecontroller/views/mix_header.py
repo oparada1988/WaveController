@@ -1,26 +1,38 @@
 import gi
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
-from gi.repository import Gtk, Adw
+from gi.repository import Gtk, Adw, Gdk, GObject, GLib
 
 class MixHeaderCard(Gtk.Box):
     """
     Column header card representing an output mix bus (e.g. Personal Mix / Record Mix).
-    Supports customizing mix name, subtitle, and accent color, as well as deletion.
+    Supports customizing mix name, subtitle, and accent color, as well as deletion and reordering.
     """
-    def __init__(self, mix_info: dict, pipewire_mgr=None, hardware_mgr=None, on_remove_callback=None, on_edit_callback=None):
+    def __init__(self, mix_info: dict, pipewire_mgr=None, hardware_mgr=None, on_remove_callback=None, on_edit_callback=None, on_reorder_callback=None, on_hover_col_callback=None, on_move_left_callback=None, on_move_right_callback=None):
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=4)
         self.mix_info = mix_info
         self.pipewire_mgr = pipewire_mgr
         self.hardware_mgr = hardware_mgr
         self.on_remove_callback = on_remove_callback
         self.on_edit_callback = on_edit_callback
+        self.on_reorder_callback = on_reorder_callback
+        self.on_hover_col_callback = on_hover_col_callback
+        self.on_move_left_callback = on_move_left_callback
+        self.on_move_right_callback = on_move_right_callback
         
         self.add_css_class("mix-header-card")
         self.set_hexpand(False)
         self.set_size_request(200, -1)
 
         top_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+
+        # Horizontal Drag Grip Handle
+        self.drag_grip = Gtk.Image.new_from_icon_name("list-drag-handle-symbolic")
+        self.drag_grip.set_pixel_size(16)
+        self.drag_grip.add_css_class("mix-drag-handle")
+        self.drag_grip.set_cursor_from_name("grab")
+        self.drag_grip.set_tooltip_text("Click and hold to reorder mix horizontally")
+        top_box.append(self.drag_grip)
 
         # Mix Icon
         icon_name = mix_info.get("icon", "audio-headphones-symbolic")
@@ -110,6 +122,62 @@ class MixHeaderCard(Gtk.Box):
         self._apply_indicator_color(mix_info.get("color", "#9146ff"))
         self.append(self.color_bar)
 
+        # -------------------------------------------------------------
+        # Horizontal Drag & Drop Controller Setup (Attached to Grip & Card)
+        # -------------------------------------------------------------
+        self.drag_source = Gtk.DragSource.new()
+        self.drag_source.set_actions(Gdk.DragAction.MOVE)
+
+        def on_drag_prepare(src, x, y):
+            return Gdk.ContentProvider.new_for_value(self.mix_info["id"])
+
+        def on_drag_begin(src, drag):
+            paintable = Gtk.WidgetPaintable.new(self)
+            src.set_icon(paintable, int(self.get_width() / 2), 20)
+            self.add_css_class("drag-source-active")
+
+        def on_drag_end(src, drag, delete_data):
+            self.remove_css_class("drag-source-active")
+            if self.on_hover_col_callback:
+                self.on_hover_col_callback(self.mix_info["id"], False)
+
+        self.drag_source.connect("prepare", on_drag_prepare)
+        self.drag_source.connect("drag-begin", on_drag_begin)
+        self.drag_source.connect("drag-end", on_drag_end)
+        self.drag_grip.add_controller(self.drag_source)
+
+        self.drop_target = Gtk.DropTarget.new(GObject.TYPE_STRING, Gdk.DragAction.MOVE)
+
+        def on_drop_enter(target, x, y):
+            if self.on_hover_col_callback:
+                self.on_hover_col_callback(self.mix_info["id"], True)
+            return Gdk.DragAction.MOVE
+
+        def on_drop_motion(target, x, y):
+            if self.on_hover_col_callback:
+                self.on_hover_col_callback(self.mix_info["id"], True)
+            return Gdk.DragAction.MOVE
+
+        def on_drop_leave(target):
+            if self.on_hover_col_callback:
+                self.on_hover_col_callback(self.mix_info["id"], False)
+
+        def on_drop(target, value, x, y):
+            if self.on_hover_col_callback:
+                self.on_hover_col_callback(self.mix_info["id"], False)
+            source_mix_id = value
+            target_mix_id = self.mix_info["id"]
+            if source_mix_id and source_mix_id != target_mix_id and self.on_reorder_callback:
+                self.on_reorder_callback(source_mix_id, target_mix_id)
+                return True
+            return False
+
+        self.drop_target.connect("enter", on_drop_enter)
+        self.drop_target.connect("motion", on_drop_motion)
+        self.drop_target.connect("leave", on_drop_leave)
+        self.drop_target.connect("drop", on_drop)
+        self.add_controller(self.drop_target)
+
     def set_volume(self, volume: int):
         vol = max(0, min(100, int(volume)))
         if hasattr(self, "_scale_handler_id") and self._scale_handler_id:
@@ -190,6 +258,7 @@ class MixHeaderCard(Gtk.Box):
     def _setup_edit_popover(self, menu_btn: Gtk.MenuButton):
         popover = Gtk.Popover()
         popover.set_autohide(True)
+        popover.set_cascade_popdown(False)
         popover.add_css_class("wave-popover")
 
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
@@ -292,7 +361,7 @@ class MixHeaderCard(Gtk.Box):
                 led_lbl = Gtk.Label(label="Hardware LED (Headphone):", hexpand=True, halign=Gtk.Align.START)
                 led_lbl.add_css_class("mix-header-subtitle")
                 from .led_color_picker import LEDColorButton
-                led_btn = LEDColorButton(self.hardware_mgr, "hp", title="Headphone LED")
+                led_btn = LEDColorButton(self.hardware_mgr, "hp", title="Headphone LED", parent_popover=popover)
                 led_row.append(led_lbl)
                 led_row.append(led_btn)
                 box.append(led_row)
@@ -360,6 +429,39 @@ class MixHeaderCard(Gtk.Box):
 
         icon_box.append(palette_grid)
         box.append(icon_box)
+
+        # Reorder Mix Position (Move Left / Move Right)
+        box.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
+        reorder_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        reorder_lbl = Gtk.Label(label="Reorder Mix:", hexpand=True, halign=Gtk.Align.START)
+        reorder_lbl.add_css_class("mix-header-subtitle")
+        reorder_row.append(reorder_lbl)
+
+        btn_move_left = Gtk.Button.new_from_icon_name("go-previous-symbolic")
+        btn_move_left.add_css_class("flat")
+        btn_move_left.add_css_class("wave-icon-btn")
+        btn_move_left.set_tooltip_text("Move Mix Left")
+        
+        btn_move_right = Gtk.Button.new_from_icon_name("go-next-symbolic")
+        btn_move_right.add_css_class("flat")
+        btn_move_right.add_css_class("wave-icon-btn")
+        btn_move_right.set_tooltip_text("Move Mix Right")
+
+        def on_move_l(b):
+            popover.popdown()
+            if self.on_move_left_callback:
+                self.on_move_left_callback(self.mix_info["id"])
+
+        def on_move_r(b):
+            popover.popdown()
+            if self.on_move_right_callback:
+                self.on_move_right_callback(self.mix_info["id"])
+
+        btn_move_left.connect("clicked", on_move_l)
+        btn_move_right.connect("clicked", on_move_r)
+        reorder_row.append(btn_move_left)
+        reorder_row.append(btn_move_right)
+        box.append(reorder_row)
 
         save_btn = Gtk.Button(label="Save Changes")
         save_btn.add_css_class("suggested-action")

@@ -179,23 +179,27 @@ window.theme-midnight .wave-create-channel-box {
 }
 
 /* Reorder Feedback & Drag Active Outline */
-.channel-drag-handle {
+.channel-drag-handle,
+.mix-drag-handle {
     opacity: 0.35;
     transition: all 120ms ease;
     padding: 2px 0;
 }
 
-.channel-row-card:hover .channel-drag-handle {
+.channel-row-card:hover .channel-drag-handle,
+.mix-header-card:hover .mix-drag-handle {
     opacity: 0.85;
     color: @accent_bg_color;
 }
 
-.channel-row-card.drag-source-active {
+.channel-row-card.drag-source-active,
+.mix-header-card.drag-source-active {
     opacity: 0.45;
     border: 2px dashed @accent_bg_color;
 }
 
 .channel-row-card.drop-target-active,
+.mix-header-card.drop-target-active,
 .matrix-cell-card.drop-target-active,
 .matrix-cell-empty.drop-target-active {
     border: 2px solid @accent_bg_color;

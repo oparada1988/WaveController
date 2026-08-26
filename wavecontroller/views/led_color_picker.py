@@ -20,11 +20,14 @@ class LEDColorButton(Gtk.MenuButton):
     Compact 32px MenuButton with display-brightness-symbolic icon
     and live color dot, opening a popover with the 8-color palette + custom picker.
     """
-    def __init__(self, hardware_mgr, mode_key: str, title: str = "Hardware LED Ring Color"):
+    def __init__(self, hardware_mgr, mode_key: str, title: str = "Hardware LED Ring Color", parent_popover: Gtk.Popover = None):
         super().__init__()
         self.hardware_mgr = hardware_mgr
         self.mode_key = mode_key # "gain", "hp", "mix", "mute"
         self.title_text = title
+        self.parent_popover = parent_popover
+        self.popover = None
+        self.custom_dot = None
 
         self.add_css_class("flat")
         self.add_css_class("wave-icon-btn")
@@ -52,7 +55,9 @@ class LEDColorButton(Gtk.MenuButton):
     def _setup_popover(self):
         popover = Gtk.Popover()
         popover.set_autohide(True)
+        popover.set_cascade_popdown(False)
         popover.add_css_class("wave-popover")
+        self.popover = popover
 
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
         box.set_margin_top(10)
@@ -106,7 +111,7 @@ class LEDColorButton(Gtk.MenuButton):
             item_btn.connect("clicked", make_click_handler(hex_code))
             box.append(item_btn)
 
-        # Custom Color Dialog
+        # Custom Color Picker Row
         box.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
         custom_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         c_lbl = Gtk.Label(label="Custom Color:")
@@ -115,30 +120,64 @@ class LEDColorButton(Gtk.MenuButton):
         c_lbl.set_halign(Gtk.Align.START)
         custom_row.append(c_lbl)
 
-        color_dialog = Gtk.ColorDialog.new()
-        color_dialog.set_with_alpha(False)
-        self.color_dialog_btn = Gtk.ColorDialogButton.new(color_dialog)
-        
-        curr_hex = self.hardware_mgr.get_led_color(self.mode_key) if self.hardware_mgr else "#FFFFFF"
-        rgba = Gdk.RGBA()
-        rgba.parse(curr_hex)
-        self.color_dialog_btn.set_rgba(rgba)
-        self.color_dialog_btn.connect("notify::rgba", self._on_custom_color_selected)
-        custom_row.append(self.color_dialog_btn)
+        custom_btn = Gtk.Button()
+        custom_btn.add_css_class("flat")
+        custom_btn.add_css_class("wave-icon-btn")
+        custom_btn.set_tooltip_text("Choose Custom Color...")
+
+        self.custom_dot = Gtk.Box()
+        self.custom_dot.set_size_request(18, 18)
+        self.custom_dot.set_valign(Gtk.Align.CENTER)
+        custom_btn.set_child(self.custom_dot)
+
+        def on_open_custom_picker(btn):
+            # Inhibit autohide so opening modal dialog doesn't close parent settings menus
+            if self.popover:
+                self.popover.set_autohide(False)
+            if self.parent_popover:
+                self.parent_popover.set_autohide(False)
+
+            color_dialog = Gtk.ColorDialog.new()
+            color_dialog.set_with_alpha(False)
+            color_dialog.set_title("Pick LED Color")
+
+            curr_hex = self.hardware_mgr.get_led_color(self.mode_key) if self.hardware_mgr else "#FFFFFF"
+            initial_rgba = Gdk.RGBA()
+            initial_rgba.parse(curr_hex)
+
+            root_win = self.get_root()
+
+            def on_dialog_finished(dialog, result):
+                try:
+                    chosen = dialog.choose_rgba_finish(result)
+                    if chosen:
+                        r = int(chosen.red * 255)
+                        g = int(chosen.green * 255)
+                        b = int(chosen.blue * 255)
+                        hex_code = f"#{r:02X}{g:02X}{b:02X}"
+                        if self.hardware_mgr:
+                            self.hardware_mgr.set_led_color(self.mode_key, hex_code)
+                        self.update_color_preview()
+                except Exception:
+                    pass
+                finally:
+                    # Restore autohide after dialog closes
+                    def restore_autohide():
+                        if self.popover:
+                            self.popover.set_autohide(True)
+                        if self.parent_popover:
+                            self.parent_popover.set_autohide(True)
+                        return False
+                    GLib.timeout_add(150, restore_autohide)
+
+            color_dialog.choose_rgba(root_win, initial_rgba, None, on_dialog_finished)
+
+        custom_btn.connect("clicked", on_open_custom_picker)
+        custom_row.append(custom_btn)
         box.append(custom_row)
 
         popover.set_child(box)
         self.set_popover(popover)
-
-    def _on_custom_color_selected(self, btn, *args):
-        rgba = btn.get_rgba()
-        r = int(rgba.red * 255)
-        g = int(rgba.green * 255)
-        b = int(rgba.blue * 255)
-        hex_code = f"#{r:02X}{g:02X}{b:02X}"
-        if self.hardware_mgr:
-            self.hardware_mgr.set_led_color(self.mode_key, hex_code)
-        self.update_color_preview()
 
     def update_color_preview(self):
         curr_hex = self.hardware_mgr.get_led_color(self.mode_key) if self.hardware_mgr else "#FFFFFF"
@@ -146,6 +185,13 @@ class LEDColorButton(Gtk.MenuButton):
         provider = Gtk.CssProvider()
         provider.load_from_data(dot_css.encode())
         self.color_dot.get_style_context().add_provider(provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+
+        if self.custom_dot:
+            c_dot_css = f".custom-color-swatch {{ background-color: {curr_hex}; border-radius: 9px; border: 2px solid rgba(255,255,255,0.5); }}"
+            c_prov = Gtk.CssProvider()
+            c_prov.load_from_data(c_dot_css.encode())
+            self.custom_dot.get_style_context().add_provider(c_prov, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+            self.custom_dot.add_css_class("custom-color-swatch")
 
     def _on_hw_sync(self, curr: dict, changed: dict):
         if "led_colors" in changed:

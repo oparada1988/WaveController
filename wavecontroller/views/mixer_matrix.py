@@ -142,7 +142,11 @@ class MixerMatrixView(Gtk.Box):
                 pipewire_mgr=self.pipewire_mgr,
                 hardware_mgr=self.hardware_mgr,
                 on_remove_callback=lambda m_id: (self.pipewire_mgr.remove_mix(m_id), GLib.idle_add(self._rebuild_grid)),
-                on_edit_callback=None
+                on_edit_callback=None,
+                on_reorder_callback=self._on_reorder_mix,
+                on_hover_col_callback=self._on_hover_col,
+                on_move_left_callback=self._on_move_mix_left,
+                on_move_right_callback=self._on_move_mix_right
             )
             self.mix_headers[mix["id"]] = mix_header
             self.grid.attach(mix_header, col_idx, 0, 1, 1)
@@ -242,6 +246,54 @@ class MixerMatrixView(Gtk.Box):
                     cell = self.matrix_cells.get((highlight_ch_id, mix["id"]))
                     if cell:
                         cell.remove_css_class("drop-target-active")
+                return False
+            GLib.timeout_add(450, remove_highlight)
+
+    def _on_reorder_mix(self, src_mix_id: str, dest_mix_id: str):
+        if self.pipewire_mgr.reorder_mixes_by_id(src_mix_id, dest_mix_id):
+            self._rebuild_grid_with_mix_highlight(src_mix_id)
+
+    def _on_move_mix_left(self, mix_id: str):
+        if self.pipewire_mgr.move_mix_left(mix_id):
+            self._rebuild_grid_with_mix_highlight(mix_id)
+
+    def _on_move_mix_right(self, mix_id: str):
+        if self.pipewire_mgr.move_mix_right(mix_id):
+            self._rebuild_grid_with_mix_highlight(mix_id)
+
+    def _on_hover_col(self, mix_id: str, is_hovered: bool):
+        header = self.mix_headers.get(mix_id)
+        if header:
+            if is_hovered:
+                header.add_css_class("drop-target-active")
+            else:
+                header.remove_css_class("drop-target-active")
+        for ch in self.pipewire_mgr.channels:
+            cell = self.matrix_cells.get((ch["id"], mix_id))
+            if cell:
+                if is_hovered:
+                    cell.add_css_class("drop-target-active")
+                else:
+                    cell.remove_css_class("drop-target-active")
+
+    def _rebuild_grid_with_mix_highlight(self, highlight_mix_id: str = None):
+        self._rebuild_grid()
+        if highlight_mix_id:
+            header = self.mix_headers.get(highlight_mix_id)
+            if header:
+                header.add_css_class("drop-target-active")
+            for ch in self.pipewire_mgr.channels:
+                cell = self.matrix_cells.get((ch["id"], highlight_mix_id))
+                if cell:
+                    cell.add_css_class("drop-target-active")
+            
+            def remove_highlight():
+                if header:
+                    header.remove_css_class("drop-target-active")
+                for ch in self.pipewire_mgr.channels:
+                    c = self.matrix_cells.get((ch["id"], highlight_mix_id))
+                    if c:
+                        c.remove_css_class("drop-target-active")
                 return False
             GLib.timeout_add(450, remove_highlight)
 

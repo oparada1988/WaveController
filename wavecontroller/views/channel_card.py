@@ -251,7 +251,7 @@ class ChannelCard(Gtk.Box):
     def _setup_channel_popover(self):
         popover = Gtk.Popover()
         popover.set_autohide(True)
-        popover.set_cascade_popdown(True)
+        popover.set_cascade_popdown(False)
         popover.add_css_class("wave-popover")
 
         vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
@@ -304,7 +304,7 @@ class ChannelCard(Gtk.Box):
             led_lbl = Gtk.Label(label="Hardware LED (Mic Gain):", hexpand=True, halign=Gtk.Align.START)
             led_lbl.add_css_class("mix-header-subtitle")
             from .led_color_picker import LEDColorButton
-            led_btn = LEDColorButton(self.hardware_mgr, "gain", title="Mic Gain LED")
+            led_btn = LEDColorButton(self.hardware_mgr, "gain", title="Mic Gain LED", parent_popover=popover)
             led_row.append(led_lbl)
             led_row.append(led_btn)
             vbox.append(led_row)

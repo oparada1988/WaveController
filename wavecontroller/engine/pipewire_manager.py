@@ -1591,6 +1591,38 @@ class PipeWireManager:
                 return True
         return False
 
+    def move_mix_left(self, mix_id: str) -> bool:
+        """Moves a mix column left by one position in the mixer matrix."""
+        with self._lock:
+            idx = next((i for i, m in enumerate(self.mixes) if m["id"] == mix_id), -1)
+            if idx > 0:
+                self.mixes[idx - 1], self.mixes[idx] = self.mixes[idx], self.mixes[idx - 1]
+                self._save_state_to_config(immediate=True)
+                return True
+        return False
+
+    def move_mix_right(self, mix_id: str) -> bool:
+        """Moves a mix column right by one position in the mixer matrix."""
+        with self._lock:
+            idx = next((i for i, m in enumerate(self.mixes) if m["id"] == mix_id), -1)
+            if 0 <= idx < len(self.mixes) - 1:
+                self.mixes[idx + 1], self.mixes[idx] = self.mixes[idx], self.mixes[idx + 1]
+                self._save_state_to_config(immediate=True)
+                return True
+        return False
+
+    def reorder_mixes_by_id(self, src_mix_id: str, dest_mix_id: str) -> bool:
+        """Reorders mixes by moving src_mix_id to the position of dest_mix_id."""
+        with self._lock:
+            src_idx = next((i for i, m in enumerate(self.mixes) if m["id"] == src_mix_id), -1)
+            dest_idx = next((i for i, m in enumerate(self.mixes) if m["id"] == dest_mix_id), -1)
+            if src_idx >= 0 and dest_idx >= 0 and src_idx != dest_idx:
+                item = self.mixes.pop(src_idx)
+                self.mixes.insert(dest_idx, item)
+                self._save_state_to_config(immediate=True)
+                return True
+        return False
+
     @staticmethod
     def resolve_smart_mix_icon(name: str, mix_type: str = "source") -> str:
         """Auto-resolves a minimal symbolic icon based on the mix name and intended use case."""
