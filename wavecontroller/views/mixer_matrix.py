@@ -440,17 +440,60 @@ class MixerMatrixView(Gtk.Box):
 
         name_entry.connect("changed", on_name_changed)
 
-        color_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        color_lbl = Gtk.Label(label="Color:")
+        # Accent Color Palette (Visual Swatches)
+        color_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        color_lbl = Gtk.Label(label="Accent Color:")
         color_lbl.add_css_class("mix-header-subtitle")
-        color_lbl.set_size_request(45, -1)
         color_lbl.set_halign(Gtk.Align.START)
-        color_row.append(color_lbl)
+        color_box.append(color_lbl)
 
-        color_combo = Gtk.DropDown.new_from_strings(["Purple", "Blue", "Green", "Orange", "Red"])
-        color_combo.set_hexpand(True)
-        color_row.append(color_combo)
-        box.append(color_row)
+        color_swatch_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        color_swatch_box.add_css_class("color-palette-grid")
+
+        CREATE_MIX_COLORS = [
+            ("#9146ff", "Stream Purple"),
+            ("#3584e4", "Ocean Blue"),
+            ("#00e5ff", "Cyber Cyan"),
+            ("#3db356", "Emerald Green"),
+            ("#ffb703", "Amber Gold"),
+            ("#ff7800", "Sunset Orange"),
+            ("#e05252", "Crimson Red"),
+            ("#f72585", "Neon Pink")
+        ]
+
+        selected_color_holder = {"color": "#9146ff"}
+        color_buttons = {}
+
+        def select_create_color(hex_code):
+            selected_color_holder["color"] = hex_code
+            for c_hex, btn in color_buttons.items():
+                if c_hex.lower() == hex_code.lower():
+                    btn.add_css_class("selected")
+                else:
+                    btn.remove_css_class("selected")
+
+        for hex_code, col_name in CREATE_MIX_COLORS:
+            c_btn = Gtk.Button()
+            c_btn.add_css_class("flat")
+            c_btn.add_css_class("color-palette-btn")
+            c_btn.set_size_request(26, 26)
+            c_btn.set_tooltip_text(col_name)
+
+            dot_css = f".mix-c-{hex_code.replace('#', '')} {{ background-color: {hex_code}; border-radius: 13px; }}"
+            c_prov = Gtk.CssProvider()
+            c_prov.load_from_data(dot_css.encode())
+            c_btn.get_style_context().add_provider(c_prov, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+            c_btn.add_css_class(f"mix-c-{hex_code.replace('#', '')}")
+
+            if hex_code == selected_color_holder["color"]:
+                c_btn.add_css_class("selected")
+
+            c_btn.connect("clicked", lambda b, h=hex_code: select_create_color(h))
+            color_buttons[hex_code] = c_btn
+            color_swatch_box.append(c_btn)
+
+        color_box.append(color_swatch_box)
+        box.append(color_box)
 
         add_btn = Gtk.Button(label="Create Mix")
         add_btn.add_css_class("suggested-action")
@@ -459,9 +502,7 @@ class MixerMatrixView(Gtk.Box):
             name = name_entry.get_text().strip()
             sub = sub_entry.get_text().strip() or "Custom Mix"
             if name:
-                colors = ["#9146ff", "#3584e4", "#3db356", "#ff7800", "#e05252"]
-                c_idx = color_combo.get_selected()
-                c = colors[c_idx] if c_idx < len(colors) else "#9146ff"
+                c = selected_color_holder["color"]
                 
                 selected_icon = selected_icon_holder["icon"]
                 mix_type = "source" if type_combo.get_selected() == 0 else "sink"

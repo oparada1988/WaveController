@@ -294,32 +294,80 @@ class MixHeaderCard(Gtk.Box):
         box.append(sub_entry)
 
         # Accent Color
-        color_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        # Accent Color Palette (Visual Swatches)
+        color_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
         color_lbl = Gtk.Label(label="Color:")
         color_lbl.add_css_class("mix-header-subtitle")
-        color_lbl.set_size_request(45, -1)
         color_lbl.set_halign(Gtk.Align.START)
-        color_row.append(color_lbl)
+        color_box.append(color_lbl)
 
-        colors_map = [
-            ("#9146ff", "Purple"),
-            ("#3584e4", "Blue"),
-            ("#3db356", "Green"),
-            ("#ff7800", "Orange"),
-            ("#e05252", "Red")
+        color_swatch_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        color_swatch_box.add_css_class("color-palette-grid")
+
+        AVAILABLE_MIX_COLORS = [
+            ("#9146ff", "Stream Purple"),
+            ("#3584e4", "Ocean Blue"),
+            ("#00e5ff", "Cyber Cyan"),
+            ("#3db356", "Emerald Green"),
+            ("#ffb703", "Amber Gold"),
+            ("#ff7800", "Sunset Orange"),
+            ("#e05252", "Crimson Red"),
+            ("#f72585", "Neon Pink")
         ]
-        color_combo = Gtk.DropDown.new_from_strings([c[1] for c in colors_map])
-        
-        curr_color = self.mix_info.get("color", "#9146ff")
-        sel_idx = 0
-        for i, (hex_code, _) in enumerate(colors_map):
-            if hex_code.lower() == curr_color.lower():
-                sel_idx = i
-                break
-        color_combo.set_selected(sel_idx)
-        color_combo.set_hexpand(True)
-        color_row.append(color_combo)
-        box.append(color_row)
+
+        self.selected_color = self.mix_info.get("color", "#9146ff")
+        color_buttons = {}
+
+        def select_color(hex_code):
+            self.selected_color = hex_code
+            for c_hex, btn in color_buttons.items():
+                if c_hex.lower() == hex_code.lower():
+                    btn.add_css_class("selected")
+                else:
+                    btn.remove_css_class("selected")
+            self._apply_indicator_color(hex_code)
+
+        for hex_code, col_name in AVAILABLE_MIX_COLORS:
+            c_btn = Gtk.Button()
+            c_btn.add_css_class("flat")
+            c_btn.add_css_class("color-palette-btn")
+            c_btn.set_size_request(26, 26)
+            c_btn.set_tooltip_text(col_name)
+
+            dot_css = f".mix-c-{hex_code.replace('#', '')} {{ background-color: {hex_code}; border-radius: 13px; }}"
+            c_prov = Gtk.CssProvider()
+            c_prov.load_from_data(dot_css.encode())
+            c_btn.get_style_context().add_provider(c_prov, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+            c_btn.add_css_class(f"mix-c-{hex_code.replace('#', '')}")
+
+            if hex_code.lower() == self.selected_color.lower():
+                c_btn.add_css_class("selected")
+
+            c_btn.connect("clicked", lambda b, h=hex_code: select_color(h))
+            color_buttons[hex_code] = c_btn
+            color_swatch_box.append(c_btn)
+
+        # Optional Custom Color Picker
+        custom_cd = Gtk.ColorDialog.new()
+        custom_cd.set_with_alpha(False)
+        custom_cd.set_title("Choose Mix Accent Color")
+        self.mix_color_dialog_btn = Gtk.ColorDialogButton.new(custom_cd)
+        self.mix_color_dialog_btn.set_tooltip_text("Pick Custom Accent Color")
+        init_rgba = Gdk.RGBA()
+        init_rgba.parse(self.selected_color)
+        self.mix_color_dialog_btn.set_rgba(init_rgba)
+
+        def on_custom_color_notify(btn, *args):
+            rgba = btn.get_rgba()
+            r, g, b = int(rgba.red * 255), int(rgba.green * 255), int(rgba.blue * 255)
+            h = f"#{r:02X}{g:02X}{b:02X}"
+            select_color(h)
+
+        self.mix_color_dialog_btn.connect("notify::rgba", on_custom_color_notify)
+        color_swatch_box.append(self.mix_color_dialog_btn)
+
+        color_box.append(color_swatch_box)
+        box.append(color_box)
 
         # Physical Output Target Routing (For Sink / Speaker mixes only)
         target_dev_combo = None
@@ -469,8 +517,7 @@ class MixHeaderCard(Gtk.Box):
         def on_save(b):
             new_name = name_entry.get_text().strip()
             new_sub = sub_entry.get_text().strip() or "Custom Mix"
-            c_idx = color_combo.get_selected()
-            new_color = colors_map[c_idx][0] if c_idx < len(colors_map) else "#9146ff"
+            new_color = getattr(self, "selected_color", "#9146ff")
             new_icon = self.selected_icon
             new_target = "none"
             if target_dev_combo and target_dev_keys:

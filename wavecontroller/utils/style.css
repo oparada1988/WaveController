@@ -414,6 +414,30 @@ popover.wave-popover entry:focus {
     color: #c084fc;
 }
 
+/* Mix Color Swatch Palette */
+.color-palette-grid {
+    padding: 2px 0;
+}
+
+.color-palette-btn {
+    border-radius: 13px;
+    padding: 0;
+    min-width: 26px;
+    min-height: 26px;
+    border: 2px solid transparent;
+    transition: all 120ms ease;
+}
+
+.color-palette-btn:hover {
+    transform: scale(1.15);
+}
+
+.color-palette-btn.selected {
+    border: 2px solid #ffffff;
+    box-shadow: 0 0 8px rgba(255, 255, 255, 0.7);
+    transform: scale(1.15);
+}
+
 /* Minimal Symbolic Icon Palette */
 .icon-palette-grid {
     padding: 2px 0;
