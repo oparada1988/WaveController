@@ -59,6 +59,7 @@ class PipeWireManager:
         self._submix_procs = {} # {(channel_id, mix_id): subprocess.Popen}
         self._submix_node_ids = {} # {(channel_id, mix_id): [node_id, ...]}
         self._mix_node_ids_cache = {} # {mix_id: [node_id, ...]}
+        self._bound_stream_nodes = set()
         self.on_external_change_callback = None
 
         self._init_default_states()
@@ -329,6 +330,8 @@ class PipeWireManager:
                 # 2. Periodic real-time stream, guard & mix reconciliation
                 sync_tick = getattr(self, "_sync_loop_tick", 0) + 1
                 self._sync_loop_tick = sync_tick
+                if sync_tick % 3 == 0:
+                    self._reconcile_app_streams_fast()
                 if sync_tick % 25 == 0:
                     self._enforce_exclusive_volume_guard()
                     self._sync_channel_audio_routing()
@@ -438,6 +441,107 @@ class PipeWireManager:
                                 subprocess.run(["wpctl", "set-mute", str(obj_id), "0"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                             except Exception:
                                 pass
+        except Exception:
+            pass
+
+    def _bind_app_to_wireplumber_target(self, app_name: str, channel_id: str):
+        """Notifies WirePlumber via PipeWire metadata that an application belongs to its dedicated channel sink."""
+        try:
+            target_sink = f"WaveController_Channel_{channel_id}"
+            out = subprocess.check_output(["pw-dump"], text=True, stderr=subprocess.DEVNULL)
+            data = json.loads(out)
+            app_low = app_name.lower()
+            for obj in data:
+                if obj.get("type") == "PipeWire:Interface:Node":
+                    props = obj.get("info", {}).get("props", {})
+                    if props.get("media.class") == "Stream/Output/Audio":
+                        n_app = props.get("application.name", "").lower()
+                        n_bin = props.get("application.process.binary", "").lower()
+                        n_name = props.get("node.name", "").lower()
+                        if app_low in n_app or app_low in n_bin or app_low in n_name or n_app.startswith(app_low):
+                            nid = obj["id"]
+                            if nid not in self._bound_stream_nodes:
+                                subprocess.run(
+                                    ["pw-metadata", "-n", "default", str(nid), "target.object", target_sink],
+                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+                                )
+                                self._bound_stream_nodes.add(nid)
+        except Exception:
+            pass
+
+    def _reconcile_app_streams_fast(self):
+        """Ultra-fast reactive stream interceptor (runs every ~120ms) ensuring assigned apps
+        are immediately attached to their dedicated channel sink and severed from default mix leaks."""
+        try:
+            o_raw = subprocess.check_output(["pw-link", "-o"], text=True, stderr=subprocess.DEVNULL)
+            out_ports = [l.strip() for l in o_raw.splitlines() if l.strip()]
+
+            # Quick filter for candidate non-WaveController application output ports
+            app_ports = []
+            for p in out_ports:
+                if p.startswith("WaveController_") or p.startswith("output.WaveController_") or p.startswith("alsa_") or p.startswith("wave_"):
+                    continue
+                if ":output_" in p or ":playback_" in p or ":monitor_" in p:
+                    app_ports.append(p)
+
+            if not app_ports:
+                return
+
+            with self._lock:
+                channels_copy = list(self.channels)
+
+            links_map = None
+            in_ports = None
+
+            for ch in channels_copy:
+                if ch.get("type") == "source":
+                    continue
+                ch_id = ch["id"]
+                assigned = self.get_assigned_apps(ch_id)
+                if not assigned:
+                    continue
+
+                for app in assigned:
+                    app_low = app.lower()
+                    matched_ports = [p for p in app_ports if (app_low in p.lower() or p.lower().startswith(app_low)) and ":output_" in p]
+                    if not matched_ports:
+                        continue
+
+                    if in_ports is None:
+                        i_raw = subprocess.check_output(["pw-link", "-i"], text=True, stderr=subprocess.DEVNULL)
+                        in_ports = [l.strip() for l in i_raw.splitlines() if l.strip()]
+
+                    ch_prefix = f"WaveController_Channel_{ch_id}:"
+                    ch_in_ports = [p for p in in_ports if p.startswith(ch_prefix) and ":playback_" in p]
+                    if not ch_in_ports:
+                        continue
+
+                    if links_map is None:
+                        links_map = self._get_pw_links_map()
+
+                    # 1. Connect to channel ingestion sink if not already linked
+                    need_link = False
+                    for sp in matched_ports:
+                        connected_dests = links_map.get(sp, set())
+                        if not any(dp.startswith(ch_prefix) for dp in connected_dests):
+                            need_link = True
+                            break
+
+                    if need_link:
+                        self._link_stereo_ports(matched_ports, ch_in_ports, unlink=False)
+                        self._bind_app_to_wireplumber_target(app, ch_id)
+
+                    # 2. Immediately sever any leaking links to physical outputs or other mix sinks
+                    for sp in matched_ports:
+                        connected_dests = links_map.get(sp, set())
+                        for dp in connected_dests:
+                            if dp.startswith(ch_prefix):
+                                continue
+                            if dp.startswith("alsa_output.") or (dp.startswith("WaveController_") and ":playback_" in dp):
+                                try:
+                                    subprocess.run(["pw-link", "-d", sp, dp], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                                except Exception:
+                                    pass
         except Exception:
             pass
 
@@ -639,6 +743,7 @@ class PipeWireManager:
             self._save_state_to_config(immediate=True)
             self._refresh_node_cache()
             self._sync_channel_audio_routing(channel_id=channel_id)
+            self._bind_app_to_wireplumber_target(app_name, channel_id)
 
     def get_assigned_apps(self, channel_id: str) -> list:
         with self._lock:
@@ -1142,7 +1247,7 @@ class PipeWireManager:
             else:
                 self.channel_states[channel_id][mix_id]["enabled"] = enabled
             self._save_state_to_config(immediate=True)
-        self._sync_channel_audio_routing(channel_id, mix_id)
+        self._sync_channel_audio_routing(channel_id=channel_id)
 
     def _link_stereo_ports(self, src_ports: list, dst_ports: list, unlink: bool = False):
         """Helper to establish or destroy stereo/mono PipeWire link connections accurately."""
