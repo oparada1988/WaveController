@@ -97,8 +97,8 @@ class WaveMainWindow(Adw.ApplicationWindow):
         # Populate dynamic device views and sidebar list
         self._rebuild_device_views()
 
-        self.hardware_mgr.on_device_renamed_callback = lambda *a: GLib.idle_add(self._refresh_sidebar_device_names)
-        self.hardware_mgr.on_devices_changed_callback = lambda *a: GLib.idle_add(self._rebuild_device_views)
+        self.hardware_mgr.on_device_renamed_callback = lambda *a: GLib.idle_add(self._on_device_renamed)
+        self.hardware_mgr.on_devices_changed_callback = lambda *a: GLib.idle_add(self._on_devices_changed)
         self.hardware_mgr.on_new_device_detected_callback = lambda dev_info: GLib.idle_add(self._on_new_device_detected, dev_info)
 
         # Check for untracked connected devices (such as Wave XLR) on launch
@@ -400,6 +400,14 @@ class WaveMainWindow(Adw.ApplicationWindow):
         if hasattr(self, "mixer_view") and self.mixer_view:
             self.mixer_view.refresh_device_names()
         self._rebuild_device_views()
+
+    def _on_devices_changed(self):
+        self._rebuild_device_views()
+        if hasattr(self, "mixer_view") and self.mixer_view:
+            self.mixer_view.refresh_device_names()
+
+    def _on_device_renamed(self, *a):
+        self._refresh_sidebar_device_names()
 
     def _check_initial_untracked_devices(self) -> bool:
         untracked = self.hardware_mgr.get_available_untracked_devices()

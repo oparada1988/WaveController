@@ -379,27 +379,36 @@ class MixHeaderCard(Gtk.Box):
             target_lbl.set_halign(Gtk.Align.START)
             target_row.append(target_lbl)
 
-            target_options = [("none", "None (Virtual Only)"), ("default", "Default Output")]
-            if self.hardware_mgr:
-                for dev in self.hardware_mgr.get_tracked_output_devices():
-                    key = dev.get("device_key", dev.get("name", ""))
-                    name = dev.get("display_name", dev.get("name", "Audio Device"))
-                    target_options.append((key, name))
-
-            target_dev_keys = [opt[0] for opt in target_options]
-            target_dev_labels = [opt[1] for opt in target_options]
-
-            target_dev_combo = Gtk.DropDown.new_from_strings(target_dev_labels)
-            curr_target = self.mix_info.get("target_device", "none" if self.mix_info.get("id") != "personal" else "default")
-            sel_target_idx = 0
-            for i, k in enumerate(target_dev_keys):
-                if k == curr_target:
-                    sel_target_idx = i
-                    break
-            target_dev_combo.set_selected(sel_target_idx)
+            target_dev_keys = ["none", "default"]
+            target_dev_combo = Gtk.DropDown()
             target_dev_combo.set_hexpand(True)
             target_row.append(target_dev_combo)
             box.append(target_row)
+
+            def refresh_header_targets():
+                nonlocal target_dev_keys
+                target_options = [("none", "None (Virtual Only)"), ("default", "Default Output")]
+                if self.hardware_mgr:
+                    for dev in self.hardware_mgr.get_tracked_output_devices():
+                        key = dev.get("device_key", dev.get("name", ""))
+                        name = dev.get("display_name", dev.get("name", "Audio Device"))
+                        target_options.append((key, name))
+
+                target_dev_keys = [opt[0] for opt in target_options]
+                target_dev_labels = [opt[1] for opt in target_options]
+                target_dev_combo.set_model(Gtk.StringList.new(target_dev_labels))
+
+                curr_target = self.mix_info.get("target_device", "none" if self.mix_info.get("id") != "personal" else "default")
+                sel_target_idx = 0
+                for i, k in enumerate(target_dev_keys):
+                    if k == curr_target:
+                        sel_target_idx = i
+                        break
+                target_dev_combo.set_selected(sel_target_idx)
+
+            refresh_header_targets()
+            popover.connect("notify::visible", lambda p, *args: refresh_header_targets() if p.get_visible() else None)
+            self._refresh_header_targets = refresh_header_targets
 
             # Hardware LED Controls (Headphone Volume Mode & VU Meter)
             if self.hardware_mgr:
@@ -544,3 +553,7 @@ class MixHeaderCard(Gtk.Box):
 
         popover.set_child(box)
         menu_btn.set_popover(popover)
+
+    def refresh_device_targets(self):
+        if hasattr(self, "_refresh_header_targets"):
+            self._refresh_header_targets()

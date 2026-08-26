@@ -344,22 +344,34 @@ class MixerMatrixView(Gtk.Box):
         target_lbl.set_halign(Gtk.Align.START)
         target_row.append(target_lbl)
 
-        target_options = [("none", "None (Virtual Only)"), ("default", "Default Output")]
-        if self.hardware_mgr:
-            for dev in self.hardware_mgr.get_tracked_output_devices():
-                key = dev.get("device_key", dev.get("name", ""))
-                name = dev.get("display_name", dev.get("name", "Audio Device"))
-                target_options.append((key, name))
-
-        target_dev_keys = [opt[0] for opt in target_options]
-        target_dev_labels = [opt[1] for opt in target_options]
-
-        target_combo = Gtk.DropDown.new_from_strings(target_dev_labels)
-        target_combo.set_selected(0) # Default to 'None (Virtual Only)'!
+        target_dev_keys = ["none", "default"]
+        target_combo = Gtk.DropDown()
         target_combo.set_hexpand(True)
         target_row.append(target_combo)
         target_row.set_visible(False) # Hidden by default since initial type is Source (Microphone)
         box.append(target_row)
+
+        def refresh_create_mix_targets():
+            nonlocal target_dev_keys
+            target_options = [("none", "None (Virtual Only)"), ("default", "Default Output")]
+            if self.hardware_mgr:
+                for dev in self.hardware_mgr.get_tracked_output_devices():
+                    key = dev.get("device_key", dev.get("name", ""))
+                    name = dev.get("display_name", dev.get("name", "Audio Device"))
+                    target_options.append((key, name))
+
+            target_dev_keys = [opt[0] for opt in target_options]
+            target_dev_labels = [opt[1] for opt in target_options]
+            curr_sel = target_combo.get_selected()
+            target_combo.set_model(Gtk.StringList.new(target_dev_labels))
+            if curr_sel < len(target_dev_labels):
+                target_combo.set_selected(curr_sel)
+            else:
+                target_combo.set_selected(0)
+
+        refresh_create_mix_targets()
+        popover.connect("notify::visible", lambda p, *args: refresh_create_mix_targets() if p.get_visible() else None)
+        self._refresh_create_mix_targets = refresh_create_mix_targets
 
         def on_type_changed(combo, *args):
             is_sink = (combo.get_selected() == 1)
@@ -705,7 +717,9 @@ class MixerMatrixView(Gtk.Box):
             if self.hardware_mgr:
                 self.hardware_mgr.detect_connected_hardware()
 
-            input_devs = self.hardware_mgr.input_devices if self.hardware_mgr else []
+            input_devs = self.hardware_mgr.get_tracked_input_devices() if self.hardware_mgr else []
+            if not input_devs and self.hardware_mgr:
+                input_devs = self.hardware_mgr.input_devices
             
             # Filter out hardware devices already configured as channels
             configured_dev_names = {c.get("name", "").lower() for c in self.pipewire_mgr.channels}
@@ -1095,6 +1109,13 @@ class MixerMatrixView(Gtk.Box):
         elif len(out_names) > 0:
             self.out_dropdown.set_selected(0)
         self._update_balance_visibility()
+
+        if hasattr(self, "_refresh_create_mix_targets"):
+            self._refresh_create_mix_targets()
+
+        for header in self.mix_headers.values():
+            if hasattr(header, "refresh_device_targets"):
+                header.refresh_device_targets()
 
         for ch_id, card in self.channel_cards.items():
             if hasattr(card, "refresh_name"):
