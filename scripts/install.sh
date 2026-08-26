@@ -143,6 +143,10 @@ EOF
         cp "${INSTALL_DIR}/assets/icons/wctray.svg" "${ICON_SVG_DIR}/com.oparada.WaveController.svg"
     fi
 
+    if [ -f "${INSTALL_DIR}/assets/icons/wavecontroller-tray-symbolic.svg" ]; then
+        cp "${INSTALL_DIR}/assets/icons/wavecontroller-tray-symbolic.svg" "${ICON_SVG_DIR}/wavecontroller-tray-symbolic.svg"
+    fi
+
     # Create Desktop Launcher
     echo -e "${BLUE}[5/5] Creating desktop menu launcher in ${DESKTOP_DIR}...${NC}"
     cat << EOF > "${DESKTOP_DIR}/com.oparada.WaveController.desktop"

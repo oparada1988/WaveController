@@ -59,10 +59,7 @@ class UnifiedDeviceSettingsView(Gtk.Box):
 
         # Status & Capabilities subtitle
         is_conn = device_info.get("connected", True)
-        badge_text = device_info.get("badge", "In / Out")
-        desc = device_info.get("description", device_info.get("name", "Audio Device"))
-        hw_tag = " [Tier 1 Hardware Connected]" if self.is_elgato else ""
-        status_text = f"🟢 Connected • {badge_text} ({desc}){hw_tag}" if is_conn else "🟡 Disconnected / Offline"
+        status_text = "🟢 Connected" if is_conn else "🟡 Disconnected / Offline"
         self.sub_lbl = Gtk.Label(label=status_text)
         self.sub_lbl.add_css_class("mix-header-subtitle")
         self.sub_lbl.set_halign(Gtk.Align.CENTER)
