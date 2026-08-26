@@ -86,7 +86,7 @@ class MultiChannelPeakMonitor:
             pass
         return None
 
-    def _open_pw_record(self, node_name: str, target: str = None, channels: int = 2):
+    def _open_pw_record(self, node_name: str, target: str = None, channels: int = 2, is_sink: bool = False):
         # Spoof application ID as org.PulseAudio.pavucontrol and media.role as volume-control
         # to bypass GNOME Shell's persistent microphone privacy recording icon on the top panel.
         cmd = [
@@ -106,6 +106,8 @@ class MultiChannelPeakMonitor:
             f'--channels={channels}',
             '--latency=20ms'
         ]
+        if is_sink or (target and ('sink' in target.lower() or 'wavecontroller_channel_' in target.lower())):
+            cmd.extend(['-P', 'stream.capture.sink=true'])
         if target:
             cmd.extend(['--target', target])
         cmd.append('-')
@@ -334,7 +336,7 @@ class MultiChannelPeakMonitor:
             # Spawn a pw-record targeting this channel's sink node
             node_name = f"wave_ch_meter_{ch_id}"
             target = f"WaveController_Channel_{ch_id}"
-            new_proc = self._open_pw_record(node_name, target=target, channels=2)
+            new_proc = self._open_pw_record(node_name, target=target, channels=2, is_sink=True)
             if new_proc:
                 self._channel_procs[ch_id] = new_proc
                 if ch_id not in self._channel_peaks:
@@ -353,7 +355,7 @@ class MultiChannelPeakMonitor:
         # 2. Open playback capture targeted to active mix sink monitor
         sink_target = self._discover_sink_target()
         self.sink_target = sink_target
-        self.sink_proc = self._open_pw_record('wave_sink_monitor', target=sink_target, channels=2)
+        self.sink_proc = self._open_pw_record('wave_sink_monitor', target=sink_target, channels=2, is_sink=True)
         time.sleep(0.15)
         self._link_sink_monitor()
 
@@ -419,7 +421,7 @@ class MultiChannelPeakMonitor:
                             except Exception:
                                 pass
                         self.sink_target = curr_sink_target
-                        self.sink_proc = self._open_pw_record('wave_sink_monitor', target=curr_sink_target, channels=2)
+                        self.sink_proc = self._open_pw_record('wave_sink_monitor', target=curr_sink_target, channels=2, is_sink=True)
                         time.sleep(0.1)
 
                     self._link_sink_monitor()
@@ -430,7 +432,7 @@ class MultiChannelPeakMonitor:
                     if not self.mic_target:
                         self._link_mic_monitor()
                 if (not self.sink_proc or self.sink_proc.poll() is not None) and self.running:
-                    self.sink_proc = self._open_pw_record('wave_sink_monitor', target=self.sink_target, channels=2)
+                    self.sink_proc = self._open_pw_record('wave_sink_monitor', target=self.sink_target, channels=2, is_sink=True)
                     self._link_sink_monitor()
 
                 # Fast attack (instant punch on rise) + smooth exponential release & graceful fade-down to 0

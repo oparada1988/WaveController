@@ -183,13 +183,18 @@ class PipeWireManager:
             pass
 
         # Provision any missing needed nodes
+        nodes_created = False
         for node_name, (desc, media_class) in needed_nodes.items():
             if node_name not in existing_active_names:
                 try:
                     cmd = f'{{ factory.name=support.null-audio-sink node.name="{node_name}" node.description="{desc}" media.class={media_class} object.linger=true }}'
                     subprocess.run(["pw-cli", "create-node", "adapter", cmd], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    nodes_created = True
                 except Exception:
                     pass
+
+        if nodes_created:
+            time.sleep(0.08)
 
         with self._lock:
             self._mix_node_ids_cache.clear()
@@ -1252,7 +1257,8 @@ class PipeWireManager:
                 ch_out_ports = ch_sink_out_ports
 
             if not is_source_channel and app_out_ports:
-                # Ensure assigned apps don't directly play out to physical hardware sinks (bypass isolation)
+                # Ensure assigned apps don't directly play out to physical hardware sinks or mix sinks (bypass isolation)
+                own_prefix = f"WaveController_Channel_{ch_id}:"
                 for src_p in app_out_ports:
                     src_links = links_map.get(src_p, set())
                     for linked_dest in list(src_links):
@@ -1261,9 +1267,8 @@ class PipeWireManager:
                                 subprocess.run(["pw-link", "-d", src_p, linked_dest], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                             except Exception:
                                 pass
-                        # Also sever links to OTHER channel sinks (prevent bleed)
-                        elif linked_dest.startswith("WaveController_Channel_") and ":playback_" in linked_dest:
-                            own_prefix = f"WaveController_Channel_{ch_id}:"
+                        # Also sever links to mix sinks or OTHER channel sinks (prevent bypass & bleed)
+                        elif linked_dest.startswith("WaveController_") and ":playback_" in linked_dest:
                             if not linked_dest.startswith(own_prefix):
                                 try:
                                     subprocess.run(["pw-link", "-d", src_p, linked_dest], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -1513,6 +1518,7 @@ class PipeWireManager:
 
             self._refresh_node_cache()
             self._save_state_to_config(immediate=True)
+            self._ensure_virtual_mix_nodes()
             self._sync_channel_audio_routing(channel_id=ch_id)
             return new_ch
 
@@ -1525,6 +1531,7 @@ class PipeWireManager:
                 del self.assigned_apps[channel_id]
             self._refresh_node_cache()
             self._save_state_to_config(immediate=True)
+            self._ensure_virtual_mix_nodes()
             self._sync_channel_audio_routing()
             return True
 
