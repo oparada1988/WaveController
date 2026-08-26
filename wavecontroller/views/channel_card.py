@@ -101,6 +101,7 @@ class ChannelCard(Gtk.Box):
         self.mute_btn = Gtk.Button.new_from_icon_name("audio-volume-high-symbolic")
         self.mute_btn.add_css_class("flat")
         self.mute_btn.add_css_class("wave-icon-btn")
+        self.mute_btn.set_tooltip_text("Mute master channel")
         self.mute_btn.set_valign(Gtk.Align.CENTER)
         self.mute_btn.connect("clicked", self._on_mute_clicked)
         self.append(self.mute_btn)
@@ -345,14 +346,18 @@ class ChannelCard(Gtk.Box):
     def set_muted(self, is_muted: bool):
         vol = self.pipewire_mgr.get_channel_master_volume(self.channel_info["id"])
         self.slider.set_volume(vol, is_muted)
-        if is_muted:
-            self.mute_btn.set_icon_name("audio-volume-muted-symbolic")
-            self.mute_btn.add_css_class("muted")
-            self.add_css_class("muted")
-        else:
-            self.mute_btn.set_icon_name("audio-volume-high-symbolic")
-            self.mute_btn.remove_css_class("muted")
-            self.remove_css_class("muted")
+        if getattr(self, "_last_mute_state", None) != is_muted:
+            self._last_mute_state = is_muted
+            if is_muted:
+                self.mute_btn.set_icon_name("audio-volume-muted-symbolic")
+                self.mute_btn.add_css_class("muted")
+                self.add_css_class("muted")
+                self.mute_btn.set_tooltip_text("Unmute master channel")
+            else:
+                self.mute_btn.set_icon_name("audio-volume-high-symbolic")
+                self.mute_btn.remove_css_class("muted")
+                self.remove_css_class("muted")
+                self.mute_btn.set_tooltip_text("Mute master channel")
 
     def _on_mute_clicked(self, btn):
         ch_id = self.channel_info["id"]

@@ -70,6 +70,15 @@ class MixerMatrixView(Gtk.Box):
         init_mix = self.hardware_mgr.get_monitor_mix() if self.hardware_mgr else 50
         self.balance_scale.set_value(init_mix)
         self._bal_scale_handler = self.balance_scale.connect("value-changed", self._on_balance_slider_changed)
+        
+        # Double-click to snap Direct Monitor Balance back to 50/50
+        bal_click = Gtk.GestureClick.new()
+        def on_bal_double_click(gesture, n_press, x, y):
+            if n_press == 2:
+                self.balance_scale.set_value(50)
+        bal_click.connect("released", on_bal_double_click)
+        self.balance_scale.add_controller(bal_click)
+
         self.balance_box.append(self.balance_scale)
 
         self.balance_lbl = Gtk.Label(label="50/50")
@@ -1127,15 +1136,17 @@ class MixerMatrixView(Gtk.Box):
         is_muted = self.hardware_mgr.get_output_mute(sink_id)
         self._update_out_mute_btn(is_muted)
 
-        # 2. Push real-time stereo peaks to channel cards (left column)
+        # 2. Query each active channel's stereo peaks once per frame (deduplicated)
+        cached_peaks = {}
         for ch_id, card in self.channel_cards.items():
-            peak_l, peak_r = self.peak_monitor.get_channel_stereo_peaks(ch_id)
-            card.update_peaks(peak_l, peak_r)
+            peaks = self.peak_monitor.get_channel_stereo_peaks(ch_id)
+            cached_peaks[ch_id] = peaks
+            card.update_peaks(peaks[0], peaks[1])
 
-        # 3. Push real-time stereo peaks to each sub-mix cell
+        # 3. Push cached peaks to each sub-mix cell (eliminating repeated lock acquisitions)
         for (channel_id, mix_id), cell in self.matrix_cells.items():
-            peak_l, peak_r = self.peak_monitor.get_channel_stereo_peaks(channel_id)
-            cell.update_peaks(peak_l, peak_r)
+            p_l, p_r = cached_peaks.get(channel_id, (0.0, 0.0))
+            cell.update_peaks(p_l, p_r)
 
         return True
 

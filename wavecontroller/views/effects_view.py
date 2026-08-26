@@ -3,6 +3,8 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import Gtk, Adw
 
+from ..engine.config_manager import config_manager
+
 class EffectsView(Gtk.Box):
     """
     Audio Effects & VST/LV2 Plugin Rack for WaveController.
@@ -29,22 +31,26 @@ class EffectsView(Gtk.Box):
 
         # RNNoise Noise Suppression
         noise_row = Adw.SwitchRow(title="AI Noise Suppression (RNNoise / DeepFilterNet)", subtitle="Eliminates background keyboard clicks, fans, and room noise")
-        noise_row.set_active(True)
+        noise_row.set_active(config_manager.get("dsp_noise_suppression", True))
+        noise_row.connect("notify::active", lambda r, *a: config_manager.set("dsp_noise_suppression", r.get_active(), immediate=True))
         grp_fx.add(noise_row)
 
         # Parametric EQ
         eq_row = Adw.SwitchRow(title="Parametric Vocal Equalizer", subtitle="3-Band broadcast tone shaping")
-        eq_row.set_active(True)
+        eq_row.set_active(config_manager.get("dsp_equalizer", True))
+        eq_row.connect("notify::active", lambda r, *a: config_manager.set("dsp_equalizer", r.get_active(), immediate=True))
         grp_fx.add(eq_row)
 
         # Studio Compressor
         comp_row = Adw.SwitchRow(title="Broadcast Vocal Compressor", subtitle="Smooths dynamic volume spikes and boosts presence")
-        comp_row.set_active(True)
+        comp_row.set_active(config_manager.get("dsp_compressor", True))
+        comp_row.connect("notify::active", lambda r, *a: config_manager.set("dsp_compressor", r.get_active(), immediate=True))
         grp_fx.add(comp_row)
 
         # De-Esser
         deess_row = Adw.SwitchRow(title="Vocal De-Esser", subtitle="Attenuates harsh sibilance ('s' and 't' sounds)")
-        deess_row.set_active(False)
+        deess_row.set_active(config_manager.get("dsp_deesser", False))
+        deess_row.connect("notify::active", lambda r, *a: config_manager.set("dsp_deesser", r.get_active(), immediate=True))
         grp_fx.add(deess_row)
 
         pref_page.add(grp_fx)

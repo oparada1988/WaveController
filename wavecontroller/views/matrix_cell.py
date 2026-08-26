@@ -46,6 +46,7 @@ class MatrixCell(Gtk.Box):
             self.mute_btn.add_css_class("flat")
             self.mute_btn.add_css_class("wave-icon-btn")
             self.mute_btn.set_valign(Gtk.Align.CENTER)
+            self.mute_btn.set_tooltip_text("Mute in this mix")
             self.mute_btn.connect("clicked", self._on_mute_clicked)
             self.append(self.mute_btn)
 
@@ -153,11 +154,15 @@ class MatrixCell(Gtk.Box):
         
         self.slider.set_volume(vol, muted)
             
-        if muted:
-            self.mute_btn.set_icon_name("audio-volume-muted-symbolic")
-            self.mute_btn.add_css_class("muted")
-            self.add_css_class("muted")
-        else:
-            self.mute_btn.set_icon_name("audio-volume-high-symbolic")
-            self.mute_btn.remove_css_class("muted")
-            self.remove_css_class("muted")
+        if getattr(self, "_last_mute_state", None) != muted:
+            self._last_mute_state = muted
+            if muted:
+                self.mute_btn.set_icon_name("audio-volume-muted-symbolic")
+                self.mute_btn.add_css_class("muted")
+                self.add_css_class("muted")
+                self.mute_btn.set_tooltip_text("Unmute in this mix")
+            else:
+                self.mute_btn.set_icon_name("audio-volume-high-symbolic")
+                self.mute_btn.remove_css_class("muted")
+                self.remove_css_class("muted")
+                self.mute_btn.set_tooltip_text("Mute in this mix")
