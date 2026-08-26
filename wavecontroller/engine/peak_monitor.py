@@ -11,6 +11,7 @@ class MultiChannelPeakMonitor:
     """
     Captures real-time stereo (Left and Right) audio peaks using pw-record
     with isolated node port names for physical microphones and playback audio.
+    Per-channel ingestion sinks get dedicated monitor taps for isolated VU metering.
     """
     def __init__(self):
         self.peaks = {} # {channel_id: {"left": float, "right": float}}
@@ -19,6 +20,9 @@ class MultiChannelPeakMonitor:
         self.sink_proc = None
         self.thread = None
         self._lock = threading.Lock()
+        # Per-channel isolated monitor processes and smoothed peak state
+        self._channel_procs = {}  # {channel_id: subprocess.Popen}
+        self._channel_peaks = {}  # {channel_id: {"left": float, "right": float}}
 
     def start(self):
         self.running = True
@@ -35,6 +39,13 @@ class MultiChannelPeakMonitor:
                     pass
         self.mic_proc = None
         self.sink_proc = None
+        # Stop all per-channel monitor processes
+        for ch_id, proc in list(self._channel_procs.items()):
+            try:
+                proc.kill()
+            except Exception:
+                pass
+        self._channel_procs.clear()
 
     def _discover_mic_target(self) -> tuple:
         """Finds active physical microphone target node name and channels."""
@@ -288,6 +299,47 @@ class MultiChannelPeakMonitor:
 
         return max(0.0, min(1.0, val_l)), max(0.0, min(1.0, val_r))
 
+    def _refresh_channel_monitors(self):
+        """Discovers active WaveController_Channel_* sinks and spawns/prunes per-channel pw-record processes."""
+        try:
+            out = subprocess.check_output(['pw-link', '-o'], text=True, stderr=subprocess.DEVNULL)
+            all_ports = [l.strip() for l in out.splitlines() if l.strip()]
+        except Exception:
+            return
+
+        # Find all active channel sink monitor ports (WaveController_Channel_<id>:monitor_FL)
+        active_channels = set()
+        for p in all_ports:
+            if p.startswith("WaveController_Channel_") and ":monitor_" in p:
+                ch_node = p.split(":")[0]  # e.g. "WaveController_Channel_spotify"
+                ch_id = ch_node.replace("WaveController_Channel_", "")
+                active_channels.add(ch_id)
+
+        # Prune processes for channels that no longer exist
+        for ch_id in list(self._channel_procs.keys()):
+            if ch_id not in active_channels:
+                proc = self._channel_procs.pop(ch_id, None)
+                if proc:
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
+                self._channel_peaks.pop(ch_id, None)
+
+        # Spawn processes for new channels
+        for ch_id in active_channels:
+            proc = self._channel_procs.get(ch_id)
+            if proc and proc.poll() is None:
+                continue  # Already running
+            # Spawn a pw-record targeting this channel's sink node
+            node_name = f"wave_ch_meter_{ch_id}"
+            target = f"WaveController_Channel_{ch_id}"
+            new_proc = self._open_pw_record(node_name, target=target, channels=2)
+            if new_proc:
+                self._channel_procs[ch_id] = new_proc
+                if ch_id not in self._channel_peaks:
+                    self._channel_peaks[ch_id] = {"left": 0.0, "right": 0.0}
+
     def _run_capture_loop(self):
         # 1. Open mic capture directly targeted to physical microphone node
         mic_target, mic_channels = self._discover_mic_target()
@@ -305,6 +357,9 @@ class MultiChannelPeakMonitor:
         time.sleep(0.15)
         self._link_sink_monitor()
 
+        # 3. Discover and open per-channel monitors for active ingestion sinks
+        self._refresh_channel_monitors()
+
         mic_l, mic_r = 0.0, 0.0
         sink_l, sink_r = 0.0, 0.0
         tick_counter = 0
@@ -314,8 +369,35 @@ class MultiChannelPeakMonitor:
                 raw_ml, raw_mr = self._drain_and_calc_peaks(self.mic_proc, channels=self.mic_channels)
                 raw_sl, raw_sr = self._drain_and_calc_peaks(self.sink_proc, channels=2)
 
+                # Read per-channel monitor peaks for all active channel sinks
+                with self._lock:
+                    ch_items = list(self._channel_procs.items())
+
+                for ch_id, proc in ch_items:
+                    if proc and proc.poll() is None:
+                        raw_cl, raw_cr = self._drain_and_calc_peaks(proc, channels=2)
+                        cur = self._channel_peaks.get(ch_id, {"left": 0.0, "right": 0.0})
+                        cl = cur.get("left", 0.0)
+                        cr = cur.get("right", 0.0)
+
+                        if raw_cl > cl:
+                            cl = cl + (raw_cl - cl) * 0.80
+                        else:
+                            cl = max(0.0, cl * 0.93 - 0.002)
+
+                        if raw_cr > cr:
+                            cr = cr + (raw_cr - cr) * 0.80
+                        else:
+                            cr = max(0.0, cr * 0.93 - 0.002)
+
+                        val_l = 0.0 if cl < 0.002 else cl
+                        val_r = 0.0 if cr < 0.002 else cr
+                        self._channel_peaks[ch_id] = {"left": val_l, "right": val_r, "peak": max(val_l, val_r)}
+
                 tick_counter += 1
                 if tick_counter % 80 == 0: # Check and refresh links periodically (~2 seconds)
+                    self._refresh_channel_monitors()
+
                     curr_target, curr_ch = self._discover_mic_target()
                     if curr_target != self.mic_target or not self.mic_proc or self.mic_proc.poll() is not None:
                         if self.mic_proc:
@@ -385,14 +467,15 @@ class MultiChannelPeakMonitor:
                     # Physical microphone channels ONLY get physical microphone level
                     for ch in ["mic", "microphone", "fefine", "fifine", "elgato_wave_xlr", "wave", "wave_xlr", "input", "system_capture"]:
                         self.peaks[ch] = {"left": m_l, "right": m_r, "peak": max(m_l, m_r)}
-                    
-                    # Application & System Playback channels (Spotify, Discord, Games, etc.) get sink monitor level
-                    for ch in ["spotify", "music", "game", "chat", "browser", "system", "sfx", "master", "default"]:
-                        self.peaks[ch] = {"left": s_l, "right": s_r, "peak": max(s_l, s_r)}
 
-                    # Mix buses also receive monitor levels
+                    # Mix buses receive monitor levels
                     for mix in ["personal_mix", "personal", "chat_mix", "mobo_mix", "mobo", "stream_mix"]:
                         self.peaks[mix] = {"left": s_l, "right": s_r, "peak": max(s_l, s_r)}
+
+                    # Isolated per-channel ingestion peaks
+                    for ch_id, ch_p in self._channel_peaks.items():
+                        self.peaks[ch_id] = ch_p
+                        self.peaks[f"wavecontroller_channel_{ch_id}"] = ch_p
             except Exception:
                 pass
 
@@ -411,16 +494,22 @@ class MultiChannelPeakMonitor:
                 mic_p = getattr(self, "_last_mic_peaks", self.peaks.get("mic", self.peaks.get("elgato_wave_xlr", {})))
                 return mic_p.get("left", 0.0), mic_p.get("right", 0.0)
 
-            # 2. Playback Channels (Existing and newly created custom channels)
+            # 2. Per-Channel Isolated Ingestion Sinks
+            if ch_low in self._channel_peaks:
+                p = self._channel_peaks[ch_low]
+                return p.get("left", 0.0), p.get("right", 0.0)
             if ch_low in self.peaks:
                 p = self.peaks[ch_low]
                 return p.get("left", 0.0), p.get("right", 0.0)
+            for k, p in self._channel_peaks.items():
+                if k in ch_low or ch_low in k:
+                    return p.get("left", 0.0), p.get("right", 0.0)
             for k, p in self.peaks.items():
                 if k in ch_low or ch_low in k:
                     return p.get("left", 0.0), p.get("right", 0.0)
             
-            sink_p = getattr(self, "_last_sink_peaks", self.peaks.get("system", self.peaks.get("spotify", {})))
-            return sink_p.get("left", 0.0), sink_p.get("right", 0.0)
+            # Return 0.0 for quiet or unassigned playback channels instead of leaking global sink audio
+            return 0.0, 0.0
 
     def get_channel_peak(self, channel_id: str) -> float:
         l, r = self.get_channel_stereo_peaks(channel_id)
