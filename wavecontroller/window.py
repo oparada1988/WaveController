@@ -144,7 +144,7 @@ class WaveMainWindow(Adw.ApplicationWindow):
     def _build_sidebar(self) -> Gtk.Box:
         sidebar = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
         sidebar.add_css_class("wave-sidebar")
-        sidebar.set_size_request(210, -1)
+        sidebar.set_size_request(225, -1)
         sidebar.set_hexpand(False)
 
         # Section 1: Mixes & Effects (Top / 1st Position)
@@ -158,8 +158,9 @@ class WaveMainWindow(Adw.ApplicationWindow):
         self.mixes_btn.add_css_class("wave-sidebar-row")
         self.mixes_btn.add_css_class("selected")
         
-        mix_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        mix_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
         mix_icon = Gtk.Image.new_from_icon_name("view-grid-symbolic")
+        mix_icon.set_pixel_size(24)
         mix_lbl = Gtk.Label(label="Mixes")
         mix_lbl.set_halign(Gtk.Align.START)
         mix_lbl.set_hexpand(True)
@@ -173,8 +174,9 @@ class WaveMainWindow(Adw.ApplicationWindow):
         self.fx_btn.add_css_class("flat")
         self.fx_btn.add_css_class("wave-sidebar-row")
         
-        fx_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        fx_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
         fx_icon = Gtk.Image.new_from_icon_name("system-run-symbolic")
+        fx_icon.set_pixel_size(24)
         fx_lbl = Gtk.Label(label="Audio Effects (DSP)")
         fx_lbl.set_halign(Gtk.Align.START)
         fx_lbl.set_hexpand(True)
@@ -220,8 +222,9 @@ class WaveMainWindow(Adw.ApplicationWindow):
         self.settings_btn.add_css_class("flat")
         self.settings_btn.add_css_class("wave-sidebar-row")
         
-        set_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        set_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
         set_icon = Gtk.Image.new_from_icon_name("emblem-system-symbolic")
+        set_icon.set_pixel_size(24)
         set_lbl = Gtk.Label(label="Settings")
         set_lbl.set_halign(Gtk.Align.START)
         set_lbl.set_hexpand(True)
@@ -273,10 +276,11 @@ class WaveMainWindow(Adw.ApplicationWindow):
             btn.add_css_class("flat")
             btn.add_css_class("wave-sidebar-row")
 
-            row_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+            row_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
 
             icon_name = dev.get("icon", "audio-headset-symbolic")
             icon_img = Gtk.Image.new_from_icon_name(icon_name)
+            icon_img.set_pixel_size(24)
             row_box.append(icon_img)
 
             lbl = Gtk.Label(label=dev.get("display_name", dev.get("name", "Device")))
