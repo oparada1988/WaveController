@@ -1,7 +1,6 @@
 import gi
 gi.require_version("Gtk", "4.0")
-gi.require_version("Adw", "1")
-from gi.repository import Gtk, Adw, GLib
+from gi.repository import Gtk, GLib
 
 from .channel_card import ChannelCard
 from .mix_header import MixHeaderCard
@@ -1073,6 +1072,10 @@ class MixerMatrixView(Gtk.Box):
         self._update_out_mute_btn(is_muted)
 
     def _update_out_mute_btn(self, is_muted: bool):
+        if getattr(self, "_last_out_mute_state", None) == is_muted:
+            return
+        self._last_out_mute_state = is_muted
+
         if is_muted:
             self.out_mute_btn.set_icon_name("audio-volume-muted-symbolic")
             self.out_mute_btn.add_css_class("muted")

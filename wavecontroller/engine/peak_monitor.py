@@ -5,7 +5,6 @@ import threading
 import time
 import array
 import fcntl
-import select
 
 class MultiChannelPeakMonitor:
     """
@@ -277,24 +276,44 @@ class MultiChannelPeakMonitor:
 
         # Mono 1-channel capture (e.g. Wave XLR mono microphone)
         if channels == 1:
-            sum_sq = sum(s * s for s in samples)
-            rms = math.sqrt(sum_sq / len(samples)) / 32768.0 if samples else 0.0
-            peak_raw = max(max(samples), -min(samples)) / 32768.0 if samples else 0.0
+            sum_sq = 0
+            peak_val = 0
+            for s in samples:
+                sum_sq += s * s
+                a = abs(s)
+                if a > peak_val:
+                    peak_val = a
+            rms = math.sqrt(sum_sq / n_samples) / 32768.0
+            peak_raw = peak_val / 32768.0
             val = (rms * 2.2 * 0.70) + (peak_raw * 1.4 * 0.30)
             val = max(0.0, min(1.0, val))
             return val, val
 
-        # Stereo 2-channel interleaved capture
-        lefts = samples[0::2]
-        rights = samples[1::2]
+        # Stereo 2-channel interleaved capture (Single pass avoids slices & generator object allocation)
+        sum_sq_l = 0
+        sum_sq_r = 0
+        peak_val_l = 0
+        peak_val_r = 0
+        n_pairs = n_samples // 2
+        if n_pairs < 1:
+            return 0.0, 0.0
 
-        sum_sq_l = sum(s * s for s in lefts)
-        sum_sq_r = sum(s * s for s in rights)
-        rms_l = math.sqrt(sum_sq_l / len(lefts)) / 32768.0 if lefts else 0.0
-        rms_r = math.sqrt(sum_sq_r / len(rights)) / 32768.0 if rights else 0.0
+        for i in range(0, n_pairs * 2, 2):
+            sl = samples[i]
+            sr = samples[i + 1]
+            sum_sq_l += sl * sl
+            sum_sq_r += sr * sr
+            al = abs(sl)
+            ar = abs(sr)
+            if al > peak_val_l:
+                peak_val_l = al
+            if ar > peak_val_r:
+                peak_val_r = ar
 
-        peak_raw_l = max(max(lefts), -min(lefts)) / 32768.0 if lefts else 0.0
-        peak_raw_r = max(max(rights), -min(rights)) / 32768.0 if rights else 0.0
+        rms_l = math.sqrt(sum_sq_l / n_pairs) / 32768.0
+        rms_r = math.sqrt(sum_sq_r / n_pairs) / 32768.0
+        peak_raw_l = peak_val_l / 32768.0
+        peak_raw_r = peak_val_r / 32768.0
 
         val_l = (rms_l * 2.2 * 0.70) + (peak_raw_l * 1.4 * 0.30)
         val_r = (rms_r * 2.2 * 0.70) + (peak_raw_r * 1.4 * 0.30)

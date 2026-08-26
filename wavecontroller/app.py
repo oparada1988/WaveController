@@ -2,7 +2,7 @@ import os
 import gi
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
-from gi.repository import Adw, Gio, GLib, Gtk, Gdk
+from gi.repository import Adw, Gio, Gtk, Gdk
 
 from .window import WaveMainWindow
 from .engine.pipewire_manager import PipeWireManager

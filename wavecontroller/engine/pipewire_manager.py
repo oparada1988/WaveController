@@ -1,4 +1,5 @@
 import os
+import re
 import json
 import subprocess
 import threading
@@ -328,9 +329,8 @@ class PipeWireManager:
                 # 2. Periodic real-time stream, guard & mix reconciliation
                 sync_tick = getattr(self, "_sync_loop_tick", 0) + 1
                 self._sync_loop_tick = sync_tick
-                if sync_tick % 5 == 0:
-                    self._enforce_exclusive_volume_guard()
                 if sync_tick % 25 == 0:
+                    self._enforce_exclusive_volume_guard()
                     self._sync_channel_audio_routing()
                     self._ensure_mix_sinks_unmuted()
             except Exception:
@@ -399,7 +399,6 @@ class PipeWireManager:
             for sink_id in out_node_ids:
                 try:
                     out = subprocess.check_output(["wpctl", "get-volume", str(sink_id)], text=True, stderr=subprocess.DEVNULL).strip()
-                    import re
                     m = re.search(r'Volume:\s*([\d\.]+)', out)
                     if m:
                         vol_val = float(m.group(1))
@@ -413,7 +412,6 @@ class PipeWireManager:
             for src_id in in_node_ids:
                 try:
                     out = subprocess.check_output(["wpctl", "get-volume", str(src_id)], text=True, stderr=subprocess.DEVNULL).strip()
-                    import re
                     m = re.search(r'Volume:\s*([\d\.]+)', out)
                     if m:
                         vol_val = float(m.group(1))

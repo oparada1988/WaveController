@@ -2,7 +2,6 @@ import os
 import json
 import socket
 import threading
-import time
 
 CONFIG_SOCKET_PATH = os.path.expanduser("~/.config/WaveController/wavecontroller.sock")
 USER_RUNTIME_DIR = os.environ.get("XDG_RUNTIME_DIR", "/tmp")

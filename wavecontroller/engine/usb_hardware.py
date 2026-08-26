@@ -6,7 +6,7 @@ import json
 import re
 
 from .config_manager import config_manager
-from .elgato_wave import elgato_manager, ElgatoWaveDevice
+from .elgato_wave import elgato_manager
 
 class USBHardwareManager:
     """

@@ -1,12 +1,13 @@
 import gi
 gi.require_version("Gtk", "4.0")
-from gi.repository import Gtk, Gdk, Graphene
+from gi.repository import Gtk, Gdk
 import cairo
 
 class StereoSlider(Gtk.DrawingArea):
     """
     High-performance dual-channel stereo volume fader and live audio level meter.
-    Features silky-smooth 60 FPS drag interaction and real-time Left/Right VU meter animations.
+    Features silky-smooth 60 FPS drag interaction, mouse wheel scroll tuning,
+    double-click reset, and real-time Left/Right VU meter animations.
     """
     def __init__(self, volume: int = 80, is_muted: bool = False, sync_peaks: bool = False, on_volume_changed=None):
         super().__init__()
@@ -34,6 +35,18 @@ class StereoSlider(Gtk.DrawingArea):
         drag_gesture.connect("drag-end", self._on_drag_end)
         self.add_controller(drag_gesture)
 
+        # Mouse scroll wheel controller (±2% volume, ±5% with Shift)
+        scroll_ctrl = Gtk.EventControllerScroll.new(
+            Gtk.EventControllerScrollFlags.VERTICAL | Gtk.EventControllerScrollFlags.SMOOTH
+        )
+        scroll_ctrl.connect("scroll", self._on_scroll)
+        self.add_controller(scroll_ctrl)
+
+        # Double-click to reset volume to 100% (unity gain)
+        click_gesture = Gtk.GestureClick.new()
+        click_gesture.connect("released", self._on_click_released)
+        self.add_controller(click_gesture)
+
     def set_volume(self, volume: int, is_muted: bool = False):
         if self.is_dragging:
             return
@@ -44,6 +57,7 @@ class StereoSlider(Gtk.DrawingArea):
             self.queue_draw()
 
     def set_peaks(self, peak_l: float, peak_r: float):
+        prev_l, prev_r = self.peak_l, self.peak_r
         if self.sync_peaks:
             p = max(peak_l, peak_r)
             target_l, target_r = p, p
@@ -65,7 +79,9 @@ class StereoSlider(Gtk.DrawingArea):
             if self.peak_r < 0.002:
                 self.peak_r = 0.0
 
-        self.queue_draw()
+        # Only trigger GTK repaint when levels actually change, eliminating idle redraw CPU burn
+        if abs(self.peak_l - prev_l) > 0.002 or abs(self.peak_r - prev_r) > 0.002:
+            self.queue_draw()
 
     def set_sync_peaks(self, sync: bool):
         if self.sync_peaks != sync:
@@ -106,6 +122,27 @@ class StereoSlider(Gtk.DrawingArea):
 
     def _on_drag_end(self, gesture, offset_x, offset_y):
         self.is_dragging = False
+
+    def _on_scroll(self, controller, dx, dy):
+        state = controller.get_current_event_state()
+        step = 5 if (state & Gdk.ModifierType.SHIFT_MASK) else 2
+        delta = -step if dy > 0 else (step if dy < 0 else 0)
+        if delta != 0:
+            new_vol = max(0, min(100, self.volume + delta))
+            if new_vol != self.volume:
+                self.volume = new_vol
+                self.queue_draw()
+                if self.on_volume_changed:
+                    self.on_volume_changed(self.volume)
+        return True
+
+    def _on_click_released(self, gesture, n_press, x, y):
+        if n_press == 2:  # Double click to reset to 100% (unity gain)
+            if self.volume != 100:
+                self.volume = 100
+                self.queue_draw()
+                if self.on_volume_changed:
+                    self.on_volume_changed(self.volume)
 
     def _draw(self, area, cr, width, height):
         margin = 6.0
