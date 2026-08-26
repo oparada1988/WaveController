@@ -37,7 +37,7 @@ class StereoSlider(Gtk.DrawingArea):
 
         # Mouse scroll wheel controller (±2% volume, ±5% with Shift)
         scroll_ctrl = Gtk.EventControllerScroll.new(
-            Gtk.EventControllerScrollFlags.VERTICAL | Gtk.EventControllerScrollFlags.SMOOTH
+            Gtk.EventControllerScrollFlags.VERTICAL | Gtk.EventControllerScrollFlags.DISCRETE
         )
         scroll_ctrl.connect("scroll", self._on_scroll)
         self.add_controller(scroll_ctrl)
