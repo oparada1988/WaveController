@@ -534,8 +534,35 @@ class MixerMatrixView(Gtk.Box):
                 apps_list_container.remove(apps_list_container.get_first_child())
 
             running_apps = self.pipewire_mgr.get_active_application_streams()
+
+            # Gather all applications already assigned to existing channels
+            configured_apps = set()
+            for ch in self.pipewire_mgr.channels:
+                configured_apps.add(ch.get("id", "").lower())
+                configured_apps.add(ch.get("name", "").lower())
+            for app_list in self.pipewire_mgr.assigned_apps.values():
+                for a in app_list:
+                    configured_apps.add(a.lower())
+
+            available_apps = []
             if running_apps:
                 for app_info in running_apps:
+                    app_name = app_info["name"]
+                    app_bin = app_info.get("binary", "")
+                    name_low = app_name.lower()
+                    bin_low = app_bin.lower()
+
+                    is_already_added = (
+                        name_low in configured_apps
+                        or bin_low in configured_apps
+                        or any(c in name_low or name_low in c for c in configured_apps if len(c) > 2)
+                        or any(c in bin_low or bin_low in c for c in configured_apps if len(c) > 2)
+                    )
+                    if not is_already_added:
+                        available_apps.append(app_info)
+
+            if available_apps:
+                for app_info in available_apps:
                     app_name = app_info["name"]
                     item_btn = Gtk.Button()
                     item_btn.add_css_class("flat")
@@ -567,7 +594,11 @@ class MixerMatrixView(Gtk.Box):
                     item_btn.connect("clicked", make_app_click_handler(app_name))
                     apps_list_container.append(item_btn)
             else:
-                no_apps = Gtk.Label(label="No audio applications running.\nLaunch an app (Spotify, Discord, etc.) or create custom below:")
+                if running_apps:
+                    msg = "All running audio applications are already added to channels.\nLaunch another app or create a custom channel below:"
+                else:
+                    msg = "No audio applications running.\nLaunch an app (Spotify, Discord, etc.) or create custom below:"
+                no_apps = Gtk.Label(label=msg)
                 no_apps.add_css_class("mix-header-subtitle")
                 no_apps.set_halign(Gtk.Align.START)
                 no_apps.set_wrap(True)
@@ -583,8 +614,20 @@ class MixerMatrixView(Gtk.Box):
                 self.hardware_mgr.detect_connected_hardware()
 
             input_devs = self.hardware_mgr.input_devices if self.hardware_mgr else []
-            if input_devs:
-                for dev_info in input_devs:
+            
+            # Filter out hardware devices already configured as channels
+            configured_dev_names = {c.get("name", "").lower() for c in self.pipewire_mgr.channels}
+            for ch in self.pipewire_mgr.channels:
+                configured_dev_names.add(ch.get("id", "").lower())
+
+            available_devs = [
+                d for d in input_devs
+                if self.hardware_mgr.get_device_display_name(d).lower() not in configured_dev_names
+                and not any(c in self.hardware_mgr.get_device_display_name(d).lower() for c in configured_dev_names if len(c) > 3)
+            ]
+
+            if available_devs:
+                for dev_info in available_devs:
                     dev_name = self.hardware_mgr.get_device_display_name(dev_info)
                     dev_icon = dev_info.get("icon", "audio-input-microphone-symbolic")
                     dev_item_btn = Gtk.Button()
@@ -617,7 +660,11 @@ class MixerMatrixView(Gtk.Box):
                     dev_item_btn.connect("clicked", make_dev_click_handler(dev_name, dev_icon))
                     dev_list_container.append(dev_item_btn)
             else:
-                no_devs = Gtk.Label(label="No hardware input devices found.")
+                if input_devs:
+                    msg = "All connected hardware inputs are already added as channels."
+                else:
+                    msg = "No hardware input devices found."
+                no_devs = Gtk.Label(label=msg)
                 no_devs.add_css_class("mix-header-subtitle")
                 no_devs.set_halign(Gtk.Align.START)
                 dev_list_container.append(no_devs)
