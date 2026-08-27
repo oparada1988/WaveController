@@ -384,9 +384,35 @@ class ChannelCard(Gtk.Box):
         return False
 
     def _on_remove_clicked(self, btn):
-        self.settings_btn.get_popover().popdown()
-        if self.on_channel_removed_callback:
-            self.on_channel_removed_callback(self.channel_info["id"])
+        popover = self.settings_btn.get_popover()
+        if popover:
+            popover.popdown()
+
+        ch_name = self.channel_info.get("name", "Channel")
+        if self.is_wave_channel and self.hardware_mgr and self.hardware_mgr.device_name:
+            ch_name = self.hardware_mgr.get_device_display_name(self.hardware_mgr.device_name)
+
+        root_win = self.get_root()
+        if not isinstance(root_win, Gtk.Window):
+            root_win = self.get_native() if isinstance(self.get_native(), Gtk.Window) else None
+
+        dialog = Adw.MessageDialog(
+            transient_for=root_win,
+            heading=f"Delete '{ch_name}' Channel?",
+            body=f"Are you sure you want to delete the '{ch_name}' channel? This will remove its channel strip and tear down its virtual audio routing across all mixes."
+        )
+        dialog.add_response("cancel", "Cancel")
+        dialog.add_response("delete", "Delete Channel")
+        dialog.set_response_appearance("delete", Adw.ResponseAppearance.DESTRUCTIVE)
+        dialog.set_default_response("cancel")
+
+        def _on_response(d, response):
+            if response == "delete":
+                if self.on_channel_removed_callback:
+                    self.on_channel_removed_callback(self.channel_info["id"])
+
+        dialog.connect("response", _on_response)
+        dialog.present()
 
     def _on_slider_volume_changed(self, new_vol):
         ch_id = self.channel_info["id"]
