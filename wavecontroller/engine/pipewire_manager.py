@@ -1545,48 +1545,42 @@ class PipeWireManager:
                 vol_pct = st.get("volume", 80)
                 is_muted = st.get("muted", False)
 
-                if not is_linked:
-                    # Unlinked Mode: Use independent submix loopback with per-mix attenuation
-                    # 1. Sever any direct link between app output and mix target
-                    self._link_stereo_ports(ch_out_ports, target_in_ports, unlink=True)
+                # Use dedicated submix loopback faders with real-time attenuation for all active mixes
+                # 1. Sever any direct unattenuated link between channel output and mix target
+                self._link_stereo_ports(ch_out_ports, target_in_ports, unlink=True)
 
-                    if is_enabled and not is_muted:
-                        self._ensure_submix_loopback(ch_id, m_id, vol_pct, is_muted=False)
-                        
-                        loopback_in_prefix = f"input.WaveController_submix_{ch_id}_{m_id}:input_"
-                        loopback_out_prefix = f"output.WaveController_submix_{ch_id}_{m_id}:output_"
-                        
-                        lb_in_ports = [p for p in in_ports if p.startswith(loopback_in_prefix)]
-                        lb_out_ports = [p for p in out_ports if p.startswith(loopback_out_prefix)]
+                if is_enabled and not is_muted:
+                    self._ensure_submix_loopback(ch_id, m_id, vol_pct, is_muted=False)
+                    
+                    loopback_in_prefix = f"input.WaveController_submix_{ch_id}_{m_id}:input_"
+                    loopback_out_prefix = f"output.WaveController_submix_{ch_id}_{m_id}:output_"
+                    
+                    lb_in_ports = [p for p in in_ports if p.startswith(loopback_in_prefix)]
+                    lb_out_ports = [p for p in out_ports if p.startswith(loopback_out_prefix)]
 
-                        if not lb_in_ports or not lb_out_ports:
-                            for _ in range(8):
-                                time.sleep(0.03)
-                                try:
-                                    o_raw = subprocess.check_output(["pw-link", "-o"], text=True, stderr=subprocess.DEVNULL)
-                                    i_raw = subprocess.check_output(["pw-link", "-i"], text=True, stderr=subprocess.DEVNULL)
-                                    out_ports = [l.strip() for l in o_raw.splitlines() if l.strip()]
-                                    in_ports = [l.strip() for l in i_raw.splitlines() if l.strip()]
-                                    lb_in_ports = [p for p in in_ports if p.startswith(loopback_in_prefix)]
-                                    lb_out_ports = [p for p in out_ports if p.startswith(loopback_out_prefix)]
-                                    if lb_in_ports and lb_out_ports:
-                                        target_in_ports = [p for p in in_ports if any(p.startswith(pref) for pref in target_prefixes)]
-                                        break
-                                except Exception:
-                                    pass
+                    if not lb_in_ports or not lb_out_ports:
+                        for _ in range(8):
+                            time.sleep(0.03)
+                            try:
+                                o_raw = subprocess.check_output(["pw-link", "-o"], text=True, stderr=subprocess.DEVNULL)
+                                i_raw = subprocess.check_output(["pw-link", "-i"], text=True, stderr=subprocess.DEVNULL)
+                                out_ports = [l.strip() for l in o_raw.splitlines() if l.strip()]
+                                in_ports = [l.strip() for l in i_raw.splitlines() if l.strip()]
+                                lb_in_ports = [p for p in in_ports if p.startswith(loopback_in_prefix)]
+                                lb_out_ports = [p for p in out_ports if p.startswith(loopback_out_prefix)]
+                                if lb_in_ports and lb_out_ports:
+                                    target_in_ports = [p for p in in_ports if any(p.startswith(pref) for pref in target_prefixes)]
+                                    break
+                            except Exception:
+                                pass
 
-                        # Link Stage 1: Channel Output -> Loopback Input
-                        self._link_stereo_ports(ch_out_ports, lb_in_ports, unlink=False)
-                        # Link Stage 2: Loopback Output -> Mix Target Input
-                        self._link_stereo_ports(lb_out_ports, target_in_ports, unlink=False)
-                    else:
-                        self._stop_submix_loopback(ch_id, m_id)
-                        self._link_stereo_ports(ch_out_ports, target_in_ports, unlink=True)
+                    # Link Stage 1: Channel Output -> Loopback Input
+                    self._link_stereo_ports(ch_out_ports, lb_in_ports, unlink=False)
+                    # Link Stage 2: Loopback Output -> Mix Target Input
+                    self._link_stereo_ports(lb_out_ports, target_in_ports, unlink=False)
                 else:
-                    # Linked Mode: Stop dedicated loopback and route via direct low-latency pw-link
                     self._stop_submix_loopback(ch_id, m_id)
-                    unlink_target = (not is_enabled) or is_muted
-                    self._link_stereo_ports(ch_out_ports, target_in_ports, unlink=unlink_target)
+                    self._link_stereo_ports(ch_out_ports, target_in_ports, unlink=True)
 
         # Synchronize physical output target devices for all Sink mixes
         self._sync_mix_physical_output_routing(mix_id, out_ports, in_ports)
