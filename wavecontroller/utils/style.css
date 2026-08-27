@@ -488,6 +488,11 @@ popover.wave-popover entry:focus {
     color: @warning_color;
 }
 
+.device-badge.online {
+    background-color: alpha(#3db356, 0.22);
+    color: #4ade80;
+}
+
 /* 48V Phantom Power Badge Button */
 .wave-48v-badge {
     font-size: 10px;

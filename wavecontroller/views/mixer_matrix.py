@@ -1170,5 +1170,12 @@ class MixerMatrixView(Gtk.Box):
             p_l, p_r = cached_peaks.get(channel_id, (0.0, 0.0))
             cell.update_peaks(p_l, p_r)
 
+        # 4. Periodically verify physical hardware connectivity states (~1s interval)
+        self._hw_tick_counter = getattr(self, "_hw_tick_counter", 0) + 1
+        if self._hw_tick_counter % 30 == 0:
+            for card in self.channel_cards.values():
+                if hasattr(card, "refresh_hardware_state"):
+                    card.refresh_hardware_state()
+
         return True
 

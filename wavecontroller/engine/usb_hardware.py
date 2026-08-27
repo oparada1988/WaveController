@@ -292,10 +292,10 @@ class USBHardwareManager:
                 d["badge"] = "In / Out"
             elif num_in > 0:
                 d["type"] = "input"
-                d["badge"] = "In"
+                d["badge"] = "Input"
             else:
                 d["type"] = "output"
-                d["badge"] = "Out"
+                d["badge"] = "Output"
             
             d["icon"] = self._detect_smart_icon(
                 name=d["name"],
@@ -451,23 +451,28 @@ class USBHardwareManager:
             pass
 
     def _start_hotplug_monitor(self):
-        """Background worker checking for newly attached hardware devices."""
+        """Background worker checking for newly attached or detached hardware devices."""
         def _monitor_loop():
             known_keys = set(self.discovered_devices.keys())
             while True:
-                time.sleep(2.5)
+                time.sleep(1.5)
                 try:
                     self.detect_connected_hardware()
                     curr_keys = set(self.discovered_devices.keys())
-                    new_keys = curr_keys - known_keys
-                    if new_keys:
-                        tracked = set(config_manager.get("tracked_devices", []))
-                        for nk in new_keys:
-                            dev = self.discovered_devices.get(nk)
-                            if dev and nk not in tracked:
-                                if self.on_new_device_detected_callback:
-                                    self.on_new_device_detected_callback(dev)
-                    known_keys = curr_keys
+                    if curr_keys != known_keys:
+                        new_keys = curr_keys - known_keys
+                        if new_keys:
+                            tracked = set(config_manager.get("tracked_devices", []))
+                            for nk in new_keys:
+                                dev = self.discovered_devices.get(nk)
+                                if dev and nk not in tracked:
+                                    if self.on_new_device_detected_callback:
+                                        self.on_new_device_detected_callback(dev)
+                        known_keys = curr_keys
+                        if self.on_devices_changed_callback:
+                            self.on_devices_changed_callback()
+                        if self.pipewire_mgr and hasattr(self.pipewire_mgr, "_sync_channel_audio_routing"):
+                            self.pipewire_mgr._sync_channel_audio_routing()
                 except Exception:
                     pass
 
@@ -559,12 +564,24 @@ class USBHardwareManager:
                 dev = dict(self.discovered_devices[key])
             else:
                 # Disconnected device
+                k_low = key.lower()
+                name_low = aliases.get(key, key).lower()
+                if any(m in k_low or m in name_low for m in ("mic", "fefine", "fifine", "capture", "input")):
+                    inferred_type = "input"
+                    badge_text = "Input"
+                elif any(o in k_low or o in name_low for o in ("headphone", "speaker", "output", "playback", "sink", "iem")):
+                    inferred_type = "output"
+                    badge_text = "Output"
+                else:
+                    inferred_type = "duplex"
+                    badge_text = "In / Out"
+
                 dev = {
                     "device_key": key,
                     "name": aliases.get(key, key),
                     "description": "Hardware Disconnected",
-                    "type": "duplex",
-                    "badge": "Offline",
+                    "type": inferred_type,
+                    "badge": badge_text,
                     "icon": self.get_device_icon(key),
                     "sources": [],
                     "sinks": [],

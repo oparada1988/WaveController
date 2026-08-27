@@ -278,9 +278,12 @@ class WaveMainWindow(Adw.ApplicationWindow):
 
             row_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
 
+            is_connected = dev.get("connected", True)
             icon_name = dev.get("icon", "audio-headset-symbolic")
             icon_img = Gtk.Image.new_from_icon_name(icon_name)
             icon_img.set_pixel_size(24)
+            if not is_connected:
+                icon_img.set_opacity(0.55)
             row_box.append(icon_img)
 
             lbl = Gtk.Label(label=dev.get("display_name", dev.get("name", "Device")))
@@ -289,12 +292,18 @@ class WaveMainWindow(Adw.ApplicationWindow):
             lbl.set_ellipsize(Pango.EllipsizeMode.END)
             row_box.append(lbl)
 
-            badge_text = dev.get("badge", "In/Out")
+            dtype = dev.get("type", "duplex")
+            if dtype == "input":
+                badge_text = "Input"
+            elif dtype == "output":
+                badge_text = "Output"
+            else:
+                badge_text = "In / Out"
+
             badge_lbl = Gtk.Label(label=badge_text)
             badge_lbl.add_css_class("device-badge")
             
-            dtype = dev.get("type", "duplex")
-            if not dev.get("connected", True):
+            if not is_connected:
                 badge_lbl.add_css_class("offline")
             elif dtype == "duplex":
                 badge_lbl.add_css_class("duplex")
