@@ -130,20 +130,28 @@ EOF
 
     # Install Desktop Icons
     echo -e "${BLUE}[4/5] Installing desktop application icons...${NC}"
-    if [ -f "${INSTALL_DIR}/assets/icons/com.oparada.WaveController.png" ]; then
-        cp "${INSTALL_DIR}/assets/icons/com.oparada.WaveController.png" "${ICON_PNG_DIR}/com.oparada.WaveController.png"
-    elif [ -f "${INSTALL_DIR}/assets/icons/WaveController.png" ]; then
-        cp "${INSTALL_DIR}/assets/icons/WaveController.png" "${ICON_PNG_DIR}/com.oparada.WaveController.png"
-    fi
+    for res in 48x48 64x64 128x128 256x256 512x512; do
+        mkdir -p "${HOME}/.local/share/icons/hicolor/${res}/apps"
+        if [ -f "${INSTALL_DIR}/assets/icons/com.oparada.WaveController.png" ]; then
+            cp "${INSTALL_DIR}/assets/icons/com.oparada.WaveController.png" "${HOME}/.local/share/icons/hicolor/${res}/apps/com.oparada.WaveController.png"
+            cp "${INSTALL_DIR}/assets/icons/com.oparada.WaveController.png" "${HOME}/.local/share/icons/hicolor/${res}/apps/WaveController.png"
+        elif [ -f "${INSTALL_DIR}/assets/icons/WaveController.png" ]; then
+            cp "${INSTALL_DIR}/assets/icons/WaveController.png" "${HOME}/.local/share/icons/hicolor/${res}/apps/com.oparada.WaveController.png"
+            cp "${INSTALL_DIR}/assets/icons/WaveController.png" "${HOME}/.local/share/icons/hicolor/${res}/apps/WaveController.png"
+        fi
+    done
 
-    if [ -f "${INSTALL_DIR}/assets/icons/com.oparada.WaveController-tray.svg" ]; then
-        cp "${INSTALL_DIR}/assets/icons/com.oparada.WaveController-tray.svg" "${ICON_SVG_DIR}/com.oparada.WaveController.svg"
-    elif [ -f "${INSTALL_DIR}/assets/icons/wctray.svg" ]; then
-        cp "${INSTALL_DIR}/assets/icons/wctray.svg" "${ICON_SVG_DIR}/com.oparada.WaveController.svg"
-    fi
+    mkdir -p "${HOME}/.local/share/icons/hicolor/scalable/apps"
+    rm -f "${HOME}/.local/share/icons/hicolor/scalable/apps/com.oparada.WaveController.svg"
 
     if [ -f "${INSTALL_DIR}/assets/icons/wavecontroller-tray-symbolic.svg" ]; then
         cp "${INSTALL_DIR}/assets/icons/wavecontroller-tray-symbolic.svg" "${ICON_SVG_DIR}/wavecontroller-tray-symbolic.svg"
+    elif [ -f "${INSTALL_DIR}/assets/icons/com.oparada.WaveController-tray.svg" ]; then
+        cp "${INSTALL_DIR}/assets/icons/com.oparada.WaveController-tray.svg" "${ICON_SVG_DIR}/wavecontroller-tray-symbolic.svg"
+    fi
+
+    if command -v gtk-update-icon-cache &>/dev/null; then
+        gtk-update-icon-cache -f -t "${HOME}/.local/share/icons/hicolor" 2>/dev/null || true
     fi
 
     # Create Desktop Launcher
