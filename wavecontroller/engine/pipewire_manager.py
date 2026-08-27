@@ -745,6 +745,11 @@ class PipeWireManager:
                     continue
                 props = obj.get("info", {}).get("props", {})
                 media_class = props.get("media.class", "")
+                
+                # Client Application Stream Isolation: NEVER index client playback streams for volume adjustments
+                if media_class == "Stream/Output/Audio" and not props.get("node.name", "").startswith("output.WaveController_submix_"):
+                    continue
+
                 if "Stream/Output/Audio" in media_class or media_class.startswith("Audio/"):
                     node_id = str(obj["id"])
                     names = [
@@ -932,6 +937,7 @@ class PipeWireManager:
                     if self.is_channel_mix_compatible(channel_id, mx_id):
                         if channel_id in self.channel_states and mx_id in self.channel_states[channel_id]:
                             self.channel_states[channel_id][mx_id]["volume"] = vol
+                            self._submix_volume_queue[(channel_id, mx_id)] = (vol, is_muted)
 
             # Enqueue physical stream volume dispatch
             self._volume_queue[channel_id] = (vol, is_muted)
@@ -951,6 +957,8 @@ class PipeWireManager:
                 if self.is_channel_mix_compatible(channel_id, mx_id):
                     if channel_id in self.channel_states and mx_id in self.channel_states[channel_id]:
                         self.channel_states[channel_id][mx_id]["muted"] = muted
+                        sub_v = self.channel_states[channel_id][mx_id].get("volume", vol)
+                        self._submix_volume_queue[(channel_id, mx_id)] = (sub_v, muted)
 
             # Enqueue physical stream volume dispatch
             self._volume_queue[channel_id] = (vol, muted)
@@ -1287,38 +1295,36 @@ class PipeWireManager:
                 if "elgato" in channel_id.lower() or "wave_xlr" in channel_id.lower() or (ch_name and "elgato" in ch_name.lower()):
                     continue
 
-                search_keys = set([channel_id.lower()])
-                if ch_name:
-                    search_keys.add(ch_name.lower())
-                for a in assigned_app_names:
-                    search_keys.add(a.lower())
-
-                # Common aliases for hardware channels
-                if "fefine" in search_keys:
-                    search_keys.add("fifine")
-                if "mobo" in search_keys or "motherboard" in search_keys:
-                    search_keys.add("starship")
-                    search_keys.add("matisse")
-                    search_keys.add("pci-0000_14_00.4")
-
                 target_node_ids = set()
+                ch_sink_name = f"wavecontroller_channel_{channel_id}".lower()
 
-                def collect_matches():
-                    matches = set()
-                    with self._lock:
-                        for sk in search_keys:
-                            for cached_name, node_ids in self._node_cache.items():
-                                if "elgato" in cached_name or "wave_xlr" in cached_name:
-                                    continue
-                                if sk in cached_name or cached_name in sk:
-                                    matches.update(node_ids)
-                    return matches
-
-                target_node_ids = collect_matches()
+                # Priority 1: Direct volume dispatch to the channel's dedicated virtual sink adapter
+                with self._lock:
+                    if ch_sink_name in self._node_cache:
+                        target_node_ids.update(self._node_cache[ch_sink_name])
 
                 if not target_node_ids:
                     self._refresh_node_cache()
-                    target_node_ids = collect_matches()
+                    with self._lock:
+                        if ch_sink_name in self._node_cache:
+                            target_node_ids.update(self._node_cache[ch_sink_name])
+
+                # Priority 2: For hardware input capture sources (e.g. Fifine Mic, Mobo Mic) that don't use virtual playback sinks
+                if not target_node_ids:
+                    is_source = any(k in channel_id.lower() for k in ("mic", "fefine", "fifine", "microphone", "input", "capture", "mobo"))
+                    if is_source:
+                        hw_search = set([channel_id.lower()])
+                        if "fefine" in hw_search:
+                            hw_search.add("fifine")
+                        if "mobo" in hw_search or "motherboard" in hw_search:
+                            hw_search.update(["starship", "matisse", "pci-0000_14_00.4"])
+                        with self._lock:
+                            for sk in hw_search:
+                                for cached_name, node_ids in self._node_cache.items():
+                                    if "elgato" in cached_name or "wave_xlr" in cached_name:
+                                        continue
+                                    if sk in cached_name:
+                                        target_node_ids.update(node_ids)
 
                 for node_id in target_node_ids:
                     try:

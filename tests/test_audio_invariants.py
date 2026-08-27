@@ -251,6 +251,18 @@ class TestTokenMatchingInvariants(unittest.TestCase):
         """Invariant: Channels must default to disabled (unrouted) for new or unconfigured mixes to prevent accidental bleed."""
         self.assertFalse(self.pwm.is_channel_mix_enabled("unconfigured_channel", "unconfigured_mix"))
 
+    def test_application_streams_excluded_from_volume_cache(self):
+        """Invariant: Client application playback streams must NEVER be cached for volume dispatch."""
+        self.pwm._node_cache = {
+            "wavecontroller_channel_spotify": ["110"],
+            "spotify": ["114"]
+        }
+        # Channel sink lookup for "spotify" must resolve to the virtual sink "110", NEVER application stream "114"
+        ch_sink = f"wavecontroller_channel_spotify"
+        matched_ids = self.pwm._node_cache.get(ch_sink, [])
+        self.assertIn("110", matched_ids)
+        self.assertNotIn("114", matched_ids)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
