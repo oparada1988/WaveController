@@ -383,12 +383,11 @@ class PipeWireManager:
                 # 2. Periodic real-time stream, guard & mix reconciliation
                 sync_tick = getattr(self, "_sync_loop_tick", 0) + 1
                 self._sync_loop_tick = sync_tick
-                if sync_tick % 5 == 0:
+                if sync_tick % 3 == 0:
                     self._reconcile_app_streams_fast()
-                if sync_tick % 60 == 0:
+                if sync_tick % 50 == 0:
                     self._enforce_exclusive_volume_guard()
                     self._ensure_mix_sinks_unmuted()
-                if sync_tick % 120 == 0:
                     self._sync_channel_audio_routing()
             except Exception:
                 pass
@@ -501,13 +500,74 @@ class PipeWireManager:
         except Exception:
             pass
 
+    def _get_match_tokens(self, name_or_id: str) -> set:
+        """Generates normalized matching tokens for any application, process binary, or audio device."""
+        if not name_or_id:
+            return set()
+        raw = str(name_or_id).lower().strip()
+        tokens = {raw}
+
+        # 1. Spacing and punctuation permutations
+        tokens.add(raw.replace(" ", "-"))
+        tokens.add(raw.replace(" ", "_"))
+        tokens.add(raw.replace(" ", ""))
+        tokens.add(raw.replace("-", " "))
+        tokens.add(raw.replace("_", " "))
+        tokens.add(raw.replace("-", ""))
+        tokens.add(raw.replace("_", ""))
+
+        # 2. Known audio binary mappings (Chrome, VLC, Discord, Steam, OBS, etc.)
+        for bin_name, (disp, alt) in self.KNOWN_AUDIO_BINARIES.items():
+            if bin_name in raw or disp.lower() in raw or alt.lower() in raw:
+                tokens.add(bin_name)
+                tokens.add(alt.lower())
+                tokens.add(disp.lower())
+                tokens.add(disp.lower().replace(" ", "-"))
+                tokens.add(disp.lower().replace(" ", "_"))
+
+        # 3. Known hardware device aliases
+        if any(w in raw for w in ("wave", "elgato", "0fd9")):
+            tokens.update({"wave", "elgato", "0fd9", "wave_xlr", "wave-xlr"})
+        if any(w in raw for w in ("fefine", "fifine", "3142")):
+            tokens.update({"fifine", "fefine", "3142"})
+
+        # 4. Extract individual distinct alphanumeric words (len >= 3)
+        stop_words = {
+            "the", "and", "for", "with", "player", "media", "audio", "sound",
+            "stream", "desktop", "client", "app", "application", "input", "output",
+            "stereo", "mono", "analog", "default", "system", "capture", "playback"
+        }
+        words = [w for w in re.split(r"[\s\-_.:/]+", raw) if len(w) >= 3 and w not in stop_words]
+        tokens.update(words)
+        return tokens
+
+    def _port_matches_tokens(self, port_name: str, tokens: set) -> bool:
+        """Checks if a PipeWire port belongs to an application or device matching any token."""
+        if not port_name or not tokens:
+            return False
+        p_low = port_name.lower()
+        node_part = p_low.split(":")[0]
+        node_clean = node_part.replace("-", " ").replace("_", " ")
+
+        if node_part in tokens or node_clean in tokens:
+            return True
+
+        for t in tokens:
+            if len(t) < 3:
+                continue
+            if t == node_part or t == node_clean:
+                return True
+            if t in node_part or t in node_clean or node_part.startswith(t):
+                return True
+        return False
+
     def _bind_app_to_wireplumber_target(self, app_name: str, channel_id: str):
         """Notifies WirePlumber via PipeWire metadata that an application belongs to its dedicated channel sink."""
         try:
             target_sink = f"WaveController_Channel_{channel_id}"
             out = subprocess.check_output(["pw-dump"], text=True, stderr=subprocess.DEVNULL)
             data = json.loads(out)
-            app_low = app_name.lower()
+            tokens = self._get_match_tokens(app_name)
             for obj in data:
                 if obj.get("type") == "PipeWire:Interface:Node":
                     props = obj.get("info", {}).get("props", {})
@@ -515,7 +575,17 @@ class PipeWireManager:
                         n_app = props.get("application.name", "").lower()
                         n_bin = props.get("application.process.binary", "").lower()
                         n_name = props.get("node.name", "").lower()
-                        if app_low in n_app or app_low in n_bin or app_low in n_name or n_app.startswith(app_low):
+                        n_id = props.get("application.id", "").lower()
+                        
+                        match = False
+                        for t in tokens:
+                            if len(t) < 3:
+                                continue
+                            if t in n_app or t in n_bin or t in n_name or t in n_id or n_app.startswith(t):
+                                match = True
+                                break
+
+                        if match:
                             nid = obj["id"]
                             if nid not in self._bound_stream_nodes:
                                 subprocess.run(
@@ -564,8 +634,8 @@ class PipeWireManager:
                     continue
 
                 for app in assigned:
-                    app_low = app.lower()
-                    matched_ports = [p for p in app_ports if (app_low in p.lower() or p.lower().startswith(app_low)) and ":output_" in p]
+                    tokens = self._get_match_tokens(app)
+                    matched_ports = [p for p in app_ports if self._port_matches_tokens(p, tokens) and ":output_" in p]
                     if not matched_ports:
                         continue
 
@@ -592,6 +662,8 @@ class PipeWireManager:
                     if need_link:
                         self._link_stereo_ports(matched_ports, ch_in_ports, unlink=False)
                         self._bind_app_to_wireplumber_target(app, ch_id)
+                        # Immediately sync downstream channel routing so audio flows through assigned mix without delay
+                        self._sync_channel_audio_routing(channel_id=ch_id)
 
                     # 2. Immediately sever any leaking links to physical outputs or other mix sinks
                     for sp in matched_ports:
@@ -1376,26 +1448,23 @@ class PipeWireManager:
             ch_out_ports = []
             app_out_ports = []
             if is_source_channel:
-                ch_name_low = str(ch.get("name", "")).lower()
-                ch_id_low = str(ch_id).lower()
-                assigned_devs = [str(a).lower() for a in self.get_assigned_apps(ch_id)]
+                ch_name = str(ch.get("name", ""))
+                ch_id_str = str(ch_id)
+                assigned_devs = self.get_assigned_apps(ch_id)
+                
+                # Build comprehensive matching tokens for this input channel
+                input_tokens = self._get_match_tokens(ch_id_str)
+                input_tokens.update(self._get_match_tokens(ch_name))
+                for dev in assigned_devs:
+                    input_tokens.update(self._get_match_tokens(dev))
+
                 matched_ports = []
                 for p in out_ports:
                     if p.startswith("output.WaveController_") or p.startswith("WaveController_") or ":monitor_" in p:
                         continue
-                    if ":capture_" in p and p.startswith("alsa_input."):
-                        p_low = p.lower()
-                        if "wave" in ch_id_low or "elgato" in ch_id_low or "wave" in ch_name_low:
-                            if "wave" in p_low or "elgato" in p_low or "0fd9" in p_low:
-                                matched_ports.append(p)
-                        elif "fefine" in ch_id_low or "fifine" in ch_id_low or "fefine" in ch_name_low or "fifine" in ch_name_low:
-                            if "fifine" in p_low or "fefine" in p_low or "3142" in p_low:
-                                matched_ports.append(p)
-                        elif any(dev in p_low for dev in assigned_devs if len(dev) >= 3 and dev != "system capture"):
+                    if ":capture_" in p:
+                        if self._port_matches_tokens(p, input_tokens):
                             matched_ports.append(p)
-                        elif ch_id_low in p_low or (len(ch_name_low) >= 3 and ch_name_low in p_low):
-                            matched_ports.append(p)
-                # Strict isolation: Never fall back to grabbing other microphones (prevents cross-bleed)
                 ch_out_ports = matched_ports
             else:
                 # Route through per-channel ingestion sink
@@ -1407,12 +1476,11 @@ class PipeWireManager:
                 app_out_ports = []
                 assigned = self.get_assigned_apps(ch_id)
                 for app in assigned:
-                    app_low = app.lower()
+                    tokens = self._get_match_tokens(app)
                     for p in out_ports:
                         if p.startswith("output.WaveController_") or p.startswith("WaveController_"):
                             continue
-                        p_low = p.lower()
-                        if (app_low in p_low or p_low.startswith(app_low)) and ":output_" in p:
+                        if ":output_" in p and self._port_matches_tokens(p, tokens):
                             app_out_ports.append(p)
 
                 # Link apps -> channel sink (ingestion point)
@@ -1595,7 +1663,8 @@ class PipeWireManager:
                         elif not default_sink_name:
                             matched = True
                     else:
-                        if clean_target in p_low:
+                        dev_tokens = self._get_match_tokens(clean_target)
+                        if self._port_matches_tokens(p, dev_tokens):
                             matched = True
 
                     if matched:

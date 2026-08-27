@@ -183,5 +183,57 @@ class TestIPCLiveInvariants(unittest.TestCase):
             s.close()
 
 
+class TestTokenMatchingInvariants(unittest.TestCase):
+    """Verifies that universal token matching resolves any application or input device without lag."""
+
+    def setUp(self):
+        from wavecontroller.engine.pipewire_manager import PipeWireManager
+        self.pwm = PipeWireManager.__new__(PipeWireManager)
+
+    def test_multiword_application_matching(self):
+        """Multi-word apps must match their process binaries and PipeWire output port names."""
+        # Google Chrome
+        tokens = self.pwm._get_match_tokens("Google Chrome")
+        self.assertTrue(self.pwm._port_matches_tokens("google-chrome:output_FL", tokens))
+        self.assertTrue(self.pwm._port_matches_tokens("chrome:output_FL", tokens))
+        self.assertTrue(self.pwm._port_matches_tokens("Google Chrome:output_FL", tokens))
+        self.assertFalse(self.pwm._port_matches_tokens("spotify:output_FL", tokens))
+
+        # VLC Media Player
+        tokens = self.pwm._get_match_tokens("VLC media player")
+        self.assertTrue(self.pwm._port_matches_tokens("vlc:output_FL", tokens))
+        self.assertTrue(self.pwm._port_matches_tokens("vlc-media-player:output_FR", tokens))
+
+        # OBS Studio
+        tokens = self.pwm._get_match_tokens("OBS Studio")
+        self.assertTrue(self.pwm._port_matches_tokens("obs:output_FL", tokens))
+        self.assertTrue(self.pwm._port_matches_tokens("obs64:output_FL", tokens))
+
+        # Steam
+        tokens = self.pwm._get_match_tokens("Steam")
+        self.assertTrue(self.pwm._port_matches_tokens("steam:output_FL", tokens))
+        self.assertTrue(self.pwm._port_matches_tokens("steamwebhelper:output_FL", tokens))
+
+    def test_input_device_matching(self):
+        """Input devices (microphones, capture devices) must match their capture ports."""
+        # Elgato Wave XLR
+        tokens = self.pwm._get_match_tokens("Elgato Wave XLR")
+        self.assertTrue(self.pwm._port_matches_tokens("alsa_input.usb-Elgato_Systems_Elgato_Wave_XLR_DS16M2A01160-00.mono-fallback:capture_MONO", tokens))
+
+        # Fifine Microphone
+        tokens = self.pwm._get_match_tokens("Fifine Microphone")
+        self.assertTrue(self.pwm._port_matches_tokens("alsa_input.usb-3142_fifine_Microphone-00.analog-stereo:capture_FL", tokens))
+
+        # Generic / Blue Yeti Microphone
+        tokens = self.pwm._get_match_tokens("Blue Yeti")
+        self.assertTrue(self.pwm._port_matches_tokens("alsa_input.usb-Blue_Microphones_Yeti_1234-00.analog-stereo:capture_FL", tokens))
+
+        # Bluetooth Input (by identifier or description)
+        tokens = self.pwm._get_match_tokens("bluez_input.94_DB_56_12_34_56")
+        self.assertTrue(self.pwm._port_matches_tokens("bluez_input.94_DB_56_12_34_56:capture_FL", tokens))
+        tokens_desc = self.pwm._get_match_tokens("Sony WH-1000XM4")
+        self.assertTrue(self.pwm._port_matches_tokens("bluez_input.sony_wh_1000xm4:capture_FL", tokens_desc))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
