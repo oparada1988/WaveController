@@ -142,11 +142,18 @@ EOF
     done
 
     mkdir -p "${HOME}/.local/share/icons/hicolor/scalable/apps"
+    mkdir -p "${HOME}/.local/share/icons/hicolor/symbolic/apps"
     rm -f "${HOME}/.local/share/icons/hicolor/scalable/apps/com.oparada.WaveController.svg"
 
     for sym_file in "${INSTALL_DIR}"/assets/icons/*-symbolic.svg; do
         if [ -f "${sym_file}" ]; then
-            cp "${sym_file}" "${ICON_SVG_DIR}/"
+            cp "${sym_file}" "${HOME}/.local/share/icons/hicolor/scalable/apps/"
+            cp "${sym_file}" "${HOME}/.local/share/icons/hicolor/symbolic/apps/"
+        fi
+    done
+    for svg_file in "${INSTALL_DIR}"/assets/icons/*.svg; do
+        if [ -f "${svg_file}" ]; then
+            cp "${svg_file}" "${HOME}/.local/share/icons/hicolor/scalable/apps/"
         fi
     done
 

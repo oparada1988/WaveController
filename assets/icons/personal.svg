@@ -1,11 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape" viewBox="0 0 24 24" width="24" height="24">
+<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" version="1.1" viewBox="0 0 16 16">
   <defs>
     <style id="current-color-scheme" type="text/css">
-      .ColorScheme-Text { color: currentColor; }
+      .ColorScheme-Text { color:#dfdfdf; }
     </style>
   </defs>
-  <g id="layer1" transform="translate(-687.58785,-1639.4611)">
-    <path style="fill:currentColor;stroke-width:1.92153" class="ColorScheme-Text" d="m 699.58787,1639.4611 c 3.32,0 6,2.4738 6,5.5385 0,3.0461 -2.68,5.5384 -6,5.5384 -3.32,0 -6,-2.4923 -6,-5.5384 0,-3.0647 2.68,-5.5385 6,-5.5385 z m 0,14.7692 c 12,-0.018 12,7.3846 12,7.3846 v 1.8462 h -24 v -1.8462 c 0,0 0,-7.3846 12,-7.3846 z" id="path1-1" />
-  </g>
+  <path style="fill:currentColor" class="ColorScheme-Text" d="M 8,0 C 10.2133,0 12,1.6492 12,3.6923 C 12,5.7231 10.2133,7.3846 8,7.3846 C 5.7867,7.3846 4,5.7231 4,3.6923 C 4,1.6492 5.7867,0 8,0 Z M 8,9.8461 C 16,9.8341 16,14.7692 16,14.7692 V 16 H 0 V 14.7692 C 0,14.7692 0,9.8461 8,9.8461 Z"/>
 </svg>
