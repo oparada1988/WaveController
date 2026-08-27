@@ -530,9 +530,88 @@ class MultiChannelPeakMonitor:
                     for ch in ["mic", "microphone", "fefine", "fifine", "elgato_wave_xlr", "wave", "wave_xlr", "input", "system_capture"]:
                         self.peaks[ch] = {"left": m_l, "right": m_r, "peak": max(m_l, m_r)}
 
-                    # Mix buses receive monitor levels
-                    for mix in ["personal_mix", "personal", "chat_mix", "mobo_mix", "mobo", "stream_mix"]:
-                        self.peaks[mix] = {"left": s_l, "right": s_r, "peak": max(s_l, s_r)}
+                    # 1. Personal Mix bus receives direct hardware sink monitor levels
+                    personal_peak = {"left": s_l, "right": s_r, "peak": max(s_l, s_r)}
+                    self.peaks["personal_mix"] = personal_peak
+                    self.peaks["personal"] = personal_peak
+
+                    # 2. Dynamic mix bus peaks: accurately aggregate only routed, unmuted channels for each mix (Strict Zero-Bleed)
+                    if self.pipewire_mgr:
+                        try:
+                            mixes_list = getattr(self.pipewire_mgr, "mixes", [])
+                            channels_list = getattr(self.pipewire_mgr, "channels", [])
+                            ch_states = getattr(self.pipewire_mgr, "channel_states", {})
+                            master_states = getattr(self.pipewire_mgr, "channel_master_states", {})
+                            mx_states = getattr(self.pipewire_mgr, "mix_states", {})
+
+                            for mx in mixes_list:
+                                mx_id = mx.get("id", "")
+                                if not mx_id or mx_id in ("personal", "personal_mix"):
+                                    continue
+
+                                mx_st = mx_states.get(mx_id, {})
+                                if mx_st.get("muted", False):
+                                    mix_peak = {"left": 0.0, "right": 0.0, "peak": 0.0}
+                                    self.peaks[mx_id] = mix_peak
+                                    self.peaks[mx_id.replace("_mix", "")] = mix_peak
+                                    continue
+
+                                mx_vol_frac = max(0.0, min(1.5, mx_st.get("volume", 100) / 100.0))
+                                if mx_vol_frac <= 0.001:
+                                    mix_peak = {"left": 0.0, "right": 0.0, "peak": 0.0}
+                                    self.peaks[mx_id] = mix_peak
+                                    self.peaks[mx_id.replace("_mix", "")] = mix_peak
+                                    continue
+
+                                mix_accum_l = 0.0
+                                mix_accum_r = 0.0
+
+                                for ch in channels_list:
+                                    ch_id = ch.get("id", "")
+                                    if not ch_id:
+                                        continue
+
+                                    # Check if channel is enabled for this mix
+                                    st = ch_states.get(ch_id, {}).get(mx_id, {})
+                                    if not st.get("enabled", True) or st.get("muted", False):
+                                        continue
+
+                                    # Check master channel mute
+                                    m_st = master_states.get(ch_id, {})
+                                    if m_st.get("muted", False):
+                                        continue
+
+                                    # Calculate volume attenuation
+                                    ch_sub_vol = max(0.0, min(1.5, st.get("volume", 80) / 100.0))
+                                    ch_master_vol = max(0.0, min(1.5, m_st.get("volume", 80) / 100.0))
+                                    ch_scale = ch_sub_vol * ch_master_vol * mx_vol_frac
+
+                                    # Obtain channel level
+                                    is_source = (ch.get("type") == "source") or any(k in ch_id.lower() for k in ("mic", "fefine", "microphone", "wave", "elgato", "input", "capture"))
+                                    if is_source:
+                                        c_l, c_r = m_l, m_r
+                                    else:
+                                        cp = self._channel_peaks.get(ch_id, {"left": 0.0, "right": 0.0})
+                                        c_l = cp.get("left", 0.0)
+                                        c_r = cp.get("right", 0.0)
+
+                                    mix_accum_l = max(mix_accum_l, c_l * ch_scale)
+                                    mix_accum_r = max(mix_accum_r, c_r * ch_scale)
+
+                                mix_accum_l = min(1.0, mix_accum_l)
+                                mix_accum_r = min(1.0, mix_accum_r)
+                                mix_peak_val = max(mix_accum_l, mix_accum_r)
+                                mix_data = {"left": mix_accum_l, "right": mix_accum_r, "peak": mix_peak_val}
+
+                                self.peaks[mx_id] = mix_data
+                                short_name = mx_id.replace("_mix", "")
+                                if short_name != mx_id:
+                                    self.peaks[short_name] = mix_data
+                        except Exception:
+                            pass
+                    else:
+                        for non_p in ["chat_mix", "chat", "mobo_mix", "mobo", "stream_mix", "stream"]:
+                            self.peaks[non_p] = {"left": 0.0, "right": 0.0, "peak": 0.0}
 
                     # Isolated per-channel ingestion peaks
                     for ch_id, ch_p in self._channel_peaks.items():
