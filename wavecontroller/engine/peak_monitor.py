@@ -79,11 +79,15 @@ class MultiChannelPeakMonitor:
             out = subprocess.check_output(['pw-link', '-o'], text=True, stderr=subprocess.DEVNULL)
             all_ports = [l.strip() for l in out.splitlines() if ':monitor_' in l.strip()]
             
+            personal_ports = [p for p in all_ports if 'personal_mix_sink' in p.lower()]
+            if personal_ports:
+                return personal_ports[0].split(':')[0]
+
             wc_ports = [p for p in all_ports if 'wavecontroller' in p.lower() and 'sink' in p.lower()]
             elgato_ports = [p for p in all_ports if 'wave' in p.lower() or 'elgato' in p.lower() or '0fd9' in p.lower()]
             other_ports = [p for p in all_ports if p not in wc_ports and p not in elgato_ports and 'source' not in p.lower()]
             
-            selected = wc_ports or elgato_ports or other_ports
+            selected = personal_ports or wc_ports or elgato_ports or other_ports
             if selected:
                 return selected[0].split(':')[0]
         except Exception:
@@ -97,7 +101,6 @@ class MultiChannelPeakMonitor:
             'pw-record',
             '-P', f'node.name={node_name}',
             '-P', f'node.description={node_name}',
-            '-P', 'node.autoconnect=false',
             '-P', 'application.id=org.PulseAudio.pavucontrol',
             '-P', 'application.name=pavucontrol',
             '-P', 'application.icon_name=pavucontrol',
