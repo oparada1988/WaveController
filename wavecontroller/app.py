@@ -2,7 +2,7 @@ import os
 import gi
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
-from gi.repository import Adw, Gio, Gtk, Gdk
+from gi.repository import Adw, Gio, Gtk, Gdk, GLib
 
 from .window import WaveMainWindow
 from .engine.pipewire_manager import PipeWireManager
@@ -10,6 +10,9 @@ from .engine.peak_monitor import MultiChannelPeakMonitor
 from .engine.usb_hardware import USBHardwareManager
 from .engine.ipc_server import IPCServer
 from .engine.tray_manager import TrayManager
+from .utils.logger import get_logger
+
+log = get_logger("App")
 
 class WaveControllerApp(Adw.Application):
     """
@@ -27,6 +30,8 @@ class WaveControllerApp(Adw.Application):
         self.peak_monitor = None
         self.ipc_server = None
         self.tray_mgr = None
+        self._system_bus = None
+        self._sleep_sub_id = None
 
     def do_startup(self):
         Adw.Application.do_startup(self)
@@ -57,6 +62,7 @@ class WaveControllerApp(Adw.Application):
         self.peak_monitor.start()
         self.ipc_server.start()
         self.tray_mgr.start()
+        self._setup_power_monitor()
 
     def do_activate(self):
         if self.is_daemon and not self._daemon_started:
@@ -145,7 +151,66 @@ class WaveControllerApp(Adw.Application):
             pass
         self.quit()
 
+    def _setup_power_monitor(self):
+        """Subscribes to systemd-logind PrepareForSleep signal to handle sleep/resume lifecycle."""
+        try:
+            self._system_bus = Gio.bus_get_sync(Gio.BusType.SYSTEM, None)
+            if self._system_bus:
+                self._sleep_sub_id = self._system_bus.signal_subscribe(
+                    "org.freedesktop.login1",
+                    "org.freedesktop.login1.Manager",
+                    "PrepareForSleep",
+                    "/org/freedesktop/login1",
+                    None,
+                    Gio.DBusSignalFlags.NONE,
+                    self._on_prepare_for_sleep,
+                    None
+                )
+                log.info("[WaveController.Power] Subscribed to systemd-logind PrepareForSleep signal")
+        except Exception as e:
+            log.warning(f"[WaveController.Power] Failed to subscribe to system power monitor: {e}")
+
+    def _on_prepare_for_sleep(self, conn, sender, path, iface, signal, params, user_data):
+        try:
+            is_sleep = params.get_child_value(0).get_boolean()
+        except Exception:
+            return
+
+        if is_sleep:
+            log.info("[WaveController.Power] System preparing for sleep/suspend...")
+            if hasattr(self, "hardware_mgr") and self.hardware_mgr:
+                self.hardware_mgr.on_system_suspend()
+            if hasattr(self, "pipewire_mgr") and self.pipewire_mgr:
+                self.pipewire_mgr.on_system_suspend()
+        else:
+            log.info("[WaveController.Power] System resumed from sleep/suspend. Scheduling state restoration...")
+            # 1.2-second settling grace period for kernel USB and PipeWire/WirePlumber to re-enumerate
+            GLib.timeout_add(1200, self._on_system_resume_delayed)
+
+    def _on_system_resume_delayed(self):
+        try:
+            log.info("[WaveController.Power] Restoring hardware and audio routing following resume...")
+            if hasattr(self, "hardware_mgr") and self.hardware_mgr:
+                self.hardware_mgr.on_system_resume()
+            if hasattr(self, "pipewire_mgr") and self.pipewire_mgr:
+                self.pipewire_mgr.on_system_resume()
+            if hasattr(self, "peak_monitor") and self.peak_monitor:
+                self.peak_monitor.on_system_resume()
+
+            # Refresh UI faders if window is visible
+            win = self.props.active_window
+            if win and hasattr(win, "matrix_view") and hasattr(win.matrix_view, "refresh_all_faders"):
+                win.matrix_view.refresh_all_faders()
+        except Exception as e:
+            log.error(f"[WaveController.Power] Error during system resume restoration: {e}")
+        return False  # Run once in GLib main loop
+
     def do_shutdown(self):
+        if self._sleep_sub_id and self._system_bus:
+            try:
+                self._system_bus.signal_unsubscribe(self._sleep_sub_id)
+            except Exception:
+                pass
         for win in self.get_windows():
             if hasattr(win, "save_window_state"):
                 win.save_window_state()

@@ -577,3 +577,32 @@ class MultiChannelPeakMonitor:
     def get_all_peaks(self) -> dict:
         with self._lock:
             return dict(self.peaks)
+
+    def on_system_resume(self):
+        """Refreshes peak monitor processes and re-links VU monitor streams after system wake."""
+        try:
+            self._refresh_channel_monitors()
+            curr_mic, curr_ch = self._discover_mic_target()
+            if self.mic_proc:
+                try:
+                    self.mic_proc.terminate()
+                except Exception:
+                    pass
+            self.mic_target = curr_mic
+            self.mic_channels = curr_ch
+            self.mic_proc = self._open_pw_record('wave_mic_monitor', target=curr_mic, channels=curr_ch)
+            if not curr_mic:
+                self._link_mic_monitor()
+
+            curr_sink = self._discover_sink_target()
+            if self.sink_proc:
+                try:
+                    self.sink_proc.terminate()
+                except Exception:
+                    pass
+            self.sink_target = curr_sink
+            self.sink_proc = self._open_pw_record('wave_sink_monitor', target=curr_sink, channels=2, is_sink=True)
+            self._link_sink_monitor()
+        except Exception:
+            pass
+

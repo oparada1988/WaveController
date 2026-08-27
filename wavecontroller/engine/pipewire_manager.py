@@ -7,6 +7,9 @@ import time
 from gi.repository import GLib
 
 from .config_manager import config_manager
+from wavecontroller.utils.logger import get_logger
+
+log = get_logger("PipeWireManager")
 
 class PipeWireManager:
     """
@@ -61,6 +64,7 @@ class PipeWireManager:
         self._mix_node_ids_cache = {} # {mix_id: [node_id, ...]}
         self._bound_stream_nodes = set()
         self.on_external_change_callback = None
+        self._is_sleeping = False
 
         self._init_default_states()
 
@@ -274,6 +278,55 @@ class PipeWireManager:
         except Exception:
             pass
 
+    def on_system_suspend(self):
+        """Prepares PipeWire manager for system sleep/suspend."""
+        log.info("[WaveController.PipeWire] System going to sleep: pausing volume guards...")
+        self._is_sleeping = True
+
+    def on_system_resume(self):
+        """Restores all channel master volumes, submix faders, and audio routing after system resume."""
+        log.info("[WaveController.PipeWire] System resumed: restoring channel volumes and routing...")
+        self._is_sleeping = False
+        time.sleep(0.3)
+        self._refresh_node_cache()
+
+        # 1. Re-assert all Channel Master Volumes
+        with self._lock:
+            master_states = {k: dict(v) for k, v in self.channel_master_states.items()}
+            submix_states = {k: {m: dict(v) for m, v in mv.items()} for k, mv in self.channel_states.items()}
+            mix_states = {k: dict(v) for k, v in self.mix_states.items()}
+
+        for ch_id, st in master_states.items():
+            vol = st.get("volume", 80)
+            muted = st.get("muted", False)
+            self.set_channel_master_volume(ch_id, vol)
+            if muted:
+                self.set_channel_master_mute(ch_id, True)
+
+        # 2. Re-assert all Submix Faders
+        for ch_id, m_map in submix_states.items():
+            for m_id, s_st in m_map.items():
+                vol = s_st.get("volume", 80)
+                muted = s_st.get("muted", False)
+                self.set_channel_volume(ch_id, m_id, vol)
+                if muted:
+                    self.set_channel_mute(ch_id, m_id, True)
+
+        # 3. Re-assert Mix Master Volumes
+        for m_id, m_st in mix_states.items():
+            vol = m_st.get("volume", 100)
+            muted = m_st.get("muted", False)
+            self.set_mix_master_volume(m_id, vol)
+            if muted:
+                self.set_mix_master_mute(m_id, True)
+
+        # 4. Trigger volume event to dispatch to PipeWire nodes immediately
+        with self._lock:
+            self._volume_event.set()
+
+        # 5. Re-synchronize channel audio routing
+        self._sync_channel_audio_routing()
+
     def get_application_volume_status(self, app_name: str) -> tuple:
         """Queries volume and mute status of an application from its PipeWire node."""
         if not app_name:
@@ -351,6 +404,9 @@ class PipeWireManager:
             so external apps (Discord AGC, WebRTC, pavucontrol) cannot override analog preamp gain.
         """
         if not self.hardware_mgr:
+            return
+
+        if getattr(self, "_is_sleeping", False):
             return
 
         excl_out = getattr(self.hardware_mgr, "exclusive_output_lock", True)

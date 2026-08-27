@@ -1181,3 +1181,19 @@ class MixerMatrixView(Gtk.Box):
 
         return True
 
+    def refresh_all_faders(self):
+        """Forces all channel cards, matrix submix cells, and mix headers to synchronize with PipeWire and hardware."""
+        for ch_id, card in list(self.channel_cards.items()):
+            vol = self.pipewire_mgr.get_channel_master_volume(ch_id)
+            muted = self.pipewire_mgr.get_channel_master_mute(ch_id)
+            card.set_master_volume(vol, muted)
+            if hasattr(card, "refresh_hardware_state"):
+                card.refresh_hardware_state()
+
+        for (channel_id, mix_id), cell in list(self.matrix_cells.items()):
+            if hasattr(cell, "update_ui_state"):
+                cell.update_ui_state()
+
+        for mix_id, header in list(self.mix_headers.items()):
+            if hasattr(header, "update_ui_state"):
+                header.update_ui_state()

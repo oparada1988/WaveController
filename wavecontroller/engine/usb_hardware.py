@@ -7,6 +7,9 @@ import re
 
 from .config_manager import config_manager
 from .elgato_wave import elgato_manager
+from wavecontroller.utils.logger import get_logger
+
+log = get_logger("HardwareManager")
 
 class USBHardwareManager:
     """
@@ -52,6 +55,8 @@ class USBHardwareManager:
         self.on_new_device_detected_callback = None
         self._hardware_listeners = []
         self._elgato_initialized = False
+        self._is_sleeping = False
+        self._restoring_hardware = False
 
     def _ensure_elgato_card_profile(self, card_id: int):
         """Ensures the ALSA device profile is locked to 'Analog Stereo Output + Mono Input'."""
@@ -150,6 +155,9 @@ class USBHardwareManager:
 
     def _on_elgato_hardware_sync(self, curr: dict, changed: dict):
         """Dispatched when physical dial, 2-sec 48V hold, or capacitive mute sensor changes on Elgato hardware."""
+        if getattr(self, "_restoring_hardware", False) or getattr(self, "_is_sleeping", False):
+            return
+
         if "phantom_power" in changed:
             self.phantom_power_48v = bool(changed["phantom_power"])
             hw = dict(config_manager.get("hardware_settings", {}))
@@ -389,17 +397,18 @@ class USBHardwareManager:
                     self.apply_saved_hardware_settings(dev)
                     self._elgato_initialized = True
                 try:
-                    init_st = dev.get_all_state()
-                    if init_st.get("connected"):
-                        self.phantom_power_48v = bool(init_st.get("phantom_power", self.phantom_power_48v))
-                        self.hardware_gain_db = int(round(init_st.get("gain_db", self.hardware_gain_db)))
-                        self.headphone_volume = int(round(init_st.get("hp_volume_pct", self.headphone_volume)))
-                        self.monitor_mix = int(round(init_st.get("monitor_mix_pct", self.monitor_mix)))
-                        self.mic_pc_crossfade = self.monitor_mix
-                        self.clipguard_enabled = bool(init_st.get("clipguard", self.clipguard_enabled))
-                        self.low_cut_filter = str(init_st.get("low_cut", self.low_cut_filter))
-                        self.low_impedance_mode = bool(init_st.get("low_impedance", self.low_impedance_mode))
-                        self.hardware_mute = bool(init_st.get("mute", self.hardware_mute))
+                    if not getattr(self, "_restoring_hardware", False):
+                        init_st = dev.get_all_state()
+                        if init_st.get("connected"):
+                            self.phantom_power_48v = bool(init_st.get("phantom_power", self.phantom_power_48v))
+                            self.hardware_gain_db = int(round(init_st.get("gain_db", self.hardware_gain_db)))
+                            self.headphone_volume = int(round(init_st.get("hp_volume_pct", self.headphone_volume)))
+                            self.monitor_mix = int(round(init_st.get("monitor_mix_pct", self.monitor_mix)))
+                            self.mic_pc_crossfade = self.monitor_mix
+                            self.clipguard_enabled = bool(init_st.get("clipguard", self.clipguard_enabled))
+                            self.low_cut_filter = str(init_st.get("low_cut", self.low_cut_filter))
+                            self.low_impedance_mode = bool(init_st.get("low_impedance", self.low_impedance_mode))
+                            self.hardware_mute = bool(init_st.get("mute", self.hardware_mute))
                 except Exception:
                     pass
         else:
@@ -459,8 +468,57 @@ class USBHardwareManager:
             dev.set_mode_mute("gain", self.hardware_mute)
             dev.set_mode_mute("hp", False)
             dev.set_mode_mute("mix", False)
-        except Exception:
-            pass
+            self._last_gain_set_time = time.time() + 2.0
+            self._last_hp_set_time = time.time() + 2.0
+        except Exception as e:
+            log.warning(f"[WaveController.Hardware] apply_saved_hardware_settings failed: {e}")
+
+    def on_system_suspend(self):
+        """Prepares USB hardware manager for system sleep/suspend."""
+        log.info("[WaveController.Hardware] System going to sleep: marking hardware as suspended...")
+        self._is_sleeping = True
+        self._elgato_initialized = False
+        dev = elgato_manager.get_device()
+        if dev:
+            dev.disconnect()
+
+    def on_system_resume(self):
+        """Restores physical USB hardware and applies saved configuration after system wake."""
+        log.info("[WaveController.Hardware] System resumed: restoring USB audio hardware and saved configuration...")
+        self._is_sleeping = False
+        self._restoring_hardware = True
+        self._last_gain_set_time = time.time() + 2.5
+        self._last_hp_set_time = time.time() + 2.5
+        self._elgato_initialized = False
+
+        # Disconnect any stale USB handles
+        dev = elgato_manager.get_device()
+        if dev:
+            dev.disconnect()
+
+        # Re-detect physical Elgato device
+        dev = elgato_manager.detect_device()
+        if dev and dev.is_connected():
+            self.apply_saved_hardware_settings(dev)
+            self._elgato_initialized = True
+            log.info(f"[WaveController.Hardware] Successfully restored settings to {dev.profile.display_name}")
+
+            # Notify listeners of current hardware state
+            try:
+                curr = dev.get_all_state()
+                self.notify_hardware_listeners(curr, {
+                    "gain_db": self.hardware_gain_db,
+                    "hp_volume_pct": self.headphone_volume,
+                    "monitor_mix_pct": self.monitor_mix,
+                    "mute": self.hardware_mute
+                })
+            except Exception:
+                pass
+
+        def _clear_restoring():
+            time.sleep(0.8)
+            self._restoring_hardware = False
+        threading.Thread(target=_clear_restoring, daemon=True).start()
 
     def _start_hotplug_monitor(self):
         """Background worker checking for newly attached or detached hardware devices."""

@@ -30,7 +30,7 @@ PROFILES = [
         "config_len": 34,
         "off_gain": 0,
         "gain_max_db": 75.0,
-        "gain_raw_max": 0x5000,
+        "gain_raw_max": 0x4B00,
         "off_mute": 4,
         "off_phantom": 6,
         "off_clipguard": 7,
