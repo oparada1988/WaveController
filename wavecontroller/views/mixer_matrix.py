@@ -83,7 +83,8 @@ class MixerMatrixView(Gtk.Box):
 
         self.balance_lbl = Gtk.Label(label="50/50")
         self.balance_lbl.add_css_class("mix-header-subtitle")
-        self.balance_lbl.set_size_request(42, -1)
+        self.balance_lbl.set_size_request(74, -1)
+        self.balance_lbl.set_xalign(0.5)
         self._format_balance_label(init_mix)
         self.balance_box.append(self.balance_lbl)
 
@@ -1028,19 +1029,20 @@ class MixerMatrixView(Gtk.Box):
         # 5. Update Monitor Balance Fader when physical knob turns in Mode 3 (or any balance change)
         if "monitor_mix_pct" in changed and hasattr(self, "balance_scale"):
             val = int(round(changed["monitor_mix_pct"]))
-            self._syncing_hw_balance = True
-            try:
-                if hasattr(self, "_bal_scale_handler") and self._bal_scale_handler:
-                    self.balance_scale.handler_block(self._bal_scale_handler)
-                    try:
+            if int(round(self.balance_scale.get_value())) != val:
+                self._syncing_hw_balance = True
+                try:
+                    if hasattr(self, "_bal_scale_handler") and self._bal_scale_handler:
+                        self.balance_scale.handler_block(self._bal_scale_handler)
+                        try:
+                            self.balance_scale.set_value(val)
+                        finally:
+                            self.balance_scale.handler_unblock(self._bal_scale_handler)
+                    else:
                         self.balance_scale.set_value(val)
-                    finally:
-                        self.balance_scale.handler_unblock(self._bal_scale_handler)
-                else:
-                    self.balance_scale.set_value(val)
-                self._format_balance_label(val)
-            finally:
-                self._syncing_hw_balance = False
+                finally:
+                    self._syncing_hw_balance = False
+            self._format_balance_label(val)
 
     def _on_balance_slider_changed(self, scale):
         if getattr(self, "_syncing_hw_balance", False):

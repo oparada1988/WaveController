@@ -440,14 +440,15 @@ class UnifiedDeviceSettingsView(Gtk.Box):
 
             if "monitor_mix_pct" in changed and hasattr(self, "bal_adj") and hasattr(self, "bal_slider"):
                 val = int(round(changed["monitor_mix_pct"]))
-                if hasattr(self, "_bal_handler_id") and self._bal_handler_id:
-                    self.bal_slider.handler_block(self._bal_handler_id)
-                    try:
+                if int(round(self.bal_adj.get_value())) != val:
+                    if hasattr(self, "_bal_handler_id") and self._bal_handler_id:
+                        self.bal_slider.handler_block(self._bal_handler_id)
+                        try:
+                            self.bal_adj.set_value(val)
+                        finally:
+                            self.bal_slider.handler_unblock(self._bal_handler_id)
+                    else:
                         self.bal_adj.set_value(val)
-                    finally:
-                        self.bal_slider.handler_unblock(self._bal_handler_id)
-                else:
-                    self.bal_adj.set_value(val)
         finally:
             self._syncing_from_hw = False
 
