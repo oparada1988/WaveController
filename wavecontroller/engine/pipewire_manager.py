@@ -174,11 +174,22 @@ class PipeWireManager:
         try:
             out = subprocess.check_output(["pw-dump"], text=True, stderr=subprocess.DEVNULL)
             data = json.loads(out)
+            valid_submix_names = set()
+            for ch in channels_copy:
+                for mx in mixes_copy:
+                    valid_submix_names.add(f"WaveController_submix_{ch['id']}_{mx['id']}")
+
             for obj in data:
                 props = obj.get("info", {}).get("props", {})
                 n_name = props.get("node.name", "")
                 n_desc = props.get("node.description", "")
-                if n_name.startswith("WaveController_") or n_desc.startswith("WaveController "):
+                if "WaveController_submix_" in n_name:
+                    sub_clean = n_name.replace("input.", "").replace("output.", "")
+                    if sub_clean not in valid_submix_names:
+                        obj_id = obj.get("id")
+                        if obj_id:
+                            subprocess.run(["pw-cli", "destroy", str(obj_id)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                elif n_name.startswith("WaveController_") or n_desc.startswith("WaveController "):
                     if n_name not in needed_nodes:
                         obj_id = obj.get("id")
                         if obj_id:
@@ -1777,11 +1788,51 @@ class PipeWireManager:
 
     def remove_channel(self, channel_id: str) -> bool:
         with self._lock:
+            # 1. Cleanly terminate and teardown all submix loopback processes for this channel
+            keys_to_remove = [k for k in list(self._submix_procs.keys()) if k[0] == channel_id]
+            for k in keys_to_remove:
+                proc = self._submix_procs.pop(k, None)
+                if proc:
+                    try:
+                        proc.terminate()
+                        proc.wait(timeout=0.2)
+                    except Exception:
+                        try:
+                            proc.kill()
+                        except Exception:
+                            pass
+                self._submix_node_ids.pop(k, None)
+                self._submix_volume_queue.pop(k, None)
+
+            # 2. Terminate any orphan loopbacks matching this channel
+            try:
+                subprocess.run(["pkill", "-f", f"WaveController_submix_{channel_id}_"], stderr=subprocess.DEVNULL)
+            except Exception:
+                pass
+
+            # 3. Sever all PipeWire links associated with this channel
+            try:
+                out = subprocess.check_output(["pw-link", "-l"], text=True, stderr=subprocess.DEVNULL)
+                curr_src = None
+                for line in out.splitlines():
+                    l_str = line.strip()
+                    if not line.startswith(" ") and ":" in l_str:
+                        curr_src = l_str
+                    elif "|->" in l_str and curr_src:
+                        dest_p = l_str.replace("|->", "").strip()
+                        if channel_id in curr_src or channel_id in dest_p:
+                            subprocess.run(["pw-link", "-d", curr_src, dest_p], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            except Exception:
+                pass
+
             self.channels = [c for c in self.channels if c["id"] != channel_id]
             if channel_id in self.channel_states:
                 del self.channel_states[channel_id]
             if channel_id in self.assigned_apps:
                 del self.assigned_apps[channel_id]
+            if hasattr(self, "channel_master_states") and channel_id in self.channel_master_states:
+                del self.channel_master_states[channel_id]
+
             self._refresh_node_cache()
             self._save_state_to_config(immediate=True)
             self._ensure_virtual_mix_nodes()
@@ -1962,11 +2013,58 @@ class PipeWireManager:
         return False
 
     def remove_mix(self, mix_id: str):
-        """Removes a mix and tears down its PipeWire virtual audio device."""
+        """Removes a mix and tears down its PipeWire virtual audio device and all associated submix loopbacks."""
+        canon_mix = self._match_mix_id(mix_id)
         with self._lock:
-            self.mixes = [m for m in self.mixes if m["id"] != mix_id]
+            # 1. Cleanly terminate and teardown all submix loopback processes for this mix
+            keys_to_remove = [k for k in list(self._submix_procs.keys()) if k[1] == mix_id or k[1] == canon_mix]
+            for k in keys_to_remove:
+                proc = self._submix_procs.pop(k, None)
+                if proc:
+                    try:
+                        proc.terminate()
+                        proc.wait(timeout=0.2)
+                    except Exception:
+                        try:
+                            proc.kill()
+                        except Exception:
+                            pass
+                self._submix_node_ids.pop(k, None)
+                self._submix_volume_queue.pop(k, None)
+
+            # 2. Terminate any orphan loopbacks matching this mix
+            try:
+                subprocess.run(["pkill", "-f", f"WaveController_submix_.*_{mix_id}"], stderr=subprocess.DEVNULL)
+                if canon_mix != mix_id:
+                    subprocess.run(["pkill", "-f", f"WaveController_submix_.*_{canon_mix}"], stderr=subprocess.DEVNULL)
+            except Exception:
+                pass
+
+            # 3. Sever all PipeWire links associated with this mix
+            try:
+                out = subprocess.check_output(["pw-link", "-l"], text=True, stderr=subprocess.DEVNULL)
+                curr_src = None
+                mix_prefixes = [f"WaveController_{mix_id}_Sink", f"WaveController_{mix_id}_Source",
+                                f"WaveController_{canon_mix}_Sink", f"WaveController_{canon_mix}_Source"]
+                for line in out.splitlines():
+                    l_str = line.strip()
+                    if not line.startswith(" ") and ":" in l_str:
+                        curr_src = l_str
+                    elif "|->" in l_str and curr_src:
+                        dest_p = l_str.replace("|->", "").strip()
+                        if any(mp in curr_src or mp in dest_p for mp in mix_prefixes):
+                            subprocess.run(["pw-link", "-d", curr_src, dest_p], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            except Exception:
+                pass
+
+            self.mixes = [m for m in self.mixes if m["id"] != mix_id and m["id"] != canon_mix]
             for ch_id in self.channel_states:
                 self.channel_states[ch_id].pop(mix_id, None)
+                self.channel_states[ch_id].pop(canon_mix, None)
+            if hasattr(self, "mix_states"):
+                self.mix_states.pop(mix_id, None)
+                self.mix_states.pop(canon_mix, None)
+
             self._save_state_to_config(immediate=True)
             self._ensure_virtual_mix_nodes()
             self._refresh_node_cache()

@@ -192,6 +192,19 @@ class TestTokenMatchingInvariants(unittest.TestCase):
         self.pwm = PipeWireManager.__new__(PipeWireManager)
         self.pwm._lock = threading.RLock()
         self.pwm.channel_states = {}
+        self.pwm._submix_procs = {}
+        self.pwm._submix_node_ids = {}
+        self.pwm._submix_volume_queue = {}
+        self.pwm.channels = []
+        self.pwm.mixes = []
+        self.pwm.assigned_apps = {}
+        self.pwm.mix_states = {}
+        self.pwm.config_path = "/tmp/fake_config.json"
+        self.pwm._save_state_to_config = lambda **k: None
+        self.pwm._ensure_virtual_mix_nodes = lambda: None
+        self.pwm._refresh_node_cache = lambda: None
+        self.pwm._sync_channel_audio_routing = lambda **k: None
+        self.pwm._match_mix_id = lambda m: m
 
     def test_multiword_application_matching(self):
         """Multi-word apps must match their process binaries and PipeWire output port names."""
@@ -274,6 +287,35 @@ class TestTokenMatchingInvariants(unittest.TestCase):
         self.assertGreaterEqual(mastered_val, 0.80, f"Mastered audio peak too low: {mastered_val}")
         # Full scale 0 dBFS limit
         self.assertAlmostEqual(MultiChannelPeakMonitor._calc_perceptual_peak(1.0, 0.5), 1.0, places=2)
+
+    def test_channel_removal_teardown(self):
+        """Invariant: Removing a channel must terminate and clean all its submix loopback processes."""
+        from unittest.mock import MagicMock
+        mock_proc = MagicMock()
+        self.pwm._submix_procs[("temp_ch", "personal_mix")] = mock_proc
+        self.pwm._submix_node_ids[("temp_ch", "personal_mix")] = 999
+        self.pwm.channels = [{"id": "temp_ch", "name": "Temp", "type": "sink"}]
+        self.pwm.channel_states["temp_ch"] = {}
+
+        self.pwm.remove_channel("temp_ch")
+
+        mock_proc.terminate.assert_called_once()
+        self.assertNotIn(("temp_ch", "personal_mix"), self.pwm._submix_procs)
+        self.assertNotIn(("temp_ch", "personal_mix"), self.pwm._submix_node_ids)
+
+    def test_mix_removal_teardown(self):
+        """Invariant: Removing a mix must terminate and clean all its submix loopback processes."""
+        from unittest.mock import MagicMock
+        mock_proc = MagicMock()
+        self.pwm._submix_procs[("spotify", "temp_mix")] = mock_proc
+        self.pwm._submix_node_ids[("spotify", "temp_mix")] = 888
+        self.pwm.mixes = [{"id": "temp_mix", "name": "Temp Mix"}]
+
+        self.pwm.remove_mix("temp_mix")
+
+        mock_proc.terminate.assert_called_once()
+        self.assertNotIn(("spotify", "temp_mix"), self.pwm._submix_procs)
+        self.assertNotIn(("spotify", "temp_mix"), self.pwm._submix_node_ids)
 
 
 if __name__ == "__main__":
