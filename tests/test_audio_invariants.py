@@ -263,6 +263,18 @@ class TestTokenMatchingInvariants(unittest.TestCase):
         self.assertIn("110", matched_ids)
         self.assertNotIn("114", matched_ids)
 
+    def test_perceptual_peak_meter_scaling(self):
+        """Invariant: Studio broadcast decibel response must accurately map silence to 0 and full-blast audio to >= 0.80."""
+        from wavecontroller.engine.peak_monitor import MultiChannelPeakMonitor
+        # Strict zero-bleed contract
+        self.assertEqual(MultiChannelPeakMonitor._calc_perceptual_peak(0.0, 0.0), 0.0)
+        self.assertEqual(MultiChannelPeakMonitor._calc_perceptual_peak(0.001, 0.0005), 0.0)
+        # Mastered commercial audio (peak ~0.85, rms ~0.20) must be >= 0.80
+        mastered_val = MultiChannelPeakMonitor._calc_perceptual_peak(0.85, 0.20)
+        self.assertGreaterEqual(mastered_val, 0.80, f"Mastered audio peak too low: {mastered_val}")
+        # Full scale 0 dBFS limit
+        self.assertAlmostEqual(MultiChannelPeakMonitor._calc_perceptual_peak(1.0, 0.5), 1.0, places=2)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

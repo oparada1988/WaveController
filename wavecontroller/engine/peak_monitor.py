@@ -245,6 +245,25 @@ class MultiChannelPeakMonitor:
         except Exception:
             pass
 
+    @staticmethod
+    def _calc_perceptual_peak(peak_raw: float, rms: float) -> float:
+        """Translates raw linear PCM samples into studio-grade decibel/perceptual meter levels.
+        
+        Uses an OBS/Wave Link broadcast curve from -54 dBFS (0%) to 0 dBFS (100%):
+        - Whisper / Background noise (-46 dB): ~10%
+        - Speech / Vocals (-18 dB): ~60% - 65%
+        - Mastered music (-12 dB to -6 dB): ~80% - 92%
+        - True peak transients / 0 dBFS limit: 95% - 100%
+        """
+        mag = max(peak_raw, rms * 1.6)
+        if mag <= 0.0015:
+            return 0.0
+        db = 20.0 * math.log10(mag)
+        if db <= -54.0:
+            return 0.0
+        ratio = (db + 54.0) / 54.0
+        return max(0.0, min(1.0, ratio ** 1.15))
+
     def _drain_and_calc_peaks(self, proc, channels: int = 2):
         if not proc or proc.poll() is not None:
             return 0.0, 0.0
@@ -287,8 +306,7 @@ class MultiChannelPeakMonitor:
                     peak_val = a
             rms = math.sqrt(sum_sq / n_samples) / 32768.0
             peak_raw = peak_val / 32768.0
-            val = (rms * 2.2 * 0.70) + (peak_raw * 1.4 * 0.30)
-            val = max(0.0, min(1.0, val))
+            val = self._calc_perceptual_peak(peak_raw, rms)
             return val, val
 
         # Stereo 2-channel interleaved capture (Single pass avoids slices & generator object allocation)
@@ -317,10 +335,10 @@ class MultiChannelPeakMonitor:
         peak_raw_l = peak_val_l / 32768.0
         peak_raw_r = peak_val_r / 32768.0
 
-        val_l = (rms_l * 2.2 * 0.70) + (peak_raw_l * 1.4 * 0.30)
-        val_r = (rms_r * 2.2 * 0.70) + (peak_raw_r * 1.4 * 0.30)
+        val_l = self._calc_perceptual_peak(peak_raw_l, rms_l)
+        val_r = self._calc_perceptual_peak(peak_raw_r, rms_r)
 
-        return max(0.0, min(1.0, val_l)), max(0.0, min(1.0, val_r))
+        return val_l, val_r
 
     def _refresh_channel_monitors(self):
         """Discovers active WaveController_Channel_* sinks and physical input sources, spawning/pruning per-channel pw-record processes."""
