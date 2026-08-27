@@ -52,8 +52,8 @@ class ChannelCard(Gtk.Box):
         self.icon_img.set_pixel_size(20)
         self.append(self.icon_img)
 
-        # 3. Channel Title + Subtitle Box
-        title_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=1)
+        # 3. Channel Title + Subtitle / Offline Badge Box
+        title_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
         title_box.set_hexpand(False)
         title_box.set_size_request(104, -1)
 
@@ -67,14 +67,32 @@ class ChannelCard(Gtk.Box):
         self.title_lbl.set_ellipsize(3)
         title_box.append(self.title_lbl)
 
-        # Assigned apps subtitle
-        assigned = self.pipewire_mgr.get_assigned_apps(channel_info["id"])
-        sub_text = ", ".join(assigned[:2]) if assigned else ("System capture" if (self.is_wave_channel or channel_info.get("type") == "source") else "No apps assigned")
-        self.sub_lbl = Gtk.Label(label=sub_text)
-        self.sub_lbl.add_css_class("mix-header-subtitle")
-        self.sub_lbl.set_halign(Gtk.Align.START)
-        self.sub_lbl.set_ellipsize(3)
-        title_box.append(self.sub_lbl)
+        # Status: check if this channel corresponds to a disconnected hardware device
+        self.is_offline = self._is_channel_offline()
+
+        if self.is_offline:
+            self.icon_img.set_opacity(0.55)
+            self.badge_lbl = Gtk.Label(label="Offline")
+            self.badge_lbl.add_css_class("device-badge")
+            self.badge_lbl.add_css_class("offline")
+            self.badge_lbl.set_halign(Gtk.Align.START)
+            self.badge_lbl.set_valign(Gtk.Align.CENTER)
+            title_box.append(self.badge_lbl)
+            self.sub_lbl = None
+        else:
+            # Clean human-readable subtitle (filter raw USB IDs like usb-3142_...)
+            assigned = self.pipewire_mgr.get_assigned_apps(channel_info["id"]) if self.pipewire_mgr else []
+            clean_assigned = [a for a in assigned if not a.startswith("usb-") and not a.startswith("alsa_card.")]
+            if self.is_wave_channel or channel_info.get("type") == "source":
+                sub_text = "Microphone" if not clean_assigned else clean_assigned[0]
+            else:
+                sub_text = ", ".join(clean_assigned[:2]) if clean_assigned else "No apps assigned"
+            self.sub_lbl = Gtk.Label(label=sub_text)
+            self.sub_lbl.add_css_class("mix-header-subtitle")
+            self.sub_lbl.set_halign(Gtk.Align.START)
+            self.sub_lbl.set_ellipsize(3)
+            title_box.append(self.sub_lbl)
+            self.badge_lbl = None
 
         self.append(title_box)
 
@@ -186,15 +204,50 @@ class ChannelCard(Gtk.Box):
         self.drop_target.connect("drop", on_drop)
         self.add_controller(self.drop_target)
 
+    def _is_channel_offline(self) -> bool:
+        ch_id = str(self.channel_info.get("id", "")).lower()
+        ch_type = self.channel_info.get("type", "sink")
+
+        # Wave XLR primary hardware
+        if self.is_wave_channel:
+            return not getattr(self.hardware_mgr, "is_connected", True)
+
+        # If it's a physical source or hardware input channel
+        if ch_type == "source" or any(k in ch_id for k in ("mic", "fefine", "fifine", "capture", "input")):
+            discovered = getattr(self.hardware_mgr, "discovered_devices", {})
+            assigned = self.pipewire_mgr.get_assigned_apps(self.channel_info["id"]) if self.pipewire_mgr else []
+
+            for a in assigned:
+                if a in discovered:
+                    return False
+            for dev_k, dev in discovered.items():
+                d_name = dev.get("name", "").lower()
+                if ch_id in dev_k.lower() or ch_id in d_name:
+                    return False
+                ch_name = str(self.channel_info.get("name", "")).lower()
+                if len(ch_name) >= 3 and (ch_name in d_name or ch_name in dev_k.lower()):
+                    return False
+            return True
+
+        return False
+
     def _resolve_icon(self) -> str:
         if self.is_wave_channel and self.hardware_mgr:
             dev_icon = self.hardware_mgr.get_device_icon(self.hardware_mgr.device_name)
-            if dev_icon and dev_icon != "audio-input-microphone-symbolic":
+            if dev_icon and dev_icon not in ("audio-input-microphone-symbolic", "network-offline-symbolic"):
                 return dev_icon
             return "elgato-wave-xlr-symbolic"
-        assigned = self.pipewire_mgr.get_assigned_apps(self.channel_info["id"])
+
+        ch_icon = self.channel_info.get("icon")
+        if ch_icon and ch_icon != "network-offline-symbolic":
+            return ch_icon
+
+        assigned = self.pipewire_mgr.get_assigned_apps(self.channel_info["id"]) if self.pipewire_mgr else []
         primary_app = assigned[0] if assigned else self.channel_info.get("name", "")
-        return self.channel_info.get("icon") or self.pipewire_mgr.resolve_icon_for_app(primary_app)
+        resolved = self.pipewire_mgr.resolve_icon_for_app(primary_app) if self.pipewire_mgr else None
+        if not resolved or resolved == "network-offline-symbolic":
+            return "audio-input-microphone-symbolic" if self.channel_info.get("type") == "source" else "audio-card-symbolic"
+        return resolved
 
     def _on_phantom_clicked(self, btn):
         if not self.hardware_mgr:
@@ -417,6 +470,10 @@ class ChannelCard(Gtk.Box):
             display_name = self.hardware_mgr.get_device_display_name(self.hardware_mgr.device_name)
         self.title_lbl.set_text(display_name)
         self.icon_img.set_from_icon_name(self._resolve_icon())
+        if self._is_channel_offline():
+            self.icon_img.set_opacity(0.55)
+        else:
+            self.icon_img.set_opacity(1.0)
 
     def update_peaks(self, peak_l: float, peak_r: float):
         if hasattr(self, "slider") and self.slider:

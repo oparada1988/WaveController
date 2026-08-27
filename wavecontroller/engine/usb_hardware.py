@@ -526,6 +526,12 @@ class USBHardwareManager:
                 return dev.get("icon", "audio-input-microphone-symbolic")
         if "wave xlr" in k_str.lower() or "wave" in k_str.lower() or (k_str == self.device_name and self.device_type == "elgato"):
             return "elgato-wave-xlr-symbolic"
+        if any(m in k_str.lower() for m in ("mic", "fefine", "fifine", "capture", "input")):
+            return "audio-input-microphone-symbolic"
+        if any(h in k_str.lower() for h in ("headphone", "headset", "earphone", "hp")):
+            return "audio-headphones-symbolic"
+        if any(s in k_str.lower() for s in ("speaker", "playback", "output", "sink")):
+            return "audio-speakers-symbolic"
         return "audio-input-microphone-symbolic"
 
     def set_device_custom_icon(self, device_key: str, icon_name: str):
@@ -559,7 +565,7 @@ class USBHardwareManager:
                     "description": "Hardware Disconnected",
                     "type": "duplex",
                     "badge": "Offline",
-                    "icon": "network-offline-symbolic",
+                    "icon": self.get_device_icon(key),
                     "sources": [],
                     "sinks": [],
                     "primary_source_id": None,
@@ -568,7 +574,7 @@ class USBHardwareManager:
                     "is_elgato": False
                 }
             
-            dev["icon"] = self.get_device_icon(key) if dev.get("connected", True) else "network-offline-symbolic"
+            dev["icon"] = self.get_device_icon(key)
             dev["display_name"] = aliases.get(key, dev["name"])
             dev["custom_name"] = aliases.get(key, "")
             dev["assigned_mix"] = assigned_mixes.get(key, "personal_mix")

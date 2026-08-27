@@ -744,7 +744,11 @@ class MixerMatrixView(Gtk.Box):
             if available_devs:
                 for dev_info in available_devs:
                     dev_name = self.hardware_mgr.get_device_display_name(dev_info)
-                    dev_icon = dev_info.get("icon", "audio-input-microphone-symbolic")
+                    dev_icon = dev_info.get("icon", "")
+                    if not dev_icon or dev_icon == "network-offline-symbolic":
+                        dev_icon = self.hardware_mgr.get_device_icon(dev_info.get("device_key", dev_name))
+                    is_connected = dev_info.get("connected", True)
+
                     dev_item_btn = Gtk.Button()
                     dev_item_btn.add_css_class("flat")
                     dev_item_btn.add_css_class("wave-sidebar-row")
@@ -752,17 +756,28 @@ class MixerMatrixView(Gtk.Box):
                     d_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
                     d_img = Gtk.Image.new_from_icon_name(dev_icon)
                     d_img.set_pixel_size(18)
+                    if not is_connected:
+                        d_img.set_opacity(0.55)
+
                     d_lbl = Gtk.Label(label=dev_name)
                     d_lbl.set_hexpand(True)
                     d_lbl.set_halign(Gtk.Align.START)
                     d_lbl.set_ellipsize(3)
 
-                    d_add_ic = Gtk.Image.new_from_icon_name("list-add-symbolic")
-                    d_add_ic.set_pixel_size(14)
-
                     d_row.append(d_img)
                     d_row.append(d_lbl)
+
+                    if not is_connected:
+                        badge_lbl = Gtk.Label(label="Offline")
+                        badge_lbl.add_css_class("device-badge")
+                        badge_lbl.add_css_class("offline")
+                        badge_lbl.set_valign(Gtk.Align.CENTER)
+                        d_row.append(badge_lbl)
+
+                    d_add_ic = Gtk.Image.new_from_icon_name("list-add-symbolic")
+                    d_add_ic.set_pixel_size(14)
                     d_row.append(d_add_ic)
+
                     dev_item_btn.set_child(d_row)
 
                     def make_dev_click_handler(name, icon, d_info):
