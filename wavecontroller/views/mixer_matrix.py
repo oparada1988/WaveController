@@ -916,7 +916,22 @@ class MixerMatrixView(Gtk.Box):
                 if cell:
                     cell.update_ui_state()
 
-    def _on_external_sync(self):
+    def _on_external_sync(self, target_type: str = None, target_id: str = None):
+        if target_type == "channel" and target_id:
+            if target_id in self.channel_cards:
+                self.channel_cards[target_id].update_ui_state()
+            for (ch, m), cell in self.matrix_cells.items():
+                if ch == target_id:
+                    cell.update_ui_state()
+            return
+        elif target_type == "mix" and target_id:
+            if target_id in self.mix_headers:
+                self.mix_headers[target_id].update_ui_state()
+            for (ch, m), cell in self.matrix_cells.items():
+                if m == target_id:
+                    cell.update_ui_state()
+            return
+
         for card in self.channel_cards.values():
             card.update_ui_state()
         for cell in self.matrix_cells.values():

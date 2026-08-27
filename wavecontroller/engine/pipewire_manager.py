@@ -535,7 +535,9 @@ class PipeWireManager:
         stop_words = {
             "the", "and", "for", "with", "player", "media", "audio", "sound",
             "stream", "desktop", "client", "app", "application", "input", "output",
-            "stereo", "mono", "analog", "default", "system", "capture", "playback"
+            "stereo", "mono", "analog", "default", "system", "capture", "playback",
+            "usb", "alsa", "pci", "card", "sink", "source", "device", "devices",
+            "node", "nodes", "port", "ports"
         }
         words = [w for w in re.split(r"[\s\-_.:/]+", raw) if len(w) >= 3 and w not in stop_words]
         tokens.update(words)
@@ -1362,7 +1364,7 @@ class PipeWireManager:
             return False
         with self._lock:
             st = self.channel_states.get(channel_id, {}).get(mix_id, {})
-            return st.get("enabled", True)
+            return st.get("enabled", False)
 
     def set_channel_mix_enabled(self, channel_id: str, mix_id: str, enabled: bool):
         """Enables or disables routing of a channel into a specific mix bus."""
@@ -1508,6 +1510,20 @@ class PipeWireManager:
                                     subprocess.run(["pw-link", "-d", src_p, linked_dest], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                                 except Exception:
                                     pass
+
+            # Proactively sever ANY existing links from this channel to mixes where it is disabled
+            for src_p in ch_out_ports:
+                for linked_dest in list(links_map.get(src_p, set())):
+                    if linked_dest.startswith("WaveController_") and (":playback_" in linked_dest or ":input_" in linked_dest):
+                        for m in self.mixes:
+                            m_pref_sink = f"WaveController_{m['id']}_Sink:playback_"
+                            m_pref_source = f"WaveController_{m['id']}_Source:input_"
+                            if linked_dest.startswith(m_pref_sink) or linked_dest.startswith(m_pref_source):
+                                if not self.is_channel_mix_enabled(ch_id, m["id"]):
+                                    try:
+                                        subprocess.run(["pw-link", "-d", src_p, linked_dest], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                                    except Exception:
+                                        pass
 
             for m in mixes_to_sync:
                 m_id = m["id"]
@@ -1663,9 +1679,12 @@ class PipeWireManager:
                         elif not default_sink_name:
                             matched = True
                     else:
-                        dev_tokens = self._get_match_tokens(clean_target)
-                        if self._port_matches_tokens(p, dev_tokens):
+                        if clean_target in p_low:
                             matched = True
+                        else:
+                            dev_tokens = self._get_match_tokens(clean_target)
+                            if self._port_matches_tokens(p, dev_tokens):
+                                matched = True
 
                     if matched:
                         suffix = p.split(":")[-1].lower()

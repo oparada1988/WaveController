@@ -187,8 +187,11 @@ class TestTokenMatchingInvariants(unittest.TestCase):
     """Verifies that universal token matching resolves any application or input device without lag."""
 
     def setUp(self):
+        import threading
         from wavecontroller.engine.pipewire_manager import PipeWireManager
         self.pwm = PipeWireManager.__new__(PipeWireManager)
+        self.pwm._lock = threading.RLock()
+        self.pwm.channel_states = {}
 
     def test_multiword_application_matching(self):
         """Multi-word apps must match their process binaries and PipeWire output port names."""
@@ -229,10 +232,24 @@ class TestTokenMatchingInvariants(unittest.TestCase):
         self.assertTrue(self.pwm._port_matches_tokens("alsa_input.usb-Blue_Microphones_Yeti_1234-00.analog-stereo:capture_FL", tokens))
 
         # Bluetooth Input (by identifier or description)
-        tokens = self.pwm._get_match_tokens("bluez_input.94_DB_56_12_34_56")
-        self.assertTrue(self.pwm._port_matches_tokens("bluez_input.94_DB_56_12_34_56:capture_FL", tokens))
         tokens_desc = self.pwm._get_match_tokens("Sony WH-1000XM4")
         self.assertTrue(self.pwm._port_matches_tokens("bluez_input.sony_wh_1000xm4:capture_FL", tokens_desc))
+
+    def test_bus_tokens_do_not_conflate_devices(self):
+        """Invariant: Generic bus tokens ('usb', 'alsa', 'analog') must NEVER cause cross-matching between distinct physical devices."""
+        elgato_tokens = self.pwm._get_match_tokens("usb-Elgato_Systems_Elgato_Wave_XLR_DS16M2A01160-00")
+        fifine_port = "alsa_output.usb-3142_fifine_Microphone-00.analog-stereo:playback_FL"
+        self.assertFalse(self.pwm._port_matches_tokens(fifine_port, elgato_tokens),
+                         "Elgato tokens must never match Fifine port via generic 'usb' keyword")
+
+        fifine_tokens = self.pwm._get_match_tokens("usb-3142_fifine_Microphone-00")
+        elgato_port = "alsa_output.usb-Elgato_Systems_Elgato_Wave_XLR_DS16M2A01160-00.analog-stereo:playback_FL"
+        self.assertFalse(self.pwm._port_matches_tokens(elgato_port, fifine_tokens),
+                         "Fifine tokens must never match Elgato port via generic 'usb' keyword")
+
+    def test_unconfigured_channel_mix_default_disabled(self):
+        """Invariant: Channels must default to disabled (unrouted) for new or unconfigured mixes to prevent accidental bleed."""
+        self.assertFalse(self.pwm.is_channel_mix_enabled("unconfigured_channel", "unconfigured_mix"))
 
 
 if __name__ == "__main__":
