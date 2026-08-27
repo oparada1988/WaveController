@@ -277,6 +277,15 @@ class IPCServer:
                     res["channel_states"] = {
                         k: dict(v) for k, v in self.pipewire_mgr.channel_states.items()
                     }
+            if hasattr(self, "hardware_mgr") and self.hardware_mgr:
+                res["hardware"] = {
+                    "device_name": getattr(self.hardware_mgr, "device_name", ""),
+                    "is_connected": self._is_hardware_connected(),
+                    "gain_db": getattr(self.hardware_mgr, "hardware_gain_db", 0),
+                    "phantom_48v": getattr(self.hardware_mgr, "phantom_power_48v", False),
+                    "clipguard": getattr(self.hardware_mgr, "clipguard_enabled", False),
+                    "elgato_info": self.hardware_mgr.get_elgato_device_info() if hasattr(self.hardware_mgr, "get_elgato_device_info") else {}
+                }
         elif cmd == "get_hardware_status":
             res["device_name"] = self.hardware_mgr.device_name
             res["is_connected"] = self._is_hardware_connected()

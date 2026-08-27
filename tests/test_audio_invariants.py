@@ -361,8 +361,10 @@ class TestTokenMatchingInvariants(unittest.TestCase):
         self.assertIn("mix_states", res)
         self.assertIn("channel_master_states", res)
         self.assertIn("channel_states", res)
+        self.assertIn("hardware", res)
         self.assertEqual(res["mix_states"]["personal_mix"]["volume"], 75)
         self.assertEqual(res["channel_master_states"]["spotify"]["volume"], 85)
+        self.assertIn("is_connected", res["hardware"])
 
 
 if __name__ == "__main__":

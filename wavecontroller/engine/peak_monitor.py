@@ -461,14 +461,14 @@ class MultiChannelPeakMonitor:
                         cr = cur.get("right", 0.0)
 
                         if raw_cl > cl:
-                            cl = cl + (raw_cl - cl) * 0.80
+                            cl = cl + (raw_cl - cl) * 0.85
                         else:
-                            cl = max(0.0, cl * 0.93 - 0.002)
+                            cl = max(0.0, cl * 0.965 - 0.0008)
 
                         if raw_cr > cr:
-                            cr = cr + (raw_cr - cr) * 0.80
+                            cr = cr + (raw_cr - cr) * 0.85
                         else:
-                            cr = max(0.0, cr * 0.93 - 0.002)
+                            cr = max(0.0, cr * 0.965 - 0.0008)
 
                         val_l = 0.0 if cl < 0.002 else cl
                         val_r = 0.0 if cr < 0.002 else cr
@@ -515,24 +515,24 @@ class MultiChannelPeakMonitor:
 
                 # Fast attack (instant punch on rise) + smooth exponential release & graceful fade-down to 0
                 if raw_ml > mic_l:
-                    mic_l = mic_l + (raw_ml - mic_l) * 0.80
+                    mic_l = mic_l + (raw_ml - mic_l) * 0.85
                 else:
-                    mic_l = max(0.0, mic_l * 0.93 - 0.002)
+                    mic_l = max(0.0, mic_l * 0.965 - 0.0008)
 
                 if raw_mr > mic_r:
-                    mic_r = mic_r + (raw_mr - mic_r) * 0.80
+                    mic_r = mic_r + (raw_mr - mic_r) * 0.85
                 else:
-                    mic_r = max(0.0, mic_r * 0.93 - 0.002)
+                    mic_r = max(0.0, mic_r * 0.965 - 0.0008)
 
                 if raw_sl > sink_l:
-                    sink_l = sink_l + (raw_sl - sink_l) * 0.80
+                    sink_l = sink_l + (raw_sl - sink_l) * 0.85
                 else:
-                    sink_l = max(0.0, sink_l * 0.93 - 0.002)
+                    sink_l = max(0.0, sink_l * 0.965 - 0.0008)
 
                 if raw_sr > sink_r:
-                    sink_r = sink_r + (raw_sr - sink_r) * 0.80
+                    sink_r = sink_r + (raw_sr - sink_r) * 0.85
                 else:
-                    sink_r = max(0.0, sink_r * 0.93 - 0.002)
+                    sink_r = max(0.0, sink_r * 0.965 - 0.0008)
 
                 # Gentle zero clamp only at true bottom
                 m_l = 0.0 if mic_l < 0.002 else mic_l
