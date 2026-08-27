@@ -445,6 +445,7 @@ class MixHeaderCard(Gtk.Box):
 
                 # Minimal Symbolic Icon Palette (Pure Vector Icons, No Text Labels, Zero Emojis)
         AVAILABLE_MIX_ICONS = [
+            "personal-symbolic",               # Personal Mix (User silhouette)
             "user-available-symbolic",         # Chat / Discord
             "camera-web-symbolic",             # Stream / OBS
             "input-gaming-symbolic",           # Gaming

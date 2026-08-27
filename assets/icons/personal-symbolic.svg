@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape" viewBox="0 0 24 24" width="24" height="24">
+  <defs>
+    <style id="current-color-scheme" type="text/css">
+      .ColorScheme-Text { color: currentColor; }
+    </style>
+  </defs>
+  <g id="layer1" transform="translate(-687.58785,-1639.4611)">
+    <path style="fill:currentColor;stroke-width:1.92153" class="ColorScheme-Text" d="m 699.58787,1639.4611 c 3.32,0 6,2.4738 6,5.5385 0,3.0461 -2.68,5.5384 -6,5.5384 -3.32,0 -6,-2.4923 -6,-5.5384 0,-3.0647 2.68,-5.5385 6,-5.5385 z m 0,14.7692 c 12,-0.018 12,7.3846 12,7.3846 v 1.8462 h -24 v -1.8462 c 0,0 0,-7.3846 12,-7.3846 z" id="path1-1" />
+  </g>
+</svg>

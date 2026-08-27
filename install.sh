@@ -144,11 +144,11 @@ EOF
     mkdir -p "${HOME}/.local/share/icons/hicolor/scalable/apps"
     rm -f "${HOME}/.local/share/icons/hicolor/scalable/apps/com.oparada.WaveController.svg"
 
-    if [ -f "${INSTALL_DIR}/assets/icons/wavecontroller-tray-symbolic.svg" ]; then
-        cp "${INSTALL_DIR}/assets/icons/wavecontroller-tray-symbolic.svg" "${ICON_SVG_DIR}/wavecontroller-tray-symbolic.svg"
-    elif [ -f "${INSTALL_DIR}/assets/icons/com.oparada.WaveController-tray.svg" ]; then
-        cp "${INSTALL_DIR}/assets/icons/com.oparada.WaveController-tray.svg" "${ICON_SVG_DIR}/wavecontroller-tray-symbolic.svg"
-    fi
+    for sym_file in "${INSTALL_DIR}"/assets/icons/*-symbolic.svg; do
+        if [ -f "${sym_file}" ]; then
+            cp "${sym_file}" "${ICON_SVG_DIR}/"
+        fi
+    done
 
     if command -v gtk-update-icon-cache &>/dev/null; then
         gtk-update-icon-cache -f -t "${HOME}/.local/share/icons/hicolor" 2>/dev/null || true

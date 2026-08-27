@@ -20,7 +20,7 @@ class PipeWireManager:
     ]
 
     DEFAULT_MIXES = [
-        {"id": "personal", "name": "Personal Mix", "subtitle": "1 output", "icon": "audio-headphones-symbolic", "color": "#3db356", "type": "sink"}
+        {"id": "personal", "name": "Personal Mix", "subtitle": "1 output", "icon": "personal-symbolic", "color": "#3db356", "type": "sink"}
     ]
 
     DEFAULT_APP_MAPPINGS = {
