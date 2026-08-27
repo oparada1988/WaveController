@@ -35,7 +35,7 @@ flowchart TB
         HeadphoneDAC["Physical Wave XLR Headphone DAC (ALSA Playback)"]
     end
 
-    HW <-->|USB Vendor Protocol (wIndex=0x3303)| Libusb
+    HW <-->|"USB Vendor Protocol (wIndex=0x3303)"| Libusb
     Libusb --> Poller
     Poller --> USBHW
     USBHW <--> CFG
@@ -154,22 +154,22 @@ In factory Elgato firmware, touching the top capacitive plate always sends a UAC
 
 ```mermaid
 flowchart TD
-    Touch[Capacitive Mute Sensor Tapped] --> Detect[Poller detects changed mute byte in cfg:4]
-    Detect --> ModeCheck{Active Dial Mode cfg:14}
+    Touch["Capacitive Mute Sensor Tapped"] --> Detect["Poller detects changed mute byte in cfg:4"]
+    Detect --> ModeCheck{"Active Dial Mode cfg:14"}
 
-    ModeCheck -->|Setting 1: LED 1 Gain / Mic| S1[Mute Microphone Preamp]
-    S1 --> S1_1[PipeWireManager.set_channel_master_mute: elgato_wave_xlr, True]
-    S1_1 --> S1_2[Sever Mic capture links in PipeWire Graph]
-    S1_2 --> S1_3[Headphone Output Mix remains 100% ACTIVE]
+    ModeCheck -->|"Setting 1: LED 1 Gain / Mic"| S1["Mute Microphone Preamp"]
+    S1 --> S1_1["PipeWireManager.set_channel_master_mute: elgato_wave_xlr, True"]
+    S1_1 --> S1_2["Sever Mic capture links in PipeWire Graph"]
+    S1_2 --> S1_3["Headphone Output Mix remains 100% ACTIVE"]
 
-    ModeCheck -->|Setting 2: LED 2 Headphone Out| S2[Mute Headphone Output Mix]
-    S2 --> S2_1[PipeWireManager.set_mix_master_mute: personal_mix / beta, True]
-    S2_1 --> S2_2[pw-link -d monitor_FL/FR from Wave XLR DAC]
-    S2_2 --> S2_3[UAC2 Shield: wpctl set-mute default_source 0]
-    S2_3 --> S2_4[Microphone Preamp & Chat Mix remain 100% ACTIVE]
+    ModeCheck -->|"Setting 2: LED 2 Headphone Out"| S2["Mute Headphone Output Mix"]
+    S2 --> S2_1["PipeWireManager.set_mix_master_mute: personal_mix / beta, True"]
+    S2_1 --> S2_2["pw-link -d monitor_FL/FR from Wave XLR DAC"]
+    S2_2 --> S2_3["UAC2 Shield: wpctl set-mute default_source 0"]
+    S2_3 --> S2_4["Microphone Preamp & Chat Mix remain 100% ACTIVE"]
 
-    ModeCheck -->|Setting 3: LED 3 Balance / Mix| S3[Dual Mute: Simultaneously Mute Mic & Headphone Mix]
-    S3 --> S3_1[Sever Mic capture stream AND unbind Headphone DAC monitor link]
+    ModeCheck -->|"Setting 3: LED 3 Balance / Mix"| S3["Dual Mute: Simultaneously Mute Mic & Headphone Mix"]
+    S3 --> S3_1["Sever Mic capture stream AND unbind Headphone DAC monitor link"]
 ```
 
 ### 5.1 Mode Isolation Matrix
@@ -225,8 +225,8 @@ graph LR
     Game --> Sub_Game_Beta --> Sink_Beta
     WaveMic --> Sub_Mic_Chat --> Source_Chat
 
-    Sink_Beta -->|pw-link monitor_FL/FR (Severed on Mute)| ElgatoDAC
-    Sink_Mobo -->|pw-link monitor_FL/FR| MoboDAC
+    Sink_Beta -->|"pw-link monitor_FL/FR (Severed on Mute)"| ElgatoDAC
+    Sink_Mobo -->|"pw-link monitor_FL/FR"| MoboDAC
     Source_Chat --> OBS
 ```
 
