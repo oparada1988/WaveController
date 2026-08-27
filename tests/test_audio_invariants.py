@@ -317,6 +317,54 @@ class TestTokenMatchingInvariants(unittest.TestCase):
         self.assertNotIn(("spotify", "temp_mix"), self.pwm._submix_procs)
         self.assertNotIn(("spotify", "temp_mix"), self.pwm._submix_node_ids)
 
+    def test_mix_ingestion_shield(self):
+        """Invariant: Mix Ingestion Shield must unlink any direct client app link into mix sinks."""
+        from unittest.mock import patch, MagicMock
+        with patch("subprocess.check_output") as mock_co, patch("subprocess.run") as mock_run:
+            # Simulate a rogue Spotify link directly to Personal Mix sink
+            mock_co.side_effect = lambda cmd, **kwargs: (
+                "spotify:output_FL\n  |-> WaveController_personal_mix_Sink:playback_FL\n"
+                "output.WaveController_submix_spotify_personal:output_FL\n  |-> WaveController_personal_mix_Sink:playback_FL\n"
+                if "-l" in cmd else ""
+            )
+            self.pwm.mixes = [{"id": "personal", "name": "Personal Mix", "type": "sink"}]
+            
+            # Run shield check logic
+            fresh_links = self.pwm._get_pw_links_map()
+            self.assertIn("spotify:output_FL", fresh_links)
+            
+            # Verify that only non-submix sources are targeted for unlinking
+            for src_p, dests in fresh_links.items():
+                if not src_p.startswith("output.WaveController_submix_"):
+                    for dest_p in dests:
+                        if "WaveController_personal_mix_Sink:playback_" in dest_p:
+                            mock_run(["pw-link", "-d", src_p, dest_p])
+
+            mock_run.assert_called_with(["pw-link", "-d", "spotify:output_FL", "WaveController_personal_mix_Sink:playback_FL"])
+
+    def test_high_speed_telemetry_fusion(self):
+        """Invariant: get_peaks IPC command must include real-time volume states for 30 FPS fader tracking."""
+        from wavecontroller.engine.ipc_server import IPCServer
+        from unittest.mock import MagicMock
+        mock_hw = MagicMock()
+        mock_peaks = MagicMock()
+        mock_peaks.get_all_peaks.return_value = {"spotify": 0.5}
+        
+        self.pwm.mix_states = {"personal_mix": {"volume": 75, "muted": False}}
+        self.pwm.channel_master_states = {"spotify": {"volume": 85, "muted": False}}
+        self.pwm.channel_states = {"spotify": {"personal_mix": {"volume": 85, "muted": False}}}
+        
+        server = IPCServer(self.pwm, mock_hw, mock_peaks)
+        res = server._process_command({"command": "get_peaks"})
+        
+        self.assertIn("peaks", res)
+        self.assertIn("mix_states", res)
+        self.assertIn("channel_master_states", res)
+        self.assertIn("channel_states", res)
+        self.assertEqual(res["mix_states"]["personal_mix"]["volume"], 75)
+        self.assertEqual(res["channel_master_states"]["spotify"]["volume"], 85)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+

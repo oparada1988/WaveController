@@ -1596,6 +1596,24 @@ class PipeWireManager:
         # Synchronize physical output target devices for all Sink mixes
         self._sync_mix_physical_output_routing(mix_id, out_ports, in_ports)
 
+        # Strict Mix Ingestion Shield: Ensure no client application can ever connect directly to a mix sink or source.
+        # Only authorized submix loopbacks (output.WaveController_submix_*) are permitted to feed into mix devices.
+        try:
+            fresh_links = self._get_pw_links_map()
+            for m in mixes_copy:
+                m_id = m["id"]
+                target_prefixes = (f"WaveController_{m_id}_Sink:playback_", f"WaveController_{m_id}_Source:input_")
+                for src_p, dests in fresh_links.items():
+                    if not src_p.startswith("output.WaveController_submix_"):
+                        for dest_p in dests:
+                            if any(dest_p.startswith(pref) for pref in target_prefixes):
+                                try:
+                                    subprocess.run(["pw-link", "-d", src_p, dest_p], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                                except Exception:
+                                    pass
+        except Exception:
+            pass
+
     def _get_pw_links_map(self) -> dict:
         """Returns a dict mapping source_port -> set(destination_ports) from PipeWire."""
         try:
@@ -1824,6 +1842,47 @@ class PipeWireManager:
                             subprocess.run(["pw-link", "-d", curr_src, dest_p], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             except Exception:
                 pass
+
+            # 4. Fallback assigned applications to physical hardware output so they never attach to virtual mixes
+            assigned = list(self.assigned_apps.get(channel_id, []))
+            if assigned:
+                try:
+                    out_ports_raw = subprocess.check_output(["pw-link", "-o"], text=True, stderr=subprocess.DEVNULL)
+                    in_ports_raw = subprocess.check_output(["pw-link", "-i"], text=True, stderr=subprocess.DEVNULL)
+                    out_ports = [l.strip() for l in out_ports_raw.splitlines() if l.strip()]
+                    in_ports = [l.strip() for l in in_ports_raw.splitlines() if l.strip()]
+
+                    # Find physical hardware playback ports
+                    default_phys_in = []
+                    target_device = self.selected_monitor_device or ""
+                    clean_target = target_device.replace("alsa_card.", "").replace("alsa_output.", "").strip().lower()
+                    if clean_target and clean_target != "none":
+                        for p in in_ports:
+                            if p.startswith("alsa_output.") and ":playback_" in p and clean_target in p.lower():
+                                default_phys_in.append(p)
+                    if not default_phys_in:
+                        default_phys_in = [p for p in in_ports if p.startswith("alsa_output.") and ":playback_" in p][:2]
+
+                    # Find the app's output ports and reconnect to physical audio
+                    app_out_ports = []
+                    for app in assigned:
+                        tokens = self._get_match_tokens(app)
+                        for p in out_ports:
+                            if p.startswith("output.WaveController_") or p.startswith("WaveController_"):
+                                continue
+                            if ":output_" in p and self._port_matches_tokens(p, tokens):
+                                app_out_ports.append(p)
+
+                    # Explicitly unroute the deleted channel's applications from any WaveController mix sink/source
+                    if app_out_ports:
+                        for p in in_ports:
+                            if p.startswith("WaveController_") and (":playback_" in p or ":input_" in p):
+                                self._link_stereo_ports(app_out_ports, [p], unlink=True)
+
+                    if default_phys_in and app_out_ports:
+                        self._link_stereo_ports(app_out_ports, default_phys_in, unlink=False)
+                except Exception:
+                    pass
 
             self.channels = [c for c in self.channels if c["id"] != channel_id]
             if channel_id in self.channel_states:

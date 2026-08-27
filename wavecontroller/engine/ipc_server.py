@@ -269,6 +269,14 @@ class IPCServer:
             res["muted"] = is_muted
         elif cmd == "get_peaks":
             res["peaks"] = self.peak_monitor.get_all_peaks()
+            # High-speed telemetry fusion: stream real-time mix & channel volumes at 30 FPS
+            if hasattr(self, "pipewire_mgr") and self.pipewire_mgr:
+                with self.pipewire_mgr._lock:
+                    res["mix_states"] = dict(self.pipewire_mgr.mix_states)
+                    res["channel_master_states"] = dict(getattr(self.pipewire_mgr, "channel_master_states", {}))
+                    res["channel_states"] = {
+                        k: dict(v) for k, v in self.pipewire_mgr.channel_states.items()
+                    }
         elif cmd == "get_hardware_status":
             res["device_name"] = self.hardware_mgr.device_name
             res["is_connected"] = self._is_hardware_connected()
