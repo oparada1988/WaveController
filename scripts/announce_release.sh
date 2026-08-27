@@ -18,8 +18,16 @@ if [ -z "$WEBHOOK_URL" ]; then
     exit 1
 fi
 
-VERSION="${1:-v0.1.0-prealpha.5}"
-NOTES="${2:-WaveController release update with latest features and improvements.}"
+# Detect version from python package if not provided
+DEFAULT_VER="v$(python3 -c "import wavecontroller; print(wavecontroller.__version__)" 2>/dev/null || echo "0.1.0-prealpha.5")"
+VERSION="${1:-$DEFAULT_VER}"
+
+# If changes not provided, gather recent git commits as bullet points
+if [ -n "$2" ]; then
+    CHANGES="$2"
+else
+    CHANGES=$(git -C "$REPO_DIR" log -n 5 --pretty=format:"• %s" 2>/dev/null || echo "• Maintenance and feature updates.")
+fi
 
 echo "Broadcasting release announcement for ${VERSION} to Discord..."
 
@@ -27,7 +35,7 @@ PAYLOAD=$(jq -n \
   --arg tag "$VERSION" \
   --arg title "🚀 WaveController Release: $VERSION" \
   --arg url "https://github.com/oparada1988/WaveController/releases" \
-  --arg desc "$NOTES" \
+  --arg changes "$CHANGES" \
   '{
     username: "WaveController Releases",
     avatar_url: "https://raw.githubusercontent.com/oparada1988/WaveController/main/assets/icons/WaveController.png",
@@ -35,23 +43,38 @@ PAYLOAD=$(jq -n \
       {
         title: $title,
         url: $url,
-        description: ($desc + "\n\n**Quick Upgrade Command:**\n```bash\n./install.sh --upgrade\n```"),
+        description: ("An official update for **WaveController** is now available!\n\n### 📝 What'\''s Changed\n" + $changes),
         color: 8141549,
         fields: [
           {
-            name: "Version Tag",
+            name: "📦 Version",
             value: ("`" + $tag + "`"),
             inline: true
           },
           {
-            name: "Repository",
-            value: "[GitHub Repository](https://github.com/oparada1988/WaveController)",
+            name: "🏷️ Channel",
+            value: "Pre-Alpha Release",
             inline: true
+          },
+          {
+            name: "⚡ How to Upgrade",
+            value: "```bash\ncd ~/WaveController && ./install.sh --upgrade\n```",
+            inline: false
+          },
+          {
+            name: "🔗 Useful Links",
+            value: ("[Release Page](" + $url + ") • [GitHub Repository](https://github.com/oparada1988/WaveController) • [Technical Architecture](https://github.com/oparada1988/WaveController/blob/main/docs/WaveController_Elgato_Hardware_Technical_Architecture.md)"),
+            inline: false
           }
         ],
+        thumbnail: {
+          url: "https://raw.githubusercontent.com/oparada1988/WaveController/main/assets/icons/WaveController.png"
+        },
         footer: {
-          text: "WaveController • Linux Multi-Track Audio Engine"
-        }
+          text: "WaveController • Linux Multi-Track Audio Engine & Hardware Manager",
+          icon_url: "https://raw.githubusercontent.com/oparada1988/WaveController/main/assets/icons/WaveController.png"
+        },
+        timestamp: (now | todate)
       }
     ]
   }')
@@ -59,7 +82,7 @@ PAYLOAD=$(jq -n \
 RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" -X POST -H "Content-Type: application/json" -d "$PAYLOAD" "$WEBHOOK_URL")
 
 if [ "$RESPONSE" = "204" ] || [ "$RESPONSE" = "200" ]; then
-    echo "✔ Announcement broadcasted successfully to Discord (HTTP $RESPONSE)!"
+    echo "✔ Release announcement for ${VERSION} broadcasted successfully to Discord (HTTP $RESPONSE)!"
 else
     echo "✖ Failed to send announcement (HTTP $RESPONSE). Please check your webhook URL."
     exit 1

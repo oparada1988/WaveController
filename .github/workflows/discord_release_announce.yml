@@ -22,14 +22,29 @@ jobs:
           RELEASE_NAME="${{ github.event.release.name }}"
           RELEASE_URL="${{ github.event.release.html_url }}"
           RELEASE_BODY="${{ github.event.release.body }}"
+          RELEASE_AUTHOR="${{ github.event.release.author.login }}"
+          IS_PRERELEASE="${{ github.event.release.prerelease }}"
 
-          TRUNCATED_BODY=$(echo "$RELEASE_BODY" | head -c 1500)
+          TYPE_LABEL="Stable Release"
+          if [ "$IS_PRERELEASE" = "true" ]; then
+            TYPE_LABEL="Pre-Release / Beta"
+          fi
+
+          # Fallback if release notes are blank
+          if [ -z "$RELEASE_BODY" ]; then
+            RELEASE_BODY="• Bug fixes, UI improvements, and performance optimizations.\n• See full commit details on GitHub."
+          fi
+
+          # Truncate if exceeds Discord embed limit
+          TRUNCATED_CHANGES=$(echo "$RELEASE_BODY" | head -c 1800)
 
           PAYLOAD=$(jq -n \
             --arg tag "$RELEASE_TAG" \
             --arg name "${RELEASE_NAME:-$RELEASE_TAG}" \
             --arg url "$RELEASE_URL" \
-            --arg desc "$TRUNCATED_BODY" \
+            --arg changes "$TRUNCATED_CHANGES" \
+            --arg author "$RELEASE_AUTHOR" \
+            --arg rtype "$TYPE_LABEL" \
             '{
               username: "WaveController Releases",
               avatar_url: "https://raw.githubusercontent.com/oparada1988/WaveController/main/assets/icons/WaveController.png",
@@ -37,22 +52,41 @@ jobs:
                 {
                   title: ("🚀 " + $name),
                   url: $url,
-                  description: (if ($desc | length) > 0 then ($desc + "\n\n") else "" end + "**Quick Upgrade:**\n```bash\n./install.sh --upgrade\n```"),
+                  description: ("An official update for **WaveController** is now available!\n\n### 📝 What'\''s Changed\n" + $changes),
                   color: 8141549,
                   fields: [
                     {
-                      name: "Version Tag",
+                      name: "📦 Version",
                       value: ("`" + $tag + "`"),
                       inline: true
                     },
                     {
-                      name: "Download / Release Page",
-                      value: ("[View on GitHub](" + $url + ")"),
+                      name: "🏷️ Channel",
+                      value: $rtype,
                       inline: true
+                    },
+                    {
+                      name: "👤 Released By",
+                      value: ("@" + $author),
+                      inline: true
+                    },
+                    {
+                      name: "⚡ How to Upgrade",
+                      value: "```bash\ncd ~/WaveController && ./install.sh --upgrade\n```",
+                      inline: false
+                    },
+                    {
+                      name: "🔗 Useful Links",
+                      value: ("[Release Page & Assets](" + $url + ") • [Documentation](https://github.com/oparada1988/WaveController/blob/main/docs/WaveController_Elgato_Hardware_Technical_Architecture.md) • [Report an Issue](https://github.com/oparada1988/WaveController/issues)"),
+                      inline: false
                     }
                   ],
+                  thumbnail: {
+                    url: "https://raw.githubusercontent.com/oparada1988/WaveController/main/assets/icons/WaveController.png"
+                  },
                   footer: {
-                    text: "WaveController • Linux Multi-Track Audio Engine"
+                    text: "WaveController • Linux Multi-Track Audio Engine & Hardware Manager",
+                    icon_url: "https://raw.githubusercontent.com/oparada1988/WaveController/main/assets/icons/WaveController.png"
                   },
                   timestamp: (now | todate)
                 }
