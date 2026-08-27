@@ -96,6 +96,7 @@ class ElgatoProfile:
     off_low_z: Optional[int]
     off_monitor_mix: Optional[int]
     mix_max: int
+    gain_scale: float = 256.0
     off_rgb_mute: Optional[int] = None
     off_rgb_ring: Optional[int] = None
 
@@ -105,8 +106,8 @@ PROFILE_WAVE_XLR = ElgatoProfile(
     display_name="Wave XLR",
     vid=0x0FD9,
     pid=0x007D,
-    wvalue_config=0x0000,
-    wvalue_meter=0x0001,
+    wvalue_config=0x0001,
+    wvalue_meter=0x0002,
     wvalue_devinfo=0x000A,
     windex=0x3303,
     config_len=34,
@@ -117,7 +118,8 @@ PROFILE_WAVE_XLR = ElgatoProfile(
     devinfo_serial=(27, 47),
     off_gain=0,
     gain_max_db=75.0,
-    gain_raw_max=0x5000,
+    gain_raw_max=0x4B00,
+    gain_scale=256.0,
     off_mute=4,
     off_phantom=6,
     off_clipguard=7,
@@ -301,8 +303,8 @@ class ElgatoWaveDevice:
         try:
             cfg = self.read_config()
             raw = struct.unpack_from("<H", cfg, self.profile.off_gain)[0]
-            frac = raw / float(self.profile.gain_raw_max)
-            return round(frac * self.profile.gain_max_db, 1)
+            scale = getattr(self.profile, "gain_scale", 256.0)
+            return round(raw / scale, 1)
         except Exception:
             return 45.0
 
@@ -312,7 +314,8 @@ class ElgatoWaveDevice:
             self._is_streaming_vu = False
             self.notify_user_interaction("gain")
             gain_db = max(0.0, min(self.profile.gain_max_db, float(gain_db)))
-            raw = int((gain_db / self.profile.gain_max_db) * self.profile.gain_raw_max)
+            scale = getattr(self.profile, "gain_scale", 256.0)
+            raw = int(round(gain_db * scale))
             cfg = self.read_config()
             struct.pack_into("<H", cfg, self.profile.off_gain, raw)
             if transient:
@@ -713,7 +716,8 @@ class ElgatoWaveDevice:
         try:
             cfg = self.read_config()
             raw_gain = struct.unpack_from("<H", cfg, self.profile.off_gain)[0]
-            read_gain_db = round((raw_gain / float(self.profile.gain_raw_max)) * self.profile.gain_max_db, 1)
+            scale = getattr(self.profile, "gain_scale", 256.0)
+            read_gain_db = round(raw_gain / scale, 1)
 
             dial_mode = "gain"
             if self.profile.off_vol_select is not None:

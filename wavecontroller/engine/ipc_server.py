@@ -123,12 +123,58 @@ class IPCServer:
                     return m["id"]
         return target_low
 
+    def _is_hardware_connected(self) -> bool:
+        if not self.hardware_mgr:
+            return False
+        if hasattr(self.hardware_mgr, "is_connected"):
+            conn = self.hardware_mgr.is_connected
+            return bool(conn() if callable(conn) else conn)
+        info = self.hardware_mgr.get_elgato_device_info() if hasattr(self.hardware_mgr, "get_elgato_device_info") else {}
+        if info:
+            return bool(info.get("connected", False))
+        return bool(getattr(self.hardware_mgr, "device_name", ""))
+
+    def _is_wave_channel(self, ch_id: str) -> bool:
+        if not self._is_hardware_connected():
+            return False
+        c = str(ch_id).lower()
+        if c in ("mic", "microphone", "elgato_wave_xlr", "wave", "wave_xlr"):
+            return True
+        ch_info = self.pipewire_mgr.get_channel_info(ch_id) if hasattr(self.pipewire_mgr, "get_channel_info") else None
+        if ch_info:
+            n = ch_info.get("name", "").lower()
+            if "wave" in n or "elgato" in n or "0fd9" in n:
+                return True
+        return False
+
+    def _is_wave_mix(self, mix_id: str) -> bool:
+        if not self._is_hardware_connected():
+            return False
+        mix_info = next((m for m in self.pipewire_mgr.mixes if m.get("id") == mix_id), None)
+        if not mix_info:
+            for m in self.pipewire_mgr.mixes:
+                if self._match_mix_id(m.get("id")) == mix_id:
+                    mix_info = m
+                    break
+        target = str(mix_info.get("target_device", "") if mix_info else "").lower()
+        return "wave" in target or "elgato" in target or "personal" in str(mix_id).lower() or target in ("default", "")
+
     def _process_command(self, req: dict) -> dict:
         cmd = req.get("command")
         res = {"status": "ok"}
 
         if cmd == "get_channels":
-            res["channels"] = self.pipewire_mgr.channels
+            channels_list = []
+            for c in self.pipewire_mgr.channels:
+                c_data = dict(c)
+                ch_id = str(c_data.get("id", "")).lower()
+                if ch_id in ("mic", "microphone"):
+                    if self._is_hardware_connected():
+                        dev_icon = getattr(self.hardware_mgr, "get_device_icon", lambda *a: None)(self.hardware_mgr.device_name)
+                        if dev_icon and dev_icon not in ("audio-input-microphone-symbolic", "network-offline-symbolic"):
+                            c_data["icon"] = dev_icon
+                channels_list.append(c_data)
+            res["channels"] = channels_list
             res["mixes"] = self.pipewire_mgr.mixes
             res["states"] = self.pipewire_mgr.channel_states
             res["master_states"] = self.pipewire_mgr.channel_master_states
@@ -161,8 +207,13 @@ class IPCServer:
             else:
                 if vol is not None:
                     self.pipewire_mgr.set_channel_master_volume(ch, int(vol))
+                    if self._is_wave_channel(ch):
+                        gain_db = int(round((int(vol) / 100.0) * 75.0))
+                        self.hardware_mgr.set_gain(gain_db, transient=True)
                 if muted is not None:
                     self.pipewire_mgr.set_channel_master_mute(ch, bool(muted))
+                    if self._is_wave_channel(ch):
+                        self.hardware_mgr.set_mode_mute("gain", bool(muted), transient=True)
                 res["state"] = {
                     "volume": self.pipewire_mgr.get_channel_master_volume(ch),
                     "muted": self.pipewire_mgr.get_channel_master_mute(ch)
@@ -182,8 +233,12 @@ class IPCServer:
             muted = req.get("muted")
             if vol is not None:
                 self.pipewire_mgr.set_mix_master_volume(mx, int(vol))
+                if self._is_wave_mix(mx):
+                    self.hardware_mgr.set_output_volume(volume_pct=int(vol), transient=True)
             if muted is not None:
                 self.pipewire_mgr.set_mix_master_mute(mx, bool(muted))
+                if self._is_wave_mix(mx):
+                    self.hardware_mgr.set_mode_mute("hp", bool(muted), transient=True)
             res["volume"] = self.pipewire_mgr.get_mix_master_volume(mx)
             res["muted"] = self.pipewire_mgr.get_mix_master_mute(mx)
             if self.pipewire_mgr.on_external_change_callback:
@@ -192,6 +247,8 @@ class IPCServer:
         elif cmd in ["toggle_mix_mute", "toggle_mix_master_mute"]:
             mx = self._match_mix_id(req.get("mix_id"))
             is_muted = self.pipewire_mgr.toggle_mix_master_mute(mx)
+            if self._is_wave_mix(mx):
+                self.hardware_mgr.set_mode_mute("hp", is_muted, transient=True)
             res["muted"] = is_muted
             if self.pipewire_mgr.on_external_change_callback:
                 from gi.repository import GLib
@@ -204,6 +261,8 @@ class IPCServer:
                 is_muted = self.pipewire_mgr.toggle_channel_mute(ch, mx)
             else:
                 is_muted = self.pipewire_mgr.toggle_channel_master_mute(ch)
+                if self._is_wave_channel(ch):
+                    self.hardware_mgr.set_mode_mute("gain", is_muted, transient=True)
             if self.pipewire_mgr.on_external_change_callback:
                 from gi.repository import GLib
                 GLib.idle_add(self.pipewire_mgr.on_external_change_callback)
@@ -212,6 +271,7 @@ class IPCServer:
             res["peaks"] = self.peak_monitor.get_all_peaks()
         elif cmd == "get_hardware_status":
             res["device_name"] = self.hardware_mgr.device_name
+            res["is_connected"] = self._is_hardware_connected()
             res["gain_db"] = self.hardware_mgr.hardware_gain_db
             res["phantom_48v"] = self.hardware_mgr.phantom_power_48v
             res["clipguard"] = self.hardware_mgr.clipguard_enabled

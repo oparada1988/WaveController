@@ -97,6 +97,7 @@ class MultiChannelPeakMonitor:
             'pw-record',
             '-P', f'node.name={node_name}',
             '-P', f'node.description={node_name}',
+            '-P', 'node.autoconnect=false',
             '-P', 'application.id=org.PulseAudio.pavucontrol',
             '-P', 'application.name=pavucontrol',
             '-P', 'application.icon_name=pavucontrol',
@@ -178,7 +179,38 @@ class MultiChannelPeakMonitor:
     def _link_sink_monitor(self):
         """Discovers active monitor output ports (virtual mix sinks + hardware outputs) and links wave_sink_monitor to them."""
         try:
-            # 1. Unlink any default microphone capture ports or virtual source mixes from wave_sink_monitor
+            # 1. Discover active monitor output ports from virtual mixes and sound cards
+            out = subprocess.check_output(['pw-link', '-o'], text=True, stderr=subprocess.DEVNULL)
+            ports = [l.strip() for l in out.splitlines() if l.strip()]
+
+            mon_fls = [p for p in ports if p.endswith(':monitor_FL')]
+            mon_frs = [p for p in ports if p.endswith(':monitor_FR')]
+
+            # Strict 1:1 invariant: prioritize WaveController_personal_mix_Sink
+            primary_fl = None
+            primary_fr = None
+
+            for fl in mon_fls:
+                if 'personal_mix_sink:monitor_fl' in fl.lower():
+                    primary_fl = fl
+                    break
+            if not primary_fl:
+                for fl in mon_fls:
+                    if 'wavecontroller' in fl.lower() and 'sink:monitor_fl' in fl.lower():
+                        primary_fl = fl
+                        break
+
+            for fr in mon_frs:
+                if 'personal_mix_sink:monitor_fr' in fr.lower():
+                    primary_fr = fr
+                    break
+            if not primary_fr:
+                for fr in mon_frs:
+                    if 'wavecontroller' in fr.lower() and 'sink:monitor_fr' in fr.lower():
+                        primary_fr = fr
+                        break
+
+            # 2. Unlink any extraneous source ports from wave_sink_monitor (strict 1:1 isolation)
             try:
                 links_out = subprocess.check_output(['pw-link', '-l'], text=True, stderr=subprocess.DEVNULL)
                 current_node = None
@@ -188,63 +220,25 @@ class MultiChannelPeakMonitor:
                         current_node = line_str
                     elif '|<-' in line_str and current_node and 'wave_sink_monitor' in current_node:
                         src_port = line_str.replace('|<-', '').strip()
-                        # Unlink if capture port or if it is a virtual Source mix (e.g. Chat Mix Source)
-                        if 'capture' in src_port.lower() or 'source' in src_port.lower() or 'input' in src_port.lower():
+                        if current_node == 'wave_sink_monitor:input_FL' and src_port != primary_fl:
+                            subprocess.run(['pw-link', '-d', src_port, current_node], stderr=subprocess.DEVNULL)
+                        elif current_node == 'wave_sink_monitor:input_FR' and src_port != primary_fr:
+                            subprocess.run(['pw-link', '-d', src_port, current_node], stderr=subprocess.DEVNULL)
+                        elif 'input_mono' in current_node.lower():
                             subprocess.run(['pw-link', '-d', src_port, current_node], stderr=subprocess.DEVNULL)
             except Exception:
                 pass
 
-            # 2. Check what input ports wave_sink_monitor has
+            # 3. Check what input ports wave_sink_monitor has and establish strict 1:1 links
             io_out = subprocess.check_output(['pw-link', '-io'], text=True, stderr=subprocess.DEVNULL)
             in_ports = [l.strip() for l in io_out.splitlines() if l.strip().startswith('wave_sink_monitor:')]
             has_fl = any(':input_FL' in p for p in in_ports)
             has_fr = any(':input_FR' in p for p in in_ports)
-            has_mono = any(':input_MONO' in p for p in in_ports)
 
-            # 3. Discover active monitor output ports from sound cards and virtual mixes
-            out = subprocess.check_output(['pw-link', '-o'], text=True, stderr=subprocess.DEVNULL)
-            ports = [l.strip() for l in out.splitlines() if l.strip()]
-
-            # Find matching monitor ports
-            mon_fls = [p for p in ports if p.endswith(':monitor_FL')]
-            mon_frs = [p for p in ports if p.endswith(':monitor_FR')]
-            mon_monos = [p for p in ports if p.endswith(':monitor_MONO') or ':monitor' in p]
-
-            # Prioritize: 1. WaveController Virtual Mix Sinks 2. Elgato Wave XLR / USB 3. PCI / Default Output
-            target_fls = []
-            target_frs = []
-
-            for fl in mon_fls:
-                if 'wavecontroller' in fl.lower() and 'sink' in fl.lower():
-                    target_fls.append(fl)
-                elif 'wave' in fl.lower() or '0fd9' in fl.lower() or 'elgato' in fl.lower():
-                    target_fls.append(fl)
-                elif 'usb' in fl.lower() or 'analog' in fl.lower() or 'pci' in fl.lower():
-                    target_fls.append(fl)
-
-            for fr in mon_frs:
-                if 'wavecontroller' in fr.lower() and 'sink' in fr.lower():
-                    target_frs.append(fr)
-                elif 'wave' in fr.lower() or '0fd9' in fr.lower() or 'elgato' in fr.lower():
-                    target_frs.append(fr)
-                elif 'usb' in fr.lower() or 'analog' in fr.lower() or 'pci' in fr.lower():
-                    target_frs.append(fr)
-
-            # Link primary virtual mix sinks or primary hardware outputs
-            if has_fl:
-                for fl in target_fls:
-                    if 'wave_sink_monitor' not in fl and 'wave_mic_monitor' not in fl:
-                        subprocess.run(['pw-link', fl, 'wave_sink_monitor:input_FL'], stderr=subprocess.DEVNULL)
-            if has_fr:
-                for fr in target_frs:
-                    if 'wave_sink_monitor' not in fr and 'wave_mic_monitor' not in fr:
-                        subprocess.run(['pw-link', fr, 'wave_sink_monitor:input_FR'], stderr=subprocess.DEVNULL)
-
-            if has_mono:
-                mono_targets = target_fls or mon_monos
-                for m in mono_targets:
-                    if 'wave_sink_monitor' not in m and 'wave_mic_monitor' not in m:
-                        subprocess.run(['pw-link', m, 'wave_sink_monitor:input_MONO'], stderr=subprocess.DEVNULL)
+            if has_fl and primary_fl:
+                subprocess.run(['pw-link', primary_fl, 'wave_sink_monitor:input_FL'], stderr=subprocess.DEVNULL)
+            if has_fr and primary_fr:
+                subprocess.run(['pw-link', primary_fr, 'wave_sink_monitor:input_FR'], stderr=subprocess.DEVNULL)
         except Exception:
             pass
 

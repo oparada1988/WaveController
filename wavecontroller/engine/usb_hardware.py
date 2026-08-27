@@ -113,6 +113,16 @@ class USBHardwareManager:
             self.add_hardware_listener(cb)
 
     @property
+    def is_connected(self) -> bool:
+        elgato_dev = elgato_manager.get_device()
+        if elgato_dev and elgato_dev.is_connected():
+            return True
+        info = self.get_elgato_device_info()
+        if info and info.get("connected", False):
+            return True
+        return bool(self.device_name)
+
+    @property
     def is_elgato(self) -> bool:
         elgato_dev = elgato_manager.get_device()
         if elgato_dev and elgato_dev.is_connected():
@@ -190,10 +200,12 @@ class USBHardwareManager:
             self.notify_hardware_listeners(curr, changed)
 
         if "gain_db" in changed:
-            self.hardware_gain_db = int(round(changed["gain_db"]))
-            hw = dict(config_manager.get("hardware_settings", {}))
-            hw["gain_db"] = self.hardware_gain_db
-            config_manager.set("hardware_settings", hw, immediate=False)
+            recent_drag = (time.time() - getattr(self, "_last_gain_set_time", 0.0)) < 1.5
+            if not recent_drag:
+                self.hardware_gain_db = int(round(changed["gain_db"]))
+                hw = dict(config_manager.get("hardware_settings", {}))
+                hw["gain_db"] = self.hardware_gain_db
+                config_manager.set("hardware_settings", hw, immediate=False)
 
         if "hp_volume_pct" in changed:
             self.headphone_volume = int(round(changed["hp_volume_pct"]))
@@ -862,7 +874,7 @@ class USBHardwareManager:
 
     def _is_target_elgato(self, key_or_id: str = None) -> bool:
         if not key_or_id:
-            return self.device_type == "elgato"
+            return self.is_elgato or self.device_type == "elgato"
         k = str(key_or_id)
         if k in self.discovered_devices:
             return self.discovered_devices[k].get("is_elgato", False)
@@ -871,6 +883,7 @@ class USBHardwareManager:
     # Input Gain & Hardware DSP Controls
     def set_gain(self, gain_db: int, source_id_or_key: str = None, transient: bool = False):
         self.hardware_gain_db = max(0, min(75, gain_db))
+        self._last_gain_set_time = time.time()
         hw = dict(config_manager.get("hardware_settings", {}))
         hw["gain_db"] = self.hardware_gain_db
         config_manager.set("hardware_settings", hw)
