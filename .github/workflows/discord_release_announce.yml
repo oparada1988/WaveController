@@ -1,0 +1,62 @@
+name: Announce Release to Discord
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  discord-announce:
+    name: Post Announcement to Discord
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send Discord Webhook
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: |
+          if [ -z "$DISCORD_WEBHOOK_URL" ]; then
+            echo "Error: DISCORD_WEBHOOK_URL secret is not set in repository settings."
+            exit 1
+          fi
+
+          RELEASE_TAG="${{ github.event.release.tag_name }}"
+          RELEASE_NAME="${{ github.event.release.name }}"
+          RELEASE_URL="${{ github.event.release.html_url }}"
+          RELEASE_BODY="${{ github.event.release.body }}"
+
+          TRUNCATED_BODY=$(echo "$RELEASE_BODY" | head -c 1500)
+
+          PAYLOAD=$(jq -n \
+            --arg tag "$RELEASE_TAG" \
+            --arg name "${RELEASE_NAME:-$RELEASE_TAG}" \
+            --arg url "$RELEASE_URL" \
+            --arg desc "$TRUNCATED_BODY" \
+            '{
+              username: "WaveController Releases",
+              avatar_url: "https://raw.githubusercontent.com/oparada1988/WaveController/main/assets/icons/WaveController.png",
+              embeds: [
+                {
+                  title: ("🚀 " + $name),
+                  url: $url,
+                  description: (if ($desc | length) > 0 then ($desc + "\n\n") else "" end + "**Quick Upgrade:**\n```bash\n./install.sh --upgrade\n```"),
+                  color: 8141549,
+                  fields: [
+                    {
+                      name: "Version Tag",
+                      value: ("`" + $tag + "`"),
+                      inline: true
+                    },
+                    {
+                      name: "Download / Release Page",
+                      value: ("[View on GitHub](" + $url + ")"),
+                      inline: true
+                    }
+                  ],
+                  footer: {
+                    text: "WaveController • Linux Multi-Track Audio Engine"
+                  },
+                  timestamp: (now | todate)
+                }
+              ]
+            }')
+
+          curl -s -X POST -H "Content-Type: application/json" -d "$PAYLOAD" "$DISCORD_WEBHOOK_URL"
