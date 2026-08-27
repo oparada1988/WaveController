@@ -1,6 +1,7 @@
 import gi
 gi.require_version("Gtk", "4.0")
-from gi.repository import Gtk, Gdk, GObject
+gi.require_version("Adw", "1")
+from gi.repository import Gtk, Gdk, GObject, Adw
 
 class MixHeaderCard(Gtk.Box):
     """
@@ -249,10 +250,30 @@ class MixHeaderCard(Gtk.Box):
         self.color_bar.get_style_context().add_provider(provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION + 10)
 
     def _on_delete_clicked(self, b):
-        if self.pipewire_mgr:
-            self.pipewire_mgr.remove_mix(self.mix_info["id"])
-        if self.on_remove_callback:
-            self.on_remove_callback(self.mix_info["id"])
+        mix_name = self.mix_info.get("name", "Mix")
+        root_win = self.get_root()
+        if not isinstance(root_win, Gtk.Window):
+            root_win = self.get_native() if isinstance(self.get_native(), Gtk.Window) else None
+
+        dialog = Adw.MessageDialog(
+            transient_for=root_win,
+            heading=f"Delete '{mix_name}' Mix?",
+            body=f"Are you sure you want to delete the '{mix_name}' mix? This will remove its sub-mix bus and tear down its virtual audio routing."
+        )
+        dialog.add_response("cancel", "Cancel")
+        dialog.add_response("delete", "Delete Mix")
+        dialog.set_response_appearance("delete", Adw.ResponseAppearance.DESTRUCTIVE)
+        dialog.set_default_response("cancel")
+
+        def _on_response(d, response):
+            if response == "delete":
+                if self.pipewire_mgr:
+                    self.pipewire_mgr.remove_mix(self.mix_info["id"])
+                if self.on_remove_callback:
+                    self.on_remove_callback(self.mix_info["id"])
+
+        dialog.connect("response", _on_response)
+        dialog.present()
 
     def _setup_edit_popover(self, menu_btn: Gtk.MenuButton):
         popover = Gtk.Popover()

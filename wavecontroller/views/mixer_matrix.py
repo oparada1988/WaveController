@@ -149,7 +149,7 @@ class MixerMatrixView(Gtk.Box):
                 mix,
                 pipewire_mgr=self.pipewire_mgr,
                 hardware_mgr=self.hardware_mgr,
-                on_remove_callback=lambda m_id: (self.pipewire_mgr.remove_mix(m_id), GLib.idle_add(self._rebuild_grid)),
+                on_remove_callback=lambda m_id: GLib.idle_add(self._rebuild_grid),
                 on_edit_callback=None,
                 on_reorder_callback=self._on_reorder_mix,
                 on_hover_col_callback=self._on_hover_col,
