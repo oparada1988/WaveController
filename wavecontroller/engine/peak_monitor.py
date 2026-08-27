@@ -12,16 +12,21 @@ class MultiChannelPeakMonitor:
     with isolated node port names for physical microphones and playback audio.
     Per-channel ingestion sinks get dedicated monitor taps for isolated VU metering.
     """
-    def __init__(self):
+    def __init__(self, pipewire_mgr=None):
         self.peaks = {} # {channel_id: {"left": float, "right": float}}
         self.running = False
         self.mic_proc = None
         self.sink_proc = None
         self.thread = None
         self._lock = threading.Lock()
+        self.pipewire_mgr = pipewire_mgr
         # Per-channel isolated monitor processes and smoothed peak state
         self._channel_procs = {}  # {channel_id: subprocess.Popen}
+        self._channel_proc_channels = {}  # {channel_id: int}
         self._channel_peaks = {}  # {channel_id: {"left": float, "right": float}}
+
+    def set_pipewire_manager(self, pw_mgr):
+        self.pipewire_mgr = pw_mgr
 
     def start(self):
         self.running = True
@@ -321,20 +326,58 @@ class MultiChannelPeakMonitor:
         return max(0.0, min(1.0, val_l)), max(0.0, min(1.0, val_r))
 
     def _refresh_channel_monitors(self):
-        """Discovers active WaveController_Channel_* sinks and spawns/prunes per-channel pw-record processes."""
+        """Discovers active WaveController_Channel_* sinks and physical input sources, spawning/pruning per-channel pw-record processes."""
         try:
             out = subprocess.check_output(['pw-link', '-o'], text=True, stderr=subprocess.DEVNULL)
             all_ports = [l.strip() for l in out.splitlines() if l.strip()]
         except Exception:
             return
 
-        # Find all active channel sink monitor ports (WaveController_Channel_<id>:monitor_FL)
-        active_channels = set()
+        # Map channel_id -> (target_node_name, channel_count, is_sink)
+        active_channels = {}
+
+        # 1. Active Playback Channel Sinks (WaveController_Channel_<id>:monitor_FL)
         for p in all_ports:
             if p.startswith("WaveController_Channel_") and ":monitor_" in p:
                 ch_node = p.split(":")[0]  # e.g. "WaveController_Channel_spotify"
                 ch_id = ch_node.replace("WaveController_Channel_", "")
-                active_channels.add(ch_id)
+                active_channels[ch_id] = (ch_node, 2, True)
+
+        # 2. Active Input / Microphone Channels (Physical ALSA Capture nodes)
+        if self.pipewire_mgr:
+            for ch in getattr(self.pipewire_mgr, "channels", []):
+                if ch.get("type") == "source":
+                    ch_id = ch.get("id", "")
+                    ch_id_low = ch_id.lower()
+                    ch_name_low = str(ch.get("name", "")).lower()
+                    assigned_devs = [str(a).lower() for a in (self.pipewire_mgr.get_assigned_apps(ch_id) if hasattr(self.pipewire_mgr, "get_assigned_apps") else [])]
+
+                    matched_node = None
+                    is_mono = True
+                    for p in all_ports:
+                        if ":capture_" in p and p.startswith("alsa_input."):
+                            p_low = p.lower()
+                            if "wave" in ch_id_low or "elgato" in ch_id_low or "wave" in ch_name_low:
+                                if "wave" in p_low or "elgato" in p_low or "0fd9" in p_low:
+                                    matched_node = p.split(":")[0]
+                                    is_mono = "mono" in p_low
+                                    break
+                            elif "fefine" in ch_id_low or "fifine" in ch_id_low or "fefine" in ch_name_low or "fifine" in ch_name_low:
+                                if "fifine" in p_low or "fefine" in p_low or "3142" in p_low:
+                                    matched_node = p.split(":")[0]
+                                    is_mono = "mono" in p_low
+                                    break
+                            elif any(dev in p_low for dev in assigned_devs if len(dev) >= 3 and dev != "system capture"):
+                                matched_node = p.split(":")[0]
+                                is_mono = "mono" in p_low
+                                break
+                            elif ch_id_low in p_low or (len(ch_name_low) >= 3 and ch_name_low in p_low):
+                                matched_node = p.split(":")[0]
+                                is_mono = "mono" in p_low
+                                break
+
+                    if matched_node:
+                        active_channels[ch_id] = (matched_node, 1 if is_mono else 2, False)
 
         # Prune processes for channels that no longer exist
         for ch_id in list(self._channel_procs.keys()):
@@ -345,19 +388,19 @@ class MultiChannelPeakMonitor:
                         proc.kill()
                     except Exception:
                         pass
+                self._channel_proc_channels.pop(ch_id, None)
                 self._channel_peaks.pop(ch_id, None)
 
         # Spawn processes for new channels
-        for ch_id in active_channels:
+        for ch_id, (target, channels, is_sink) in active_channels.items():
             proc = self._channel_procs.get(ch_id)
             if proc and proc.poll() is None:
                 continue  # Already running
-            # Spawn a pw-record targeting this channel's sink node
-            node_name = f"wave_ch_meter_{ch_id}"
-            target = f"WaveController_Channel_{ch_id}"
-            new_proc = self._open_pw_record(node_name, target=target, channels=2, is_sink=True)
+            node_name = f"wave_meter_{ch_id}"
+            new_proc = self._open_pw_record(node_name, target=target, channels=channels, is_sink=is_sink)
             if new_proc:
                 self._channel_procs[ch_id] = new_proc
+                self._channel_proc_channels[ch_id] = channels
                 if ch_id not in self._channel_peaks:
                     self._channel_peaks[ch_id] = {"left": 0.0, "right": 0.0}
 
@@ -396,7 +439,8 @@ class MultiChannelPeakMonitor:
 
                 for ch_id, proc in ch_items:
                     if proc and proc.poll() is None:
-                        raw_cl, raw_cr = self._drain_and_calc_peaks(proc, channels=2)
+                        proc_ch = self._channel_proc_channels.get(ch_id, 2)
+                        raw_cl, raw_cr = self._drain_and_calc_peaks(proc, channels=proc_ch)
                         cur = self._channel_peaks.get(ch_id, {"left": 0.0, "right": 0.0})
                         cl = cur.get("left", 0.0)
                         cr = cur.get("right", 0.0)
@@ -505,31 +549,28 @@ class MultiChannelPeakMonitor:
     def get_channel_stereo_peaks(self, channel_id: str) -> tuple:
         with self._lock:
             ch_low = str(channel_id).lower().strip()
-            
-            # 1. Physical Microphone / Input Channels
-            is_mic = any(k in ch_low for k in ("mic", "microphone", "wave", "elgato", "fefine", "fifine", "input", "capture"))
-            if is_mic:
-                if ch_low in self.peaks:
-                    p = self.peaks[ch_low]
-                    return p.get("left", 0.0), p.get("right", 0.0)
-                mic_p = getattr(self, "_last_mic_peaks", self.peaks.get("mic", self.peaks.get("elgato_wave_xlr", {})))
-                return mic_p.get("left", 0.0), mic_p.get("right", 0.0)
 
-            # 2. Per-Channel Isolated Ingestion Sinks
+            # 1. Per-Channel Dedicated Isolated VU Meter Process Peaks
             if ch_low in self._channel_peaks:
                 p = self._channel_peaks[ch_low]
                 return p.get("left", 0.0), p.get("right", 0.0)
+
+            # 2. Exact match in global channel peaks dict
             if ch_low in self.peaks:
                 p = self.peaks[ch_low]
                 return p.get("left", 0.0), p.get("right", 0.0)
+
+            # 3. Default primary microphone channel ('mic' or 'elgato_wave_xlr')
+            if ch_low in ("mic", "elgato_wave_xlr"):
+                mic_p = getattr(self, "_last_mic_peaks", self.peaks.get("mic", self.peaks.get("elgato_wave_xlr", {})))
+                return mic_p.get("left", 0.0), mic_p.get("right", 0.0)
+
+            # 4. Partial key matching in dedicated per-channel peaks
             for k, p in self._channel_peaks.items():
                 if k in ch_low or ch_low in k:
                     return p.get("left", 0.0), p.get("right", 0.0)
-            for k, p in self.peaks.items():
-                if k in ch_low or ch_low in k:
-                    return p.get("left", 0.0), p.get("right", 0.0)
-            
-            # Return 0.0 for quiet or unassigned playback channels instead of leaking global sink audio
+
+            # Return 0.0 for quiet, unassigned, or secondary mics — Strict Zero Cross-Bleed!
             return 0.0, 0.0
 
     def get_channel_peak(self, channel_id: str) -> float:

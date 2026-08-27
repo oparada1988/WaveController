@@ -1316,6 +1316,7 @@ class PipeWireManager:
             if is_source_channel:
                 ch_name_low = str(ch.get("name", "")).lower()
                 ch_id_low = str(ch_id).lower()
+                assigned_devs = [str(a).lower() for a in self.get_assigned_apps(ch_id)]
                 matched_ports = []
                 for p in out_ports:
                     if p.startswith("output.WaveController_") or p.startswith("WaveController_") or ":monitor_" in p:
@@ -1323,16 +1324,16 @@ class PipeWireManager:
                     if ":capture_" in p and p.startswith("alsa_input."):
                         p_low = p.lower()
                         if "wave" in ch_id_low or "elgato" in ch_id_low or "wave" in ch_name_low:
-                            if "wave" in p_low or "elgato" in p_low:
+                            if "wave" in p_low or "elgato" in p_low or "0fd9" in p_low:
                                 matched_ports.append(p)
-                        elif "fefine" in ch_id_low or "fifine" in ch_name_low:
-                            if "fifine" in p_low or "3142" in p_low:
+                        elif "fefine" in ch_id_low or "fifine" in ch_id_low or "fefine" in ch_name_low or "fifine" in ch_name_low:
+                            if "fifine" in p_low or "fefine" in p_low or "3142" in p_low:
                                 matched_ports.append(p)
-                        elif "mic" == ch_id_low or "microphone" in ch_name_low:
-                            if "wave" in p_low or "elgato" in p_low or "fifine" in p_low:
-                                matched_ports.append(p)
-                if not matched_ports:
-                    matched_ports = [p for p in out_ports if ":capture_" in p and p.startswith("alsa_input.") and not p.startswith("WaveController_")]
+                        elif any(dev in p_low for dev in assigned_devs if len(dev) >= 3 and dev != "system capture"):
+                            matched_ports.append(p)
+                        elif ch_id_low in p_low or (len(ch_name_low) >= 3 and ch_name_low in p_low):
+                            matched_ports.append(p)
+                # Strict isolation: Never fall back to grabbing other microphones (prevents cross-bleed)
                 ch_out_ports = matched_ports
             else:
                 # Route through per-channel ingestion sink
@@ -1611,12 +1612,11 @@ class PipeWireManager:
             self.channel_states[ch_id] = {}
             self.assigned_apps[ch_id] = assigned_apps if assigned_apps is not None else ([name] if ch_type == "sink" else [])
             for mx in self.mixes:
-                is_compat = (ch_type == mx.get("type", "source"))
                 self.channel_states[ch_id][mx["id"]] = {
                     "volume": 80,
                     "muted": False,
                     "linked": True,
-                    "enabled": is_compat
+                    "enabled": False
                 }
 
             self._refresh_node_cache()

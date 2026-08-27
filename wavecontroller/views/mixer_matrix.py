@@ -765,14 +765,21 @@ class MixerMatrixView(Gtk.Box):
                     d_row.append(d_add_ic)
                     dev_item_btn.set_child(d_row)
 
-                    def make_dev_click_handler(name, icon):
+                    def make_dev_click_handler(name, icon, d_info):
                         def handler(btn):
-                            self.pipewire_mgr.add_channel(name, icon=icon, ch_type="source", assigned_apps=["System capture"])
+                            dev_k = d_info.get("device_key", "")
+                            dev_raw_name = d_info.get("name", "")
+                            assigned = [name]
+                            if dev_k and dev_k not in assigned:
+                                assigned.append(dev_k)
+                            if dev_raw_name and dev_raw_name not in assigned:
+                                assigned.append(dev_raw_name)
+                            self.pipewire_mgr.add_channel(name, icon=icon, ch_type="source", assigned_apps=assigned)
                             popover.popdown()
                             GLib.idle_add(self._rebuild_grid)
                         return handler
 
-                    dev_item_btn.connect("clicked", make_dev_click_handler(dev_name, dev_icon))
+                    dev_item_btn.connect("clicked", make_dev_click_handler(dev_name, dev_icon, dev_info))
                     dev_list_container.append(dev_item_btn)
             else:
                 if input_devs:
