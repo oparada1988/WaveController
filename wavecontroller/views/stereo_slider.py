@@ -178,11 +178,16 @@ class StereoSlider(Gtk.DrawingArea):
             meter_l = vol_w * self.peak_l
             meter_r = vol_w * self.peak_r
             if meter_l > 0.5 or meter_r > 0.5:
-                pat = cairo.LinearGradient(margin, 0, margin + vol_w, 0)
-                pat.add_color_stop_rgba(0.00, 0.24, 0.70, 0.34, 1.0)   # Vivid Emerald Green #3db356
-                pat.add_color_stop_rgba(0.65, 0.24, 0.70, 0.34, 1.0)  # Green up to 65%
-                pat.add_color_stop_rgba(0.85, 0.95, 0.75, 0.20, 1.0)  # Warm Yellow at 85%
-                pat.add_color_stop_rgba(1.00, 0.95, 0.30, 0.25, 1.0)  # Studio Red at 100%
+                if getattr(self, "_cached_gradient_vol_w", None) != vol_w:
+                    pat = cairo.LinearGradient(margin, 0, margin + vol_w, 0)
+                    pat.add_color_stop_rgba(0.00, 0.24, 0.70, 0.34, 1.0)   # Vivid Emerald Green #3db356
+                    pat.add_color_stop_rgba(0.65, 0.24, 0.70, 0.34, 1.0)  # Green up to 65%
+                    pat.add_color_stop_rgba(0.85, 0.95, 0.75, 0.20, 1.0)  # Warm Yellow at 85%
+                    pat.add_color_stop_rgba(1.00, 0.95, 0.30, 0.25, 1.0)  # Studio Red at 100%
+                    self._cached_gradient = pat
+                    self._cached_gradient_vol_w = vol_w
+                else:
+                    pat = self._cached_gradient
                 cr.set_source(pat)
                 if meter_l > 0.5:
                     cr.rectangle(margin, y_top, meter_l, track_h)

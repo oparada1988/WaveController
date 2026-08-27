@@ -383,12 +383,13 @@ class PipeWireManager:
                 # 2. Periodic real-time stream, guard & mix reconciliation
                 sync_tick = getattr(self, "_sync_loop_tick", 0) + 1
                 self._sync_loop_tick = sync_tick
-                if sync_tick % 3 == 0:
+                if sync_tick % 5 == 0:
                     self._reconcile_app_streams_fast()
-                if sync_tick % 25 == 0:
+                if sync_tick % 60 == 0:
                     self._enforce_exclusive_volume_guard()
-                    self._sync_channel_audio_routing()
                     self._ensure_mix_sinks_unmuted()
+                if sync_tick % 120 == 0:
+                    self._sync_channel_audio_routing()
             except Exception:
                 pass
             time.sleep(0.04) # 25 Hz fast poller (40ms)
@@ -526,8 +527,13 @@ class PipeWireManager:
             pass
 
     def _reconcile_app_streams_fast(self):
-        """Ultra-fast reactive stream interceptor (runs every ~120ms) ensuring assigned apps
+        """Ultra-fast reactive stream interceptor ensuring assigned apps
         are immediately attached to their dedicated channel sink and severed from default mix leaks."""
+        with self._lock:
+            has_assigned = any(bool(apps) for apps in self.assigned_apps.values())
+        if not has_assigned:
+            return
+
         try:
             o_raw = subprocess.check_output(["pw-link", "-o"], text=True, stderr=subprocess.DEVNULL)
             out_ports = [l.strip() for l in o_raw.splitlines() if l.strip()]

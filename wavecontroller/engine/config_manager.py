@@ -2,6 +2,9 @@ import os
 import json
 import threading
 from gi.repository import GLib
+from wavecontroller.utils.logger import get_logger
+
+log = get_logger("ConfigManager")
 
 class ConfigManager:
     """
@@ -66,7 +69,7 @@ class ConfigManager:
                         self._data.update(loaded)
                         return
             except Exception as e:
-                print(f"[ConfigManager] Error reading config file, falling back to defaults: {e}")
+                log.error(f"Error reading config file, falling back to defaults: {e}")
         
         # Fresh default setup
         self._data = dict(self.DEFAULT_CONFIG)
@@ -116,7 +119,7 @@ class ConfigManager:
                     json.dump(self._data, f, indent=2, ensure_ascii=False)
                 os.replace(tmp_file, self.config_file)
             except Exception as e:
-                print(f"[ConfigManager] Failed to write config to {self.config_file}: {e}")
+                log.error(f"Failed to write config to {self.config_file}: {e}")
 
     def export_backup(self, target_path: str) -> bool:
         """Exports current full configuration to an external JSON backup file."""
@@ -132,7 +135,7 @@ class ConfigManager:
                     json.dump(export_data, f, indent=2, ensure_ascii=False)
                 return True
             except Exception as e:
-                print(f"[ConfigManager] Export backup failed: {e}")
+                log.error(f"Export backup failed: {e}")
                 return False
 
     def import_backup(self, source_path: str) -> bool:
@@ -157,7 +160,7 @@ class ConfigManager:
                 self.save_now()
                 return True
             except Exception as e:
-                print(f"[ConfigManager] Import backup failed: {e}")
+                log.error(f"Import backup failed: {e}")
                 return False
 
     def reset_to_defaults(self) -> bool:
@@ -168,7 +171,7 @@ class ConfigManager:
                 self.save_now()
                 return True
             except Exception as e:
-                print(f"[ConfigManager] Reset to defaults failed: {e}")
+                log.error(f"Reset to defaults failed: {e}")
                 return False
 
 config_manager = ConfigManager()

@@ -473,6 +473,9 @@ class ChannelCard(Gtk.Box):
             return
 
         is_offline = self._is_channel_offline()
+        if getattr(self, "_last_is_offline", None) == is_offline:
+            return
+        self._last_is_offline = is_offline
         self.is_offline = is_offline
         if is_offline:
             self.icon_img.set_opacity(0.55)

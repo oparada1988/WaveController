@@ -33,7 +33,7 @@ class SettingsView(Gtk.Box):
         pref_page = Adw.PreferencesPage()
 
         # Group 1: Appearance & Theme
-        grp_theme = Adw.PreferencesGroup(title="Appearance &amp; Theme")
+        grp_theme = Adw.PreferencesGroup(title="Appearance & Theme")
 
         self.theme_row = Adw.SwitchRow(
             title="Use System Theme",
@@ -63,7 +63,7 @@ class SettingsView(Gtk.Box):
         pref_page.add(grp_gen)
 
         # Group 2: Stream Deck & Integration
-        grp_sd = Adw.PreferencesGroup(title="Stream Deck &amp; Volume Controller Plus Integration")
+        grp_sd = Adw.PreferencesGroup(title="Stream Deck & Volume Controller Plus Integration")
 
         ipc_row = Adw.ActionRow(title="Volume Controller Plus IPC Server", subtitle="Unix Socket active at /tmp/wavecontroller.sock")
         ipc_status = Gtk.Label(label="Connected")
@@ -90,7 +90,7 @@ class SettingsView(Gtk.Box):
         pref_page.add(grp_audio)
 
         # Group 4: Diagnostics & Troubleshooting
-        grp_diag = Adw.PreferencesGroup(title="Diagnostics &amp; Troubleshooting")
+        grp_diag = Adw.PreferencesGroup(title="Diagnostics & Troubleshooting")
 
         # Row 1: Active Log File Info + Open Folder
         self.log_info_row = Adw.ActionRow(
@@ -117,7 +117,7 @@ class SettingsView(Gtk.Box):
 
         # Row 2: Export Logs
         export_row = Adw.ActionRow(
-            title="Export Diagnostics &amp; Logs",
+            title="Export Diagnostics & Logs",
             subtitle="Save active log file to disk for troubleshooting or bug reporting"
         )
         
@@ -128,14 +128,14 @@ class SettingsView(Gtk.Box):
 
         def on_export_clicked(btn):
             dialog = Gtk.FileChooserNative.new(
-                "Export WaveController Logs",
-                self.get_root(),
+                "Export Diagnostics & Logs",
+                self.get_root() if hasattr(self, "get_root") else None,
                 Gtk.FileChooserAction.SAVE,
-                "Export",
-                "Cancel"
+                "_Save",
+                "_Cancel"
             )
-            date_str = datetime.now().strftime("%Y-%m-%d")
-            dialog.set_current_name(f"WaveController_Logs_{date_str}.log")
+            import time
+            dialog.set_current_name(f"wavecontroller-diagnostics-{time.strftime('%Y%m%d-%H%M%S')}.log")
 
             def on_response(dlg, response_id):
                 if response_id == Gtk.ResponseType.ACCEPT:
@@ -156,20 +156,20 @@ class SettingsView(Gtk.Box):
 
         # Row 3: Clear Logs
         clear_row = Adw.ActionRow(
-            title="Clear Logs",
-            subtitle="Reset and truncate the active log file"
+            title="Clear Active Log",
+            subtitle="Truncates the log file to reclaim disk space"
         )
         
-        clear_btn = Gtk.Button(label="Clear Logs")
-        clear_btn.set_icon_name("edit-clear-symbolic")
-        clear_btn.add_css_class("flat")
+        clear_btn = Gtk.Button(label="Clear Log")
+        clear_btn.set_icon_name("user-trash-symbolic")
+        clear_btn.add_css_class("destructive-action")
         clear_btn.set_valign(Gtk.Align.CENTER)
 
         def on_clear_clicked(btn):
             clear_logs()
             self._update_log_info()
             clear_btn.set_label("Cleared!")
-            GLib.timeout_add(1500, lambda: (clear_btn.set_label("Clear Logs"), False))
+            GLib.timeout_add(1500, lambda: (clear_btn.set_label("Clear Log"), False))
 
         clear_btn.connect("clicked", on_clear_clicked)
         clear_row.add_suffix(clear_btn)
@@ -178,7 +178,7 @@ class SettingsView(Gtk.Box):
         pref_page.add(grp_diag)
 
         # Group 5: Configuration Backup & Data Management
-        grp_backup = Adw.PreferencesGroup(title="Configuration Backup &amp; Data Management")
+        grp_backup = Adw.PreferencesGroup(title="Configuration Backup & Data Management")
 
         # Row 1: Export Backup
         backup_export_row = Adw.ActionRow(

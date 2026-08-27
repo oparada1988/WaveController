@@ -525,7 +525,7 @@ class USBHardwareManager:
         def _monitor_loop():
             known_keys = set(self.discovered_devices.keys())
             while True:
-                time.sleep(1.5)
+                time.sleep(2.5)
                 try:
                     self.detect_connected_hardware()
                     curr_keys = set(self.discovered_devices.keys())

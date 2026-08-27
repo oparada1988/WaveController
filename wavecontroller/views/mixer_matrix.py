@@ -1155,12 +1155,18 @@ class MixerMatrixView(Gtk.Box):
                 card.refresh_name()
 
     def _on_ui_tick(self) -> bool:
-        # 1. Sync Output Mute Icon
-        sink_id = self._get_selected_output_sink_id()
-        is_muted = self.hardware_mgr.get_output_mute(sink_id)
-        self._update_out_mute_btn(is_muted)
+        # 1. Periodically verify physical hardware connectivity and mute state (~1s interval)
+        self._hw_tick_counter = getattr(self, "_hw_tick_counter", 0) + 1
+        if self._hw_tick_counter % 30 == 0:
+            sink_id = self._get_selected_output_sink_id()
+            if sink_id and self.hardware_mgr:
+                is_muted = self.hardware_mgr.get_output_mute(sink_id)
+                self._update_out_mute_btn(is_muted)
+            for card in self.channel_cards.values():
+                if hasattr(card, "refresh_hardware_state"):
+                    card.refresh_hardware_state()
 
-        # 2. Query each active channel's stereo peaks once per frame (deduplicated)
+        # 2. Query each active channel's stereo peaks once per frame (deduplicated, lock-free)
         cached_peaks = {}
         for ch_id, card in self.channel_cards.items():
             peaks = self.peak_monitor.get_channel_stereo_peaks(ch_id)
@@ -1171,13 +1177,6 @@ class MixerMatrixView(Gtk.Box):
         for (channel_id, mix_id), cell in self.matrix_cells.items():
             p_l, p_r = cached_peaks.get(channel_id, (0.0, 0.0))
             cell.update_peaks(p_l, p_r)
-
-        # 4. Periodically verify physical hardware connectivity states (~1s interval)
-        self._hw_tick_counter = getattr(self, "_hw_tick_counter", 0) + 1
-        if self._hw_tick_counter % 30 == 0:
-            for card in self.channel_cards.values():
-                if hasattr(card, "refresh_hardware_state"):
-                    card.refresh_hardware_state()
 
         return True
 

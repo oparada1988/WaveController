@@ -199,8 +199,9 @@ class WaveControllerApp(Adw.Application):
 
             # Refresh UI faders if window is visible
             win = self.props.active_window
-            if win and hasattr(win, "matrix_view") and hasattr(win.matrix_view, "refresh_all_faders"):
-                win.matrix_view.refresh_all_faders()
+            view = getattr(win, "mixer_view", None) or getattr(win, "matrix_view", None)
+            if view and hasattr(view, "refresh_all_faders"):
+                view.refresh_all_faders()
         except Exception as e:
             log.error(f"[WaveController.Power] Error during system resume restoration: {e}")
         return False  # Run once in GLib main loop

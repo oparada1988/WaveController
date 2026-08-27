@@ -84,7 +84,7 @@ class UnifiedDeviceSettingsView(Gtk.Box):
         pref_page.add(grp_header)
 
         # Group 1: Nickname & Identification
-        grp_ident = Adw.PreferencesGroup(title="Device Identification &amp; Appearance")
+        grp_ident = Adw.PreferencesGroup(title="Device Identification & Appearance")
         
         self.name_entry = Adw.EntryRow(title="Custom Device Nickname")
         curr_alias = self.hardware_mgr.get_device_display_name(self.device_key)
@@ -114,7 +114,7 @@ class UnifiedDeviceSettingsView(Gtk.Box):
 
         # Group 2: Microphone (Input) Section (Duplex or Input-Only)
         if self.device_type in ["duplex", "input"]:
-            grp_mic = Adw.PreferencesGroup(title="Microphone (Audio Input) &amp; Hardware DSP")
+            grp_mic = Adw.PreferencesGroup(title="Microphone (Audio Input) & Hardware DSP")
 
             # VU Meter
             meter_row = Adw.ActionRow(title="Vocal Input Signal", subtitle="Real-time studio audio activity")
@@ -180,7 +180,7 @@ class UnifiedDeviceSettingsView(Gtk.Box):
 
         # Group 3: Headphone Monitor (Output) Section (Duplex or Output-Only)
         if self.device_type in ["duplex", "output"]:
-            grp_out = Adw.PreferencesGroup(title="Headphone Monitor &amp; Audio Output")
+            grp_out = Adw.PreferencesGroup(title="Headphone Monitor & Audio Output")
 
             # Output Volume
             vol_row = Adw.ActionRow(title="Output / Monitor Volume", subtitle="Adjust headphone DAC amplifier level")
@@ -286,7 +286,7 @@ class UnifiedDeviceSettingsView(Gtk.Box):
 
         # Group 5: Exclusive Volume Guard & Protection (Strictly for Elgato Wave Devices)
         if self.is_elgato:
-            grp_guard = Adw.PreferencesGroup(title="Exclusive Volume Guard &amp; Protection")
+            grp_guard = Adw.PreferencesGroup(title="Exclusive Volume Guard & Protection")
             
             if self.device_type in ["duplex", "input"]:
                 excl_mic_row = Adw.SwitchRow(
@@ -309,7 +309,7 @@ class UnifiedDeviceSettingsView(Gtk.Box):
             pref_page.add(grp_guard)
 
         # Group 6: Hardware Diagnostics & Firmware (USB DFU 1.10)
-        grp_diag = Adw.PreferencesGroup(title="Hardware Diagnostics &amp; Firmware")
+        grp_diag = Adw.PreferencesGroup(title="Hardware Diagnostics & Firmware")
         
         info = self.hardware_mgr.get_elgato_device_info()
         fw_version = info.get("fw_version") or "1.3.1"
@@ -746,13 +746,13 @@ class AddDeviceDialog(Adw.Window):
                 page.add(grp)
 
             if input_devs:
-                grp = Adw.PreferencesGroup(title="Microphones &amp; Vocal Inputs")
+                grp = Adw.PreferencesGroup(title="Microphones & Vocal Inputs")
                 for dev in input_devs:
                     grp.add(self._create_device_row(dev))
                 page.add(grp)
 
             if output_devs:
-                grp = Adw.PreferencesGroup(title="Speakers &amp; Headphones (Outputs)")
+                grp = Adw.PreferencesGroup(title="Speakers & Headphones (Outputs)")
                 for dev in output_devs:
                     grp.add(self._create_device_row(dev))
                 page.add(grp)
