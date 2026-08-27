@@ -173,7 +173,7 @@ Icon=com.oparada.WaveController
 Terminal=false
 Type=Application
 Categories=AudioVideo;Audio;Mixer;GTK;
-StartupWMClass=wavecontroller
+StartupWMClass=com.oparada.WaveController
 Keywords=audio;mixer;wave;elgato;pipewire;volume;
 EOF
     chmod +x "${DESKTOP_DIR}/com.oparada.WaveController.desktop"

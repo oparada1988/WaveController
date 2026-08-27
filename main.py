@@ -5,6 +5,20 @@ import os
 # Ensure package path is in sys.path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+# Set process name for system monitors (Resources, top, ps, GNOME System Monitor)
+try:
+    import ctypes
+    libc = ctypes.CDLL(None)
+    libc.prctl(15, b"wavecontroller", 0, 0, 0)
+except Exception:
+    pass
+
+try:
+    import setproctitle
+    setproctitle.setproctitle("wavecontroller")
+except Exception:
+    pass
+
 import gi
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
