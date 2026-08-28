@@ -892,6 +892,11 @@ class ElgatoManager:
                 return dev
         return None
 
+    def get_device(self) -> Optional[ElgatoWaveDevice]:
+        if self.active_device and self.active_device.is_connected():
+            return self.active_device
+        return self.detect_device()
+
     def on_system_suspend(self):
         """Cleanly stops background sync thread and releases USB interface before suspend."""
         self._stop_poll = True

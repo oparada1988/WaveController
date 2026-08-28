@@ -519,6 +519,14 @@ class TestTokenMatchingInvariants(unittest.TestCase):
         self.assertFalse(self.pwm._port_matches_tokens("Chromium:output_FL", chrome_tokens, meta_map),
                          "REGRESSION: Chrome tokens hijacked Discord Chromium stream!")
 
+    def test_elgato_manager_power_and_device_api_invariants(self):
+        """Invariant: ElgatoWaveManager must export get_device, detect_device, on_system_suspend, on_system_resume."""
+        from wavecontroller.engine.elgato_wave import elgato_manager
+        self.assertTrue(callable(getattr(elgato_manager, "get_device", None)), "ElgatoWaveManager missing get_device()")
+        self.assertTrue(callable(getattr(elgato_manager, "detect_device", None)), "ElgatoWaveManager missing detect_device()")
+        self.assertTrue(callable(getattr(elgato_manager, "on_system_suspend", None)), "ElgatoWaveManager missing on_system_suspend()")
+        self.assertTrue(callable(getattr(elgato_manager, "on_system_resume", None)), "ElgatoWaveManager missing on_system_resume()")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
