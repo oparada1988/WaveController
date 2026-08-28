@@ -559,13 +559,21 @@ class PipeWireManager:
                 tokens.add(disp.lower().replace(" ", "-"))
                 tokens.add(disp.lower().replace(" ", "_"))
 
-        # 3. Known hardware device aliases
+        # 3. Known Electron & communication app aliases (WebRTC voice engines & Chromium backends)
+        if any(k in raw for k in ("discord", "slack", "teams", "signal", "whatsapp", "element", "matrix")):
+            tokens.update({"webrtc", "webrtc voiceengine", "webrtc_voiceengine", "chromium"})
+        if any(k in raw for k in ("steam", "steamwebhelper")):
+            tokens.update({"steam", "steamwebhelper", "chromium"})
+        if any(k in raw for k in ("chrome", "google")):
+            tokens.update({"chrome", "google-chrome", "google_chrome", "chromium"})
+
+        # 4. Known hardware device aliases
         if any(w in raw for w in ("wave", "elgato", "0fd9")):
             tokens.update({"wave", "elgato", "0fd9", "wave_xlr", "wave-xlr"})
         if any(w in raw for w in ("fefine", "fifine", "3142")):
             tokens.update({"fifine", "fefine", "3142"})
 
-        # 4. Extract individual distinct alphanumeric words (len >= 3)
+        # 5. Extract individual distinct alphanumeric words (len >= 3)
         stop_words = {
             "the", "and", "for", "with", "player", "media", "audio", "sound",
             "stream", "desktop", "client", "app", "application", "input", "output",
@@ -577,7 +585,43 @@ class PipeWireManager:
         tokens.update(words)
         return tokens
 
-    def _port_matches_tokens(self, port_name: str, tokens: set) -> bool:
+    def _get_active_port_metadata_map(self) -> dict:
+        """Extracts live process binary, application name, and node information for all PipeWire ports."""
+        port_map = {}
+        try:
+            out = subprocess.check_output(["pw-dump"], text=True, stderr=subprocess.DEVNULL)
+            data = json.loads(out)
+            nodes = {obj["id"]: obj for obj in data if obj.get("type") == "PipeWire:Interface:Node"}
+            ports = [obj for obj in data if obj.get("type") == "PipeWire:Interface:Port"]
+            for p in ports:
+                props = p.get("info", {}).get("props", {})
+                p_name = props.get("port.name", "")
+                p_alias = props.get("port.alias", "")
+                node_id = props.get("node.id")
+                n_obj = nodes.get(node_id, {})
+                n_props = n_obj.get("info", {}).get("props", {})
+                n_name = n_props.get("node.name", "")
+                app_name = n_props.get("application.name", "")
+                app_bin = n_props.get("application.process.binary", "")
+                app_id = n_props.get("application.id", "")
+                
+                meta = {
+                    "app_name": app_name,
+                    "binary": app_bin,
+                    "node_name": n_name,
+                    "app_id": app_id
+                }
+                if p_alias:
+                    port_map[p_alias] = meta
+                    port_map[p_alias.lower()] = meta
+                if n_name and p_name:
+                    port_map[f"{n_name}:{p_name}"] = meta
+                    port_map[f"{n_name}:{p_name}".lower()] = meta
+        except Exception:
+            pass
+        return port_map
+
+    def _port_matches_tokens(self, port_name: str, tokens: set, port_meta: dict = None) -> bool:
         """Checks if a PipeWire port belongs to an application or device matching any token."""
         if not port_name or not tokens:
             return False
@@ -595,6 +639,29 @@ class PipeWireManager:
                 return True
             if t in node_part or t in node_clean or node_part.startswith(t):
                 return True
+
+        # Process binary, application name, and node ID cross-referencing (essential for Electron / Chromium / WebRTC)
+        if port_meta:
+            meta = port_meta.get(port_name) or port_meta.get(p_low)
+            if meta:
+                bin_low = str(meta.get("binary", "")).lower()
+                app_low = str(meta.get("app_name", "")).lower()
+                node_low = str(meta.get("node_name", "")).lower()
+                id_low = str(meta.get("app_id", "")).lower()
+                bin_file = bin_low.split("/")[-1].split("\\")[-1]
+
+                for t in tokens:
+                    if len(t) < 3:
+                        continue
+                    if t in bin_file or bin_file == t:
+                        return True
+                    if t in app_low or app_low == t:
+                        return True
+                    if t in node_low or node_low == t:
+                        return True
+                    if t in id_low or id_low == t:
+                        return True
+
         return False
 
     def _bind_app_to_wireplumber_target(self, app_name: str, channel_id: str):
@@ -660,6 +727,7 @@ class PipeWireManager:
 
             links_map = None
             in_ports = None
+            port_meta = self._get_active_port_metadata_map()
 
             for ch in channels_copy:
                 if ch.get("type") == "source":
@@ -671,7 +739,7 @@ class PipeWireManager:
 
                 for app in assigned:
                     tokens = self._get_match_tokens(app)
-                    matched_ports = [p for p in app_ports if self._port_matches_tokens(p, tokens) and ":output_" in p]
+                    matched_ports = [p for p in app_ports if self._port_matches_tokens(p, tokens, port_meta) and ":output_" in p]
                     if not matched_ports:
                         continue
 
@@ -808,10 +876,20 @@ class PipeWireManager:
     KNOWN_AUDIO_BINARIES = {
         "spotify": ("Spotify", "spotify"),
         "discord": ("Discord", "discord"),
+        "discordcanary": ("Discord Canary", "discord"),
+        "discordptb": ("Discord PTB", "discord"),
+        "slack": ("Slack", "slack"),
+        "teams": ("Microsoft Teams", "teams"),
+        "teams-for-linux": ("Microsoft Teams", "teams"),
+        "signal-desktop": ("Signal", "signal"),
+        "signal": ("Signal", "signal"),
+        "whatsapp-for-linux": ("WhatsApp", "whatsapp"),
+        "element-desktop": ("Element", "element"),
         "steam": ("Steam", "steam"),
         "steamwebhelper": ("Steam", "steam"),
         "firefox": ("Firefox", "firefox"),
         "chrome": ("Google Chrome", "google-chrome"),
+        "google-chrome": ("Google Chrome", "google-chrome"),
         "chromium": ("Chromium", "chromium"),
         "brave": ("Brave", "brave-browser"),
         "vlc": ("VLC Media Player", "vlc"),
@@ -822,7 +900,10 @@ class PipeWireManager:
         "obs64": ("OBS Studio", "obs"),
         "cider": ("Cider", "cider"),
         "strawberry": ("Strawberry", "strawberry"),
-        "telegram-desktop": ("Telegram", "telegram")
+        "telegram-desktop": ("Telegram", "telegram"),
+        "telegram": ("Telegram", "telegram"),
+        "skypeforlinux": ("Skype", "skype"),
+        "zoom": ("Zoom", "zoom")
     }
 
     def get_active_application_streams(self) -> list:
@@ -865,6 +946,14 @@ class PipeWireManager:
                     ]
                     if any(kw in name_low or kw in bin_low or kw in node_low or kw in app_id_low for kw in internal_keywords):
                         continue
+
+                    # For Electron and WebRTC streams, map process binary to human-readable application name
+                    bin_file = bin_low.split("/")[-1].split("\\")[-1] if bin_low else ""
+                    if bin_file in self.KNOWN_AUDIO_BINARIES:
+                        known_name, known_icon = self.KNOWN_AUDIO_BINARIES[bin_file]
+                        if name_low in ("chromium", "webrtc voiceengine", "webrtc", "electron", "playback") or not name:
+                            name = known_name
+                            icon = icon or known_icon
                         
                     if name not in seen and name.lower() not in seen:
                         seen.add(name)
@@ -1540,6 +1629,7 @@ class PipeWireManager:
         channels_to_sync = [c for c in channels_copy if channel_id is None or c["id"] == channel_id]
         mixes_to_sync = [m for m in mixes_copy if mix_id is None or m["id"] == mix_id]
         links_map = self._get_pw_links_map()
+        port_meta = self._get_active_port_metadata_map()
 
         for ch in channels_to_sync:
             ch_id = ch["id"]
@@ -1565,7 +1655,7 @@ class PipeWireManager:
                     if p.startswith("output.WaveController_") or p.startswith("WaveController_") or ":monitor_" in p:
                         continue
                     if ":capture_" in p:
-                        if self._port_matches_tokens(p, input_tokens):
+                        if self._port_matches_tokens(p, input_tokens, port_meta):
                             matched_ports.append(p)
                 ch_out_ports = matched_ports
             else:
@@ -1582,7 +1672,7 @@ class PipeWireManager:
                     for p in out_ports:
                         if p.startswith("output.WaveController_") or p.startswith("WaveController_"):
                             continue
-                        if ":output_" in p and self._port_matches_tokens(p, tokens):
+                        if ":output_" in p and self._port_matches_tokens(p, tokens, port_meta):
                             app_out_ports.append(p)
 
                 # Link apps -> channel sink (ingestion point)
