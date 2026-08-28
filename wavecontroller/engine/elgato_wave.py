@@ -357,8 +357,12 @@ class ElgatoWaveDevice:
             }
             log.info(f"Elgato {p.display_name} Info -> FW: {fw_ver}, Serial: {serial} (wIndex=0x{self._active_windex:04X})")
         else:
+            self._active_windex = self.profile.windex
             log.warning(f"Could not read device info for {self.profile.display_name}")
             self.dev_info = {"name": self.profile.display_name, "fw_version": "Unknown", "serial": "Unknown"}
+
+        self._consecutive_errors = 0
+        self._backoff_until = 0.0
 
     def read_config(self) -> bytearray:
         return self._ctrl_read(self.profile.wvalue_config, self.profile.config_len)

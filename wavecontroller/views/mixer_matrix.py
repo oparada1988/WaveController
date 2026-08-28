@@ -358,8 +358,12 @@ class MixerMatrixView(Gtk.Box):
         target_combo = Gtk.DropDown()
         target_combo.set_hexpand(True)
         target_row.append(target_combo)
-        target_row.set_visible(False) # Hidden by default since initial type is Source (Microphone)
+        target_row.set_visible(False)
         box.append(target_row)
+
+        add_btn = Gtk.Button(label="Create Mix")
+        add_btn.add_css_class("suggested-action")
+        add_btn.set_sensitive(False) # Initial state disabled until name and valid target are selected
 
         def update_add_btn_state(*args):
             name_valid = bool(name_entry.get_text().strip())
@@ -529,10 +533,6 @@ class MixerMatrixView(Gtk.Box):
 
         color_box.append(color_swatch_box)
         box.append(color_box)
-
-        add_btn = Gtk.Button(label="Create Mix")
-        add_btn.add_css_class("suggested-action")
-        add_btn.set_sensitive(False) # Initial state disabled until name and valid target are selected
         
         def on_add(b):
             name = name_entry.get_text().strip()
