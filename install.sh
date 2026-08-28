@@ -197,11 +197,16 @@ upgrade_app() {
     print_banner
     echo -e "${BLUE}Upgrading WaveController to latest version...${NC}"
     
-    # If inside git repo, pull latest
+    # If inside git repo, pull latest and install pre-commit regression guard
     if [ -d "${REPO_DIR}/.git" ]; then
         echo -e "${CYAN}Pulling latest changes from git repository...${NC}"
         cd "${REPO_DIR}"
         git pull origin main
+        if [ -f "${REPO_DIR}/scripts/pre-commit-hook.sh" ]; then
+            mkdir -p "${REPO_DIR}/.git/hooks"
+            cp "${REPO_DIR}/scripts/pre-commit-hook.sh" "${REPO_DIR}/.git/hooks/pre-commit"
+            chmod +x "${REPO_DIR}/.git/hooks/pre-commit"
+        fi
     fi
 
     install_core_files
