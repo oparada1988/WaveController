@@ -64,8 +64,20 @@ class StereoSlider(Gtk.DrawingArea):
         else:
             target_l, target_r = peak_l, peak_r
 
-        self.peak_l = min(1.0, max(0.0, target_l))
-        self.peak_r = min(1.0, max(0.0, target_r))
+        # Critically damped broadcast ballistics: smooth rise on beats, natural acoustic gravity release
+        if target_l > self.peak_l:
+            self.peak_l = min(1.0, self.peak_l + (target_l - self.peak_l) * 0.45)
+        else:
+            self.peak_l = max(0.0, self.peak_l + (target_l - self.peak_l) * 0.20)
+            if self.peak_l < 0.005:
+                self.peak_l = 0.0
+
+        if target_r > self.peak_r:
+            self.peak_r = min(1.0, self.peak_r + (target_r - self.peak_r) * 0.45)
+        else:
+            self.peak_r = max(0.0, self.peak_r + (target_r - self.peak_r) * 0.20)
+            if self.peak_r < 0.005:
+                self.peak_r = 0.0
 
         # Only trigger GTK repaint when levels actually change, eliminating idle redraw CPU burn
         if abs(self.peak_l - prev_l) > 0.002 or abs(self.peak_r - prev_r) > 0.002:
