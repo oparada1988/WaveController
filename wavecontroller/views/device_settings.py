@@ -139,46 +139,67 @@ class UnifiedDeviceSettingsView(Gtk.Box):
             is_wave_3 = self.is_elgato and ("wave:3" in self.title_lbl.get_text().lower() or "wave 3" in self.title_lbl.get_text().lower() or "wave_3" in self.device_key.lower() or "wave3" in self.device_key.lower())
             is_wave_xlr = self.is_elgato and ("xlr" in self.device_key.lower() or "xlr" in self.title_lbl.get_text().lower() or "wave xlr" in self.device_info.get("name", "").lower())
 
-            # Preamp Gain Slider (0 to 40 dB for Wave:3, 0 to 75 dB for Wave XLR)
-            max_gain = 40 if is_wave_3 else 75
-            gain_sub = f"Analog condenser microphone preamp gain (0-40 dB) • Current: {self.hardware_mgr.hardware_gain_db} dB" if is_wave_3 else f"Ultra-low-noise microphone preamp with 0-75 dB gain • Current: {self.hardware_mgr.hardware_gain_db} dB"
-            self.gain_row = Adw.ActionRow(title="Analog Preamp Gain", subtitle=gain_sub)
-            self.gain_adj = Gtk.Adjustment(value=min(max_gain, self.hardware_mgr.hardware_gain_db), lower=0, upper=max_gain, step_increment=1, page_increment=5)
-            self.gain_slider = Gtk.Scale(orientation=Gtk.Orientation.HORIZONTAL, adjustment=self.gain_adj)
-            self.gain_slider.set_size_request(180, -1)
-            self.gain_slider.set_valign(Gtk.Align.CENTER)
-            self._gain_handler_id = self.gain_slider.connect("value-changed", self._on_gain_changed)
-            self.gain_row.add_suffix(self.gain_slider)
-            grp_mic.add(self.gain_row)
+            if self.is_elgato:
+                # Preamp Gain Slider (0 to 40 dB for Wave:3, 0 to 75 dB for Wave XLR)
+                max_gain = 40 if is_wave_3 else 75
+                gain_sub = f"Analog condenser microphone preamp gain (0-40 dB) • Current: {self.hardware_mgr.hardware_gain_db} dB" if is_wave_3 else f"Ultra-low-noise microphone preamp with 0-75 dB gain • Current: {self.hardware_mgr.hardware_gain_db} dB"
+                self.gain_row = Adw.ActionRow(title="Analog Preamp Gain", subtitle=gain_sub)
+                self.gain_adj = Gtk.Adjustment(value=min(max_gain, self.hardware_mgr.hardware_gain_db), lower=0, upper=max_gain, step_increment=1, page_increment=5)
+                self.gain_slider = Gtk.Scale(orientation=Gtk.Orientation.HORIZONTAL, adjustment=self.gain_adj)
+                self.gain_slider.set_size_request(180, -1)
+                self.gain_slider.set_valign(Gtk.Align.CENTER)
+                self._gain_handler_id = self.gain_slider.connect("value-changed", self._on_gain_changed)
+                self.gain_row.add_suffix(self.gain_slider)
+                grp_mic.add(self.gain_row)
 
-            # 48V Phantom Power Switch (Strictly for Wave XLR Hardware)
-            if is_wave_xlr:
-                self.phantom_row = Adw.SwitchRow(title="48V Phantom Power", subtitle="Provides 48V DC power to XLR condenser microphones")
-                self.phantom_row.set_active(self.hardware_mgr.phantom_power_48v)
-                self._phantom_handler_id = self.phantom_row.connect("notify::active", self._on_phantom_toggled)
-                grp_mic.add(self.phantom_row)
+                # 48V Phantom Power Switch (Strictly for Wave XLR Hardware)
+                if is_wave_xlr:
+                    self.phantom_row = Adw.SwitchRow(title="48V Phantom Power", subtitle="Provides 48V DC power to XLR condenser microphones")
+                    self.phantom_row.set_active(self.hardware_mgr.phantom_power_48v)
+                    self._phantom_handler_id = self.phantom_row.connect("notify::active", self._on_phantom_toggled)
+                    grp_mic.add(self.phantom_row)
 
-            # Mic Test Direct Loopback
-            listen_row = Adw.ActionRow(title="Mic Test (Direct Loopback)", subtitle="Hear your live voice in headphones to verify levels")
-            self.listen_btn = Gtk.Button(label="Listen to Mic")
-            self.listen_btn.set_icon_name("audio-headset-symbolic")
-            self.listen_btn.set_valign(Gtk.Align.CENTER)
-            self.listen_btn.connect("clicked", self._on_toggle_mic_listen)
-            listen_row.add_suffix(self.listen_btn)
-            grp_mic.add(listen_row)
+                # Mic Test Direct Loopback
+                listen_row = Adw.ActionRow(title="Mic Test (Direct Loopback)", subtitle="Hear your live voice in headphones to verify levels")
+                self.listen_btn = Gtk.Button(label="Listen to Mic")
+                self.listen_btn.set_icon_name("audio-headset-symbolic")
+                self.listen_btn.set_valign(Gtk.Align.CENTER)
+                self.listen_btn.connect("clicked", self._on_toggle_mic_listen)
+                listen_row.add_suffix(self.listen_btn)
+                grp_mic.add(listen_row)
 
-            # Hardware DSP & Filters
-            self.clipguard_row = Adw.SwitchRow(title="Clipguard Protection", subtitle="Dual-stage analog limiter prevents vocal clipping")
-            self.clipguard_row.set_active(self.hardware_mgr.clipguard_enabled)
-            self._clipguard_handler_id = self.clipguard_row.connect("notify::active", lambda r, *a: self.hardware_mgr.toggle_clipguard())
-            grp_mic.add(self.clipguard_row)
+                # Hardware DSP & Filters
+                self.clipguard_row = Adw.SwitchRow(title="Clipguard Protection", subtitle="Dual-stage analog limiter prevents vocal clipping")
+                self.clipguard_row.set_active(self.hardware_mgr.clipguard_enabled)
+                self._clipguard_handler_id = self.clipguard_row.connect("notify::active", lambda r, *a: self.hardware_mgr.toggle_clipguard())
+                grp_mic.add(self.clipguard_row)
 
-            self.low_cut_row = Adw.ComboRow(title="Enhanced Low-Cut Filter", subtitle="Hardware DSP high-pass filter removing desk rumble")
-            self.low_cut_model = Gtk.StringList.new(["Off", "80 Hz", "120 Hz"])
-            self.low_cut_row.set_model(self.low_cut_model)
-            self.low_cut_row.set_selected(1 if self.hardware_mgr.low_cut_filter == "80Hz" else (2 if self.hardware_mgr.low_cut_filter == "120Hz" else 0))
-            self._low_cut_handler_id = self.low_cut_row.connect("notify::selected", self._on_low_cut_changed)
-            grp_mic.add(self.low_cut_row)
+                self.low_cut_row = Adw.ComboRow(title="Enhanced Low-Cut Filter", subtitle="Hardware DSP high-pass filter removing desk rumble")
+                self.low_cut_model = Gtk.StringList.new(["Off", "80 Hz", "120 Hz"])
+                self.low_cut_row.set_model(self.low_cut_model)
+                self.low_cut_row.set_selected(1 if self.hardware_mgr.low_cut_filter == "80Hz" else (2 if self.hardware_mgr.low_cut_filter == "120Hz" else 0))
+                self._low_cut_handler_id = self.low_cut_row.connect("notify::selected", self._on_low_cut_changed)
+                grp_mic.add(self.low_cut_row)
+            else:
+                # Generic Device Input Capture Level (0 to 100%)
+                curr_inp_vol = self.hardware_mgr.get_output_volume(self.device_key) # Reuses wpctl query
+                self.gain_row = Adw.ActionRow(title="Input Capture Level", subtitle=f"{curr_inp_vol}%")
+                self.gain_adj = Gtk.Adjustment(value=curr_inp_vol, lower=0, upper=100, step_increment=1, page_increment=5)
+                self.gain_slider = Gtk.Scale(orientation=Gtk.Orientation.HORIZONTAL, adjustment=self.gain_adj)
+                self.gain_slider.set_size_request(180, -1)
+                self.gain_slider.set_valign(Gtk.Align.CENTER)
+                self._gain_handler_id = self.gain_slider.connect("value-changed", self._on_gain_changed)
+                self.gain_row.add_suffix(self.gain_slider)
+                grp_mic.add(self.gain_row)
+
+                # Mic Test Direct Loopback
+                listen_row = Adw.ActionRow(title="Mic Test (Direct Loopback)", subtitle="Hear your live voice in headphones to verify levels")
+                self.listen_btn = Gtk.Button(label="Listen to Mic")
+                self.listen_btn.set_icon_name("audio-headset-symbolic")
+                self.listen_btn.set_valign(Gtk.Align.CENTER)
+                self.listen_btn.connect("clicked", self._on_toggle_mic_listen)
+                listen_row.add_suffix(self.listen_btn)
+                grp_mic.add(listen_row)
 
             pref_page.add(grp_mic)
 
@@ -187,7 +208,7 @@ class UnifiedDeviceSettingsView(Gtk.Box):
             grp_out = Adw.PreferencesGroup(title="Headphone Monitor &amp; Audio Output")
 
             # Output Volume
-            vol_row = Adw.ActionRow(title="Output / Monitor Volume", subtitle="Adjust headphone DAC amplifier level")
+            vol_row = Adw.ActionRow(title="Output / Monitor Volume", subtitle="Adjust sound card / DAC amplifier level")
             curr_vol = self.hardware_mgr.get_output_volume(self.device_key)
             self.vol_adj = Gtk.Adjustment(value=curr_vol, lower=0, upper=100, step_increment=1, page_increment=5)
             self.vol_slider = Gtk.Scale(orientation=Gtk.Orientation.HORIZONTAL, adjustment=self.vol_adj)
@@ -197,26 +218,27 @@ class UnifiedDeviceSettingsView(Gtk.Box):
             vol_row.add_suffix(self.vol_slider)
             grp_out.add(vol_row)
 
-            # Direct Mic / PC Audio Crossfade (Monitor Mix)
-            bal_row = Adw.ActionRow(title="Mic / PC Audio Balance (Monitor Mix)", subtitle="Hardware zero-latency sidetone crossfader")
-            curr_mix = self.hardware_mgr.get_monitor_mix()
-            self.bal_adj = Gtk.Adjustment(value=curr_mix, lower=0, upper=100, step_increment=1, page_increment=5)
-            self.bal_slider = Gtk.Scale(orientation=Gtk.Orientation.HORIZONTAL, adjustment=self.bal_adj)
-            self.bal_slider.set_size_request(180, -1)
-            self.bal_slider.set_valign(Gtk.Align.CENTER)
-            self.bal_slider.set_draw_value(False)
-            self.bal_slider.add_mark(50, Gtk.PositionType.BOTTOM, None)
-            self.bal_slider.add_css_class("wave-balance-fader")
-            self._bal_handler_id = self.bal_slider.connect("value-changed", self._on_balance_changed)
-            bal_row.add_suffix(self.bal_slider)
-            grp_out.add(bal_row)
+            if self.is_elgato:
+                # Direct Mic / PC Audio Crossfade (Monitor Mix)
+                bal_row = Adw.ActionRow(title="Mic / PC Audio Balance (Monitor Mix)", subtitle="Hardware zero-latency sidetone crossfader")
+                curr_mix = self.hardware_mgr.get_monitor_mix()
+                self.bal_adj = Gtk.Adjustment(value=curr_mix, lower=0, upper=100, step_increment=1, page_increment=5)
+                self.bal_slider = Gtk.Scale(orientation=Gtk.Orientation.HORIZONTAL, adjustment=self.bal_adj)
+                self.bal_slider.set_size_request(180, -1)
+                self.bal_slider.set_valign(Gtk.Align.CENTER)
+                self.bal_slider.set_draw_value(False)
+                self.bal_slider.add_mark(50, Gtk.PositionType.BOTTOM, None)
+                self.bal_slider.add_css_class("wave-balance-fader")
+                self._bal_handler_id = self.bal_slider.connect("value-changed", self._on_balance_changed)
+                bal_row.add_suffix(self.bal_slider)
+                grp_out.add(bal_row)
 
-            # Low-Impedance Mode Switch (Strictly for Wave XLR)
-            if is_wave_xlr:
-                self.low_z_row = Adw.SwitchRow(title="Low-Impedance Headphone Mode", subtitle="Optimized for sensitive In-Ear Monitors (IEMs)")
-                self.low_z_row.set_active(self.hardware_mgr.low_impedance_mode)
-                self._low_z_handler_id = self.low_z_row.connect("notify::active", lambda r, *a: self.hardware_mgr.toggle_low_impedance())
-                grp_out.add(self.low_z_row)
+                # Low-Impedance Mode Switch (Strictly for Wave XLR)
+                if is_wave_xlr:
+                    self.low_z_row = Adw.SwitchRow(title="Low-Impedance Headphone Mode", subtitle="Optimized for sensitive In-Ear Monitors (IEMs)")
+                    self.low_z_row.set_active(self.hardware_mgr.low_impedance_mode)
+                    self._low_z_handler_id = self.low_z_row.connect("notify::active", lambda r, *a: self.hardware_mgr.toggle_low_impedance())
+                    grp_out.add(self.low_z_row)
 
             # Output Mute
             mute_row = Adw.ActionRow(title="Output Mute", subtitle="Mute sound output to this device")
@@ -535,7 +557,10 @@ class UnifiedDeviceSettingsView(Gtk.Box):
             return
         val = int(self.gain_adj.get_value())
         self.hardware_mgr.set_gain(val, self.device_key, transient=True)
-        self.gain_row.set_subtitle(f"{val} dB")
+        if self.is_elgato:
+            self.gain_row.set_subtitle(f"{val} dB")
+        else:
+            self.gain_row.set_subtitle(f"{val}%")
 
     def _on_balance_changed(self, scale):
         if getattr(self, "_syncing_from_hw", False):
@@ -584,6 +609,7 @@ class UnifiedDeviceSettingsView(Gtk.Box):
         idx = row.get_selected()
         if self.pipewire_mgr and idx < len(self.pipewire_mgr.mixes):
             mix = self.pipewire_mgr.mixes[idx]
+            self.pipewire_mgr.update_mix(mix["id"], target_device=self.device_key)
             self.hardware_mgr.set_device_assigned_mix(self.device_key, mix["id"])
 
     def _on_meter_tick(self) -> bool:

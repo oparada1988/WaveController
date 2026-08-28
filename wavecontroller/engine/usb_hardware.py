@@ -947,23 +947,27 @@ class USBHardwareManager:
 
     # Input Gain & Hardware DSP Controls
     def set_gain(self, gain_db: int, source_id_or_key: str = None, transient: bool = False):
-        self.hardware_gain_db = max(0, min(75, gain_db))
-        self._last_gain_set_time = time.time()
-        hw = dict(config_manager.get("hardware_settings", {}))
-        hw["gain_db"] = self.hardware_gain_db
-        config_manager.set("hardware_settings", hw)
-
         elgato_dev = elgato_manager.get_device()
-        if elgato_dev and self._is_target_elgato(source_id_or_key):
-            elgato_dev.set_gain_db(self.hardware_gain_db, transient=transient)
+        is_elgato = self._is_target_elgato(source_id_or_key)
+
+        if is_elgato:
+            self.hardware_gain_db = max(0, min(75, gain_db))
+            self._last_gain_set_time = time.time()
+            if not transient:
+                hw = dict(config_manager.get("hardware_settings", {}))
+                hw["gain_db"] = self.hardware_gain_db
+                config_manager.set("hardware_settings", hw)
+
+            if elgato_dev:
+                elgato_dev.set_gain_db(self.hardware_gain_db, transient=transient)
+            self.notify_hardware_listeners({"gain_db": self.hardware_gain_db}, {"gain_db": self.hardware_gain_db})
         else:
-            vol_pct = self.hardware_gain_db / 75.0
+            vol_pct = max(0.0, min(1.5, float(gain_db) / 100.0))
             target = self._resolve_source_target(source_id_or_key)
             try:
                 subprocess.run(["wpctl", "set-volume", target, f"{vol_pct:.2f}"], stderr=subprocess.DEVNULL)
             except Exception:
                 pass
-        self.notify_hardware_listeners({"gain_db": self.hardware_gain_db}, {"gain_db": self.hardware_gain_db})
 
     def set_phantom_power(self, enabled: bool) -> bool:
         self.phantom_power_48v = bool(enabled)
