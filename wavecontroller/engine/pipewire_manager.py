@@ -320,7 +320,6 @@ class PipeWireManager:
         """Restores all channel master volumes, submix faders, and audio routing after system resume."""
         log.info("[WaveController.PipeWire] System resumed: restoring channel volumes and routing...")
         self._is_sleeping = False
-        time.sleep(0.3)
         self._refresh_node_cache()
 
         # 1. Re-assert all Channel Master Volumes

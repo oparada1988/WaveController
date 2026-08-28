@@ -64,9 +64,6 @@ def _init_libusb():
                 ctypes.c_uint16, ctypes.c_uint16,
                 ctypes.POINTER(ctypes.c_ubyte), ctypes.c_uint16, ctypes.c_uint,
             ]
-            _lib.libusb_exit.argtypes = [ctypes.c_void_p]
-            _lib.libusb_exit.restype = None
-
             _lib_ctx = ctypes.c_void_p()
             ret = _lib.libusb_init(ctypes.byref(_lib_ctx))
             if ret != 0:
@@ -76,25 +73,6 @@ def _init_libusb():
             log.error(f"Failed to load libusb library: {e}")
             _lib = None
     return _lib
-
-def _reset_libusb_context():
-    """Flushes and re-initializes libusb device enumeration tables upon system wake."""
-    global _lib, _lib_ctx
-    with _lib_lock:
-        if _lib and _lib_ctx:
-            try:
-                _lib.libusb_exit(_lib_ctx)
-            except Exception:
-                pass
-            _lib_ctx = ctypes.c_void_p()
-            try:
-                ret = _lib.libusb_init(ctypes.byref(_lib_ctx))
-                if ret == 0:
-                    log.info("Successfully re-initialized libusb context after system wake")
-                else:
-                    log.warning(f"libusb_init on resume returned code {ret}")
-            except Exception as e:
-                log.warning(f"Failed to re-init libusb context on resume: {e}")
 
 
 @dataclass(frozen=True)
@@ -908,10 +886,13 @@ class ElgatoManager:
     def __init__(self):
         self.active_device: Optional[ElgatoWaveDevice] = None
         self._stop_poll = False
+        self._is_sleeping = False
         self._poll_thread: Optional[threading.Thread] = None
         self.on_state_changed = None # Callback when hardware dial/mute/48V changes physically
 
     def detect_device(self) -> Optional[ElgatoWaveDevice]:
+        if self._is_sleeping:
+            return None
         for p in ELGATO_PROFILES:
             dev = ElgatoWaveDevice(p)
             if dev.connect():
@@ -921,12 +902,15 @@ class ElgatoManager:
         return None
 
     def get_device(self) -> Optional[ElgatoWaveDevice]:
+        if self._is_sleeping:
+            return None
         if self.active_device and self.active_device.is_connected():
             return self.active_device
         return self.detect_device()
 
     def on_system_suspend(self):
         """Cleanly stops background sync thread and releases USB interface before suspend."""
+        self._is_sleeping = True
         self._stop_poll = True
         if self._poll_thread and self._poll_thread.is_alive():
             try:
@@ -943,8 +927,8 @@ class ElgatoManager:
 
     def on_system_resume(self):
         """Restores background sync loop and reconnects Elgato hardware after wake."""
+        self._is_sleeping = False
         self._stop_poll = False
-        _reset_libusb_context()
         dev = self.detect_device()
         if dev:
             self._start_sync_loop()
@@ -961,6 +945,9 @@ class ElgatoManager:
         self.last_state = {}
         while not self._stop_poll:
             time.sleep(0.025) # 40 Hz polling for real-time, zero-latency dial and 48V sync
+            if self._is_sleeping:
+                time.sleep(0.5)
+                continue
             dev = self.active_device
             if not dev or not dev.is_connected():
                 time.sleep(0.5)
