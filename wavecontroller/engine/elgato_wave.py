@@ -285,6 +285,8 @@ class ElgatoWaveDevice:
 
         buf = (ctypes.c_ubyte * length)()
         with self._lock:
+            if not self._handle or not _lib:
+                raise RuntimeError("Device disconnected during transfer")
             ret = _lib.libusb_control_transfer(
                 self._handle, RT_CLASS_IN, BREQUEST_READ, wValue, self._active_windex,
                 buf, length, 500
@@ -310,6 +312,8 @@ class ElgatoWaveDevice:
 
         buf = (ctypes.c_ubyte * len(data))(*data)
         with self._lock:
+            if not self._handle or not _lib:
+                raise RuntimeError("Device disconnected during transfer")
             ret = _lib.libusb_control_transfer(
                 self._handle, RT_CLASS_OUT, BREQUEST_WRITE, wValue, self._active_windex,
                 buf, len(data), 500
@@ -888,10 +892,28 @@ class ElgatoManager:
                 return dev
         return None
 
-    def get_device(self) -> Optional[ElgatoWaveDevice]:
-        if self.active_device and self.active_device.is_connected():
-            return self.active_device
-        return self.detect_device()
+    def on_system_suspend(self):
+        """Cleanly stops background sync thread and releases USB interface before suspend."""
+        self._stop_poll = True
+        if self._poll_thread and self._poll_thread.is_alive():
+            try:
+                self._poll_thread.join(timeout=0.2)
+            except Exception:
+                pass
+        self._poll_thread = None
+        if self.active_device:
+            try:
+                self.active_device.disconnect()
+            except Exception:
+                pass
+        self.active_device = None
+
+    def on_system_resume(self):
+        """Restores background sync loop and reconnects Elgato hardware after wake."""
+        self._stop_poll = False
+        dev = self.detect_device()
+        if dev:
+            self._start_sync_loop()
 
     def _start_sync_loop(self):
         if self._poll_thread and self._poll_thread.is_alive():

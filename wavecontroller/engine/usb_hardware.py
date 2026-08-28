@@ -478,9 +478,7 @@ class USBHardwareManager:
         log.info("[WaveController.Hardware] System going to sleep: marking hardware as suspended...")
         self._is_sleeping = True
         self._elgato_initialized = False
-        dev = elgato_manager.get_device()
-        if dev:
-            dev.disconnect()
+        elgato_manager.on_system_suspend()
 
     def on_system_resume(self):
         """Restores physical USB hardware and applies saved configuration after system wake."""
@@ -491,13 +489,9 @@ class USBHardwareManager:
         self._last_hp_set_time = time.time() + 2.5
         self._elgato_initialized = False
 
-        # Disconnect any stale USB handles
+        # Restore Elgato manager & hardware
+        elgato_manager.on_system_resume()
         dev = elgato_manager.get_device()
-        if dev:
-            dev.disconnect()
-
-        # Re-detect physical Elgato device
-        dev = elgato_manager.detect_device()
         if dev and dev.is_connected():
             self.apply_saved_hardware_settings(dev)
             self._elgato_initialized = True

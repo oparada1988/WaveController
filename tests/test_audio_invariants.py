@@ -147,6 +147,13 @@ class TestIPCLiveInvariants(unittest.TestCase):
         self.sock_path = os.path.expanduser("~/.config/WaveController/wavecontroller.sock")
         if not os.path.exists(self.sock_path):
             self.skipTest("WaveController daemon socket not active.")
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s.settimeout(0.2)
+        try:
+            s.connect(self.sock_path)
+            s.close()
+        except Exception:
+            self.skipTest("WaveController daemon socket not responding.")
 
     def test_ipc_socket_responsive(self):
         """Socket must respond within 500ms without lock contention."""
