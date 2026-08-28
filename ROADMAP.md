@@ -41,11 +41,15 @@ This document tracks the technical milestones and core engine enhancements for W
 ---
 
 ## Milestone 4: Integrated Visual PipeWire Routing Graph and Patchbay
-**Focus**: An interactive, real-time visual routing graph built directly into WaveController for complete signal flow visibility.
+**Focus**: An interactive, real-time visual routing graph built directly into WaveController for complete signal flow visibility and studio patchbay organization.
 * **GitHub Milestone**: [Milestone 4](https://github.com/oparada1988/WaveController/milestone/4)
 
 ### Key Objectives
 * [ ] **Interactive Visual Canvas**: Dedicated tab displaying live signal flow from Applications to Ingestion Channels, Submix Matrix Faders, Mix Buses, and Physical Outputs.
-* [ ] **Live Signal Flow Visuals**: Animated patch cables with color-coded stream indicators for active playback, mix buses, and microphones.
+* [ ] **Dual-Mode Cable Routing Engine**:
+  * **Organic Flow Mode**: Dynamic cubic Bézier splines with adaptive slack, tension, and fluid drag responsiveness.
+  * **Structured Grid-Snapped Mode**: Orthogonal 90-degree Manhattan routing with smooth 8px rounded corner fillets and crossover bridge hops to eliminate cable spaghetti.
+* [ ] **Live Animated Signal Flow**: Real-time pulse particles moving along cables reflecting active audio level and flow direction.
+* [ ] **Single-Click Auto-Arrange Layout**: Automatically organizes nodes into clean logical columns (Applications → Channels → Submix Matrix → Physical Outputs).
 * [ ] **Real-Time Node Telemetry**: Embedded mini-VU meters and volume indicators directly on graph node blocks.
 * [ ] **Signal Flow Diagnostics**: Click any node or link to inspect PipeWire properties, port IDs, buffer latency, and format specifications.
