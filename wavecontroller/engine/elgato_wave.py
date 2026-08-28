@@ -293,9 +293,10 @@ class ElgatoWaveDevice:
             )
         if ret < 0:
             self._consecutive_errors += 1
-            if self._consecutive_errors >= 3:
-                backoff_duration = min(5.0, 0.25 * (2 ** (self._consecutive_errors - 3)))
-                self._backoff_until = time.time() + backoff_duration
+            if self._consecutive_errors >= 2 or ret in (-1, -4, -99):
+                log.warning(f"Elgato {self.profile.display_name} USB connection lost (error {ret}). Releasing handle for auto-recovery.")
+                self.disconnect()
+                raise RuntimeError(f"USB connection lost (error {ret})")
             raise RuntimeError(f"USB control read failed (error {ret})")
         
         self._consecutive_errors = 0
@@ -320,9 +321,10 @@ class ElgatoWaveDevice:
             )
         if ret < 0:
             self._consecutive_errors += 1
-            if self._consecutive_errors >= 3:
-                backoff_duration = min(5.0, 0.25 * (2 ** (self._consecutive_errors - 3)))
-                self._backoff_until = time.time() + backoff_duration
+            if self._consecutive_errors >= 2 or ret in (-1, -4, -99):
+                log.warning(f"Elgato {self.profile.display_name} USB connection lost (error {ret}). Releasing handle for auto-recovery.")
+                self.disconnect()
+                raise RuntimeError(f"USB connection lost (error {ret})")
             raise RuntimeError(f"USB control write failed (error {ret})")
 
         self._consecutive_errors = 0
@@ -934,8 +936,12 @@ class ElgatoManager:
             time.sleep(0.025) # 40 Hz polling for real-time, zero-latency dial and 48V sync
             dev = self.active_device
             if not dev or not dev.is_connected():
-                time.sleep(1.0)
-                continue
+                time.sleep(0.5)
+                dev = self.detect_device()
+                if not dev or not dev.is_connected():
+                    continue
+                else:
+                    self.last_state = {}
             try:
                 curr = dev.get_all_state()
                 if not curr.get("connected"):

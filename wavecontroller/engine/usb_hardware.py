@@ -485,34 +485,34 @@ class USBHardwareManager:
         log.info("[WaveController.Hardware] System resumed: restoring USB audio hardware and saved configuration...")
         self._is_sleeping = False
         self._restoring_hardware = True
-        self._last_gain_set_time = time.time() + 2.5
-        self._last_hp_set_time = time.time() + 2.5
+        self._last_gain_set_time = time.time() + 3.0
+        self._last_hp_set_time = time.time() + 3.0
         self._elgato_initialized = False
 
-        # Restore Elgato manager & hardware
-        elgato_manager.on_system_resume()
-        dev = elgato_manager.get_device()
-        if dev and dev.is_connected():
-            self.apply_saved_hardware_settings(dev)
-            self._elgato_initialized = True
-            log.info(f"[WaveController.Hardware] Successfully restored settings to {dev.profile.display_name}")
-
-            # Notify listeners of current hardware state
-            try:
-                curr = dev.get_all_state()
-                self.notify_hardware_listeners(curr, {
-                    "gain_db": self.hardware_gain_db,
-                    "hp_volume_pct": self.headphone_volume,
-                    "monitor_mix_pct": self.monitor_mix,
-                    "mute": self.hardware_mute
-                })
-            except Exception:
-                pass
-
-        def _clear_restoring():
+        def _do_restore():
             time.sleep(0.8)
+            elgato_manager.on_system_resume()
+            dev = elgato_manager.get_device()
+            if dev and dev.is_connected():
+                self.apply_saved_hardware_settings(dev)
+                self._elgato_initialized = True
+                log.info(f"[WaveController.Hardware] Successfully restored settings to {dev.profile.display_name}")
+
+                # Notify listeners of current hardware state
+                try:
+                    curr = dev.get_all_state()
+                    self.notify_hardware_listeners(curr, {
+                        "gain_db": self.hardware_gain_db,
+                        "hp_volume_pct": self.headphone_volume,
+                        "monitor_mix_pct": self.monitor_mix,
+                        "mute": self.hardware_mute
+                    })
+                except Exception:
+                    pass
+            time.sleep(0.5)
             self._restoring_hardware = False
-        threading.Thread(target=_clear_restoring, daemon=True).start()
+
+        threading.Thread(target=_do_restore, daemon=True).start()
 
     def _start_hotplug_monitor(self):
         """Background worker checking for newly attached or detached hardware devices."""
@@ -520,6 +520,8 @@ class USBHardwareManager:
             known_keys = set(self.discovered_devices.keys())
             while True:
                 time.sleep(2.5)
+                if self._is_sleeping:
+                    continue
                 try:
                     self.detect_connected_hardware()
                     curr_keys = set(self.discovered_devices.keys())
