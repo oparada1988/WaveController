@@ -625,10 +625,41 @@ class PipeWireManager:
         """Checks if a PipeWire port belongs to an application or device matching any token."""
         if not port_name or not tokens:
             return False
+
+        # Ignore internal submix loops, meters, and virtual adapters
+        if port_name.startswith("output.WaveController_") or port_name.startswith("WaveController_") or port_name.startswith("wave_"):
+            return False
+
         p_low = port_name.lower()
         node_part = p_low.split(":")[0]
         node_clean = node_part.replace("-", " ").replace("_", " ")
 
+        # 1. Primary Priority: Authoritative process binary metadata (prevents Electron / Chromium collisions)
+        if port_meta:
+            meta = port_meta.get(port_name) or port_meta.get(p_low)
+            if meta:
+                bin_raw = str(meta.get("binary", "")).strip()
+                if bin_raw:
+                    bin_file = bin_raw.lower().split("/")[-1].split("\\")[-1]
+                    # If we have a process binary, matching MUST be consistent with that binary
+                    matches_binary = any(t in bin_file or bin_file == t or t in bin_raw.lower() for t in tokens if len(t) >= 3)
+                    if matches_binary:
+                        return True
+                    else:
+                        # Binary is known and does NOT match tokens (e.g. Binary is Discord, tokens are Chrome)
+                        # Block fallback string matching to prevent hijacking!
+                        return False
+
+                # If no binary, check specific application name / application id
+                app_raw = str(meta.get("app_name", "")).strip().lower()
+                if app_raw and app_raw not in ("chromium", "playback", "webrtc voiceengine"):
+                    matches_app = any(t in app_raw or app_raw == t for t in tokens if len(t) >= 3)
+                    if matches_app:
+                        return True
+                    else:
+                        return False
+
+        # 2. Fallback Priority: Generic node string matching (when process binary is unavailable)
         if node_part in tokens or node_clean in tokens:
             return True
 
@@ -639,28 +670,6 @@ class PipeWireManager:
                 return True
             if t in node_part or t in node_clean or node_part.startswith(t):
                 return True
-
-        # Process binary, application name, and node ID cross-referencing (essential for Electron / Chromium / WebRTC)
-        if port_meta:
-            meta = port_meta.get(port_name) or port_meta.get(p_low)
-            if meta:
-                bin_low = str(meta.get("binary", "")).lower()
-                app_low = str(meta.get("app_name", "")).lower()
-                node_low = str(meta.get("node_name", "")).lower()
-                id_low = str(meta.get("app_id", "")).lower()
-                bin_file = bin_low.split("/")[-1].split("\\")[-1]
-
-                for t in tokens:
-                    if len(t) < 3:
-                        continue
-                    if t in bin_file or bin_file == t:
-                        return True
-                    if t in app_low or app_low == t:
-                        return True
-                    if t in node_low or node_low == t:
-                        return True
-                    if t in id_low or id_low == t:
-                        return True
 
         return False
 
@@ -680,13 +689,14 @@ class PipeWireManager:
                         n_name = props.get("node.name", "").lower()
                         n_id = props.get("application.id", "").lower()
                         
+                        bin_file = n_bin.split("/")[-1].split("\\")[-1] if n_bin else ""
                         match = False
-                        for t in tokens:
-                            if len(t) < 3:
-                                continue
-                            if t in n_app or t in n_bin or t in n_name or t in n_id or n_app.startswith(t):
-                                match = True
-                                break
+                        if bin_file:
+                            match = any(t in bin_file or bin_file == t or t in n_bin for t in tokens if len(t) >= 3)
+                        elif n_app and n_app not in ("chromium", "playback", "webrtc voiceengine"):
+                            match = any(t in n_app or n_app == t for t in tokens if len(t) >= 3)
+                        else:
+                            match = any(t in n_name or t in n_id for t in tokens if len(t) >= 3)
 
                         if match:
                             nid = obj["id"]
