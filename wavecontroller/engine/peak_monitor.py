@@ -360,7 +360,7 @@ class MultiChannelPeakMonitor:
                     for ch in getattr(self.pipewire_mgr, "channels", []):
                         ch_id = ch.get("id", "")
                         if (clean_name.startswith(f"{ch_id}_") or clean_name == ch_id) and ch_id not in active_channels:
-                            active_channels[ch_id] = (node_part, 2, False)
+                            active_channels[ch_id] = (node_part, 2, True)
                             break
 
         # 2. Active Input / Microphone Channels (Physical ALSA Capture nodes)
@@ -549,7 +549,7 @@ class MultiChannelPeakMonitor:
                     self._last_mic_peaks = {"left": m_l, "right": m_r, "peak": max(m_l, m_r)}
 
                     # Physical microphone channels ONLY get physical microphone level
-                    for ch in ["mic", "microphone", "fefine", "fifine", "elgato_wave_xlr", "wave", "wave_xlr", "input", "system_capture"]:
+                    for ch in ["mic", "microphone", "elgato_wave_xlr", "wave_xlr", "input", "system_capture"]:
                         self.peaks[ch] = {"left": m_l, "right": m_r, "peak": max(m_l, m_r)}
 
                     # 1. Personal Mix bus receives direct hardware sink monitor levels
@@ -609,7 +609,7 @@ class MultiChannelPeakMonitor:
                                     ch_scale = ch_sub_vol * ch_master_vol * mx_vol_frac
 
                                     # Obtain channel level
-                                    is_source = (ch.get("type") == "source") or any(k in ch_id.lower() for k in ("mic", "fefine", "microphone", "wave", "elgato", "input", "capture"))
+                                    is_source = (ch.get("type") == "source") or any(k in ch_id.lower() for k in ("mic", "microphone", "elgato_wave", "wave_xlr", "capture_mono"))
                                     if is_source:
                                         c_l, c_r = m_l, m_r
                                     else:

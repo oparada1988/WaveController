@@ -1256,10 +1256,15 @@ class MixerMatrixView(Gtk.Box):
             cached_peaks[ch_id] = peaks
             card.update_peaks(peaks[0], peaks[1])
 
-        # 3. Push cached peaks to each sub-mix cell (eliminating repeated lock acquisitions)
+        # 3. Push cached peaks to each sub-mix cell (attenuated by per-cell volume and mute state)
         for (channel_id, mix_id), cell in self.matrix_cells.items():
             p_l, p_r = cached_peaks.get(channel_id, (0.0, 0.0))
-            cell.update_peaks(p_l, p_r)
+            st = self.pipewire_mgr.get_channel_state(channel_id, mix_id)
+            if st.get("muted", False) or not st.get("enabled", True):
+                cell.update_peaks(0.0, 0.0)
+            else:
+                vol_scale = max(0.0, min(1.5, st.get("volume", 80) / 100.0))
+                cell.update_peaks(p_l * vol_scale, p_r * vol_scale)
 
         return True
 
