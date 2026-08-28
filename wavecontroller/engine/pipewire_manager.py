@@ -62,6 +62,8 @@ class PipeWireManager:
         self._submix_procs = {} # {(channel_id, mix_id): subprocess.Popen}
         self._submix_node_ids = {} # {(channel_id, mix_id): [node_id, ...]}
         self._mix_node_ids_cache = {} # {mix_id: [node_id, ...]}
+        self._in_flight_nodes = set()
+        self._pending_node_dispatches = {}
         self._bound_stream_nodes = set()
         self.on_external_change_callback = None
         self._is_sleeping = False
@@ -1166,8 +1168,36 @@ class PipeWireManager:
         self._sync_mix_physical_output_routing(canon_mix)
         return new_mute
 
+    def _dispatch_node_volume(self, node_id: str, gain: float, is_muted: bool):
+        """
+        Dispatches volume to a PipeWire node with strict single in-flight queuing.
+        Prevents WirePlumber process backlog during high-speed mouse dragging (60-120 FPS).
+        """
+        n_id_str = str(node_id)
+        with self._lock:
+            self._pending_node_dispatches[n_id_str] = (gain, is_muted)
+            if n_id_str in self._in_flight_nodes:
+                return
+            self._in_flight_nodes.add(n_id_str)
+
+        def _worker(nid: str):
+            while True:
+                with self._lock:
+                    target = self._pending_node_dispatches.pop(nid, None)
+                    if target is None:
+                        self._in_flight_nodes.discard(nid)
+                        break
+                g_val, m_val = target
+                try:
+                    subprocess.run(["wpctl", "set-volume", nid, f"{g_val:.4f}"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    subprocess.run(["wpctl", "set-mute", nid, "1" if m_val else "0"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                except Exception:
+                    pass
+
+        threading.Thread(target=_worker, args=(n_id_str,), daemon=True).start()
+
     def _apply_submix_gain(self, ch_id: str, m_id: str, vol_pct: int, is_muted: bool):
-        """Applies independent sub-mix attenuation to dedicated PipeWire loopback stream node using cubic perceptual gain."""
+        """Applies independent sub-mix attenuation to dedicated PipeWire loopback stream node using broadcast fader curve."""
         canon_mix = self._match_mix_id(m_id)
         key = (ch_id, canon_mix)
         node_name = f"WaveController_submix_{ch_id}_{canon_mix}"
@@ -1175,49 +1205,39 @@ class PipeWireManager:
         
         node_ids = self._submix_node_ids.get(key, [])
         if not node_ids:
-            for attempt in range(6):
-                try:
-                    out = subprocess.check_output(["pw-dump"], text=True, stderr=subprocess.DEVNULL)
-                    data = json.loads(out)
-                    found = []
+            try:
+                out = subprocess.check_output(["pw-dump"], text=True, stderr=subprocess.DEVNULL)
+                data = json.loads(out)
+                found = []
+                for obj in data:
+                    if obj.get("type") == "PipeWire:Interface:Node":
+                        props = obj.get("info", {}).get("props", {})
+                        n_name = props.get("node.name", "").lower()
+                        if node_name.lower() in n_name:
+                            # Target strictly the playback output stream to avoid double attenuation with capture input
+                            if n_name.startswith("output.") or props.get("media.class") == "Stream/Output/Audio":
+                                found.append(str(obj["id"]))
+                            elif n_name.startswith("input.") or props.get("media.class") == "Stream/Input/Audio":
+                                try:
+                                    self._dispatch_node_volume(str(obj["id"]), 1.00, False)
+                                except Exception:
+                                    pass
+                if not found:
                     for obj in data:
                         if obj.get("type") == "PipeWire:Interface:Node":
                             props = obj.get("info", {}).get("props", {})
                             n_name = props.get("node.name", "").lower()
                             if node_name.lower() in n_name:
-                                # Target strictly the playback output stream to avoid double attenuation with capture input
-                                if n_name.startswith("output.") or props.get("media.class") == "Stream/Output/Audio":
-                                    found.append(str(obj["id"]))
-                                elif n_name.startswith("input.") or props.get("media.class") == "Stream/Input/Audio":
-                                    try:
-                                        subprocess.run(["wpctl", "set-volume", str(obj["id"]), "1.00"], stderr=subprocess.DEVNULL)
-                                        subprocess.run(["wpctl", "set-mute", str(obj["id"]), "0"], stderr=subprocess.DEVNULL)
-                                    except Exception:
-                                        pass
-                    if not found:
-                        for obj in data:
-                            if obj.get("type") == "PipeWire:Interface:Node":
-                                props = obj.get("info", {}).get("props", {})
-                                n_name = props.get("node.name", "").lower()
-                                if node_name.lower() in n_name:
-                                    found.append(str(obj["id"]))
-                                    break
-                    if found:
-                        self._submix_node_ids[key] = found
-                        node_ids = found
-                        break
-                    elif attempt < 5:
-                        time.sleep(0.04)
-                except Exception:
-                    pass
+                                found.append(str(obj["id"]))
+                                break
+                if found:
+                    self._submix_node_ids[key] = found
+                    node_ids = found
+            except Exception:
+                pass
 
         for n_id in node_ids:
-            try:
-                subprocess.Popen(["wpctl", "set-volume", str(n_id), f"{gain:.4f}"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                subprocess.Popen(["wpctl", "set-mute", str(n_id), "1" if is_muted else "0"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            except Exception:
-                with self._lock:
-                    self._submix_node_ids.pop(key, None)
+            self._dispatch_node_volume(n_id, gain, is_muted)
 
     def _ensure_submix_loopback(self, ch_id: str, m_id: str, vol_pct: int, is_muted: bool):
         """Provisions an isolated, ultra-low latency sub-mix loopback stream with independent hardware DSP gain."""
@@ -1310,12 +1330,10 @@ class PipeWireManager:
         return new_mute
 
     def _volume_worker_loop(self):
-        """Persistent worker thread dispatching coalesced volume updates with zero drag latency and broadcast fader curve."""
+        """Persistent worker thread dispatching coalesced volume updates with single in-flight zero drag latency."""
         while self.running:
             self._volume_event.wait(timeout=0.5)
             self._volume_event.clear()
-            # Coalesce high-frequency mouse drag events (60-120 Hz) into clean 100 FPS updates with zero queue backlog
-            time.sleep(0.010)
 
             if time.time() - self._last_cache_time > 5.0:
                 self._refresh_node_cache()
@@ -1336,11 +1354,7 @@ class PipeWireManager:
                     last_v, last_m = getattr(self, "_last_mic_dispatch", (-1.0, None))
                     if abs(last_v - gain) > 0.001 or last_m != is_muted:
                         self._last_mic_dispatch = (gain, is_muted)
-                        try:
-                            subprocess.Popen(["wpctl", "set-volume", "@DEFAULT_AUDIO_SOURCE@", f"{gain:.4f}"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                            subprocess.Popen(["wpctl", "set-mute", "@DEFAULT_AUDIO_SOURCE@", "1" if is_muted else "0"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                        except Exception:
-                            pass
+                        self._dispatch_node_volume("@DEFAULT_AUDIO_SOURCE@", gain, is_muted)
                     continue
 
                 assigned_app_names = self.get_assigned_apps(channel_id)
@@ -1375,11 +1389,7 @@ class PipeWireManager:
 
                     sink_gain = 1.00 if self.is_channel_linked(channel_id) else gain
                     for s_id in sink_node_ids:
-                        try:
-                            subprocess.Popen(["wpctl", "set-volume", str(s_id), f"{sink_gain:.4f}"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                            subprocess.Popen(["wpctl", "set-mute", str(s_id), "1" if is_muted else "0"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                        except Exception:
-                            pass
+                        self._dispatch_node_volume(str(s_id), sink_gain, is_muted)
                     continue
 
                 # Priority 1: Direct volume dispatch to the channel's dedicated virtual sink adapter
@@ -1412,11 +1422,7 @@ class PipeWireManager:
                                         target_node_ids.update(node_ids)
 
                 for node_id in target_node_ids:
-                    try:
-                        subprocess.Popen(["wpctl", "set-volume", str(node_id), f"{gain:.4f}"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                        subprocess.Popen(["wpctl", "set-mute", str(node_id), "1" if is_muted else "0"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                    except Exception:
-                        pass
+                    self._dispatch_node_volume(str(node_id), gain, is_muted)
 
             # 2. Process Independent Sub-Mix Gain Dispatches
             for (ch_id, m_id), (volume_pct, is_muted) in pending_submix.items():
@@ -1427,11 +1433,7 @@ class PipeWireManager:
                 mix_gain = self._pct_to_pipewire_gain(volume_pct)
                 node_ids = self._get_mix_node_ids(mix_id)
                 for n_id in node_ids:
-                    try:
-                        subprocess.Popen(["wpctl", "set-volume", str(n_id), f"{mix_gain:.4f}"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                        subprocess.Popen(["wpctl", "set-mute", str(n_id), "1" if is_muted else "0"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                    except Exception:
-                        pass
+                    self._dispatch_node_volume(str(n_id), mix_gain, is_muted)
 
     def toggle_channel_link(self, channel_id: str, mix_id: str) -> bool:
         with self._lock:
