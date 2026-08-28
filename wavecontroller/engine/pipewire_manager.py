@@ -1052,6 +1052,16 @@ class PipeWireManager:
                     return m["id"]
         return target_low
 
+    @staticmethod
+    def _pct_to_pipewire_gain(vol_pct: int) -> float:
+        """
+        Converts 0-100% volume slider percentage to PipeWire cubic perceptual amplitude gain.
+        Formula: (vol_pct / 100.0) ** 3
+        Provides silky-smooth, 1:1 acoustic linearity matching human hearing (50% = -18 dB / half perceived loudness).
+        """
+        frac = max(0.0, min(1.5, float(vol_pct) / 100.0))
+        return frac ** 3
+
     def _get_mix_node_ids(self, mix_id: str) -> list:
         canon_mix = self._match_mix_id(mix_id)
         with self._lock:
@@ -1062,10 +1072,6 @@ class PipeWireManager:
         ids = []
         target_sink = f"wavecontroller_{canon_mix.lower()}_sink"
         target_src = f"wavecontroller_{canon_mix.lower()}_source"
-        with self._lock:
-            mix_obj = next((m for m in self.mixes if m["id"] == canon_mix), None)
-            target_dev = mix_obj.get("target_device") if mix_obj else None
-            m_type = mix_obj.get("type", "source") if mix_obj else "source"
 
         try:
             out = subprocess.check_output(["pw-dump"], text=True, stderr=subprocess.DEVNULL)
@@ -1074,17 +1080,11 @@ class PipeWireManager:
                 if obj.get("type") == "PipeWire:Interface:Node":
                     props = obj.get("info", {}).get("props", {})
                     n_name = props.get("node.name", "").lower()
-                    media_class = props.get("media.class", "")
                     obj_id = str(obj["id"])
                     
+                    # Target strictly the dedicated virtual mix bus adapter for single-point gain staging
                     if target_sink in n_name or target_src in n_name:
                         ids.append(obj_id)
-                    elif (m_type == "sink" or "personal" in canon_mix) and target_dev and target_dev != "none":
-                        # Exclude Elgato physical USB hardware nodes to prevent ALSA UAC2 hardware volume fights
-                        if "elgato" not in target_dev.lower() and "wave" not in target_dev.lower():
-                            clean_target = target_dev.replace("alsa_card.", "").replace("alsa_output.", "").replace("alsa_input.", "").strip().lower()
-                            if media_class == "Audio/Sink" and (clean_target in n_name or clean_target in props.get("node.description", "").lower()):
-                                ids.append(obj_id)
         except Exception:
             pass
 
@@ -1154,11 +1154,11 @@ class PipeWireManager:
         return new_mute
 
     def _apply_submix_gain(self, ch_id: str, m_id: str, vol_pct: int, is_muted: bool):
-        """Applies independent sub-mix attenuation to dedicated PipeWire loopback stream node."""
+        """Applies independent sub-mix attenuation to dedicated PipeWire loopback stream node using cubic perceptual gain."""
         canon_mix = self._match_mix_id(m_id)
         key = (ch_id, canon_mix)
         node_name = f"WaveController_submix_{ch_id}_{canon_mix}"
-        vol_frac = max(0.0, min(1.5, vol_pct / 100.0))
+        gain = self._pct_to_pipewire_gain(vol_pct)
         
         node_ids = self._submix_node_ids.get(key, [])
         if not node_ids:
@@ -1200,7 +1200,7 @@ class PipeWireManager:
 
         for n_id in node_ids:
             try:
-                subprocess.Popen(["wpctl", "set-volume", str(n_id), f"{vol_frac:.2f}"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                subprocess.Popen(["wpctl", "set-volume", str(n_id), f"{gain:.4f}"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 subprocess.Popen(["wpctl", "set-mute", str(n_id), "1" if is_muted else "0"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             except Exception:
                 with self._lock:
@@ -1281,23 +1281,12 @@ class PipeWireManager:
         """Mutes or unmutes a channel within a specific virtual mix bus (independent per-mix mute)."""
         canon_mix = self._match_mix_id(mix_id)
         with self._lock:
-            if channel_id in self.channel_states:
-                if canon_mix in self.channel_states[channel_id]:
-                    self.channel_states[channel_id][canon_mix]["muted"] = muted
-                else:
-                    self.channel_states[channel_id][canon_mix] = {
-                        "volume": 80,
-                        "muted": muted,
-                        "linked": self.is_channel_linked(channel_id),
-                        "enabled": True
-                    }
-                self._save_state_to_config(immediate=False)
-
-        vol = self.channel_states.get(channel_id, {}).get(canon_mix, {}).get("volume", 80)
-        with self._lock:
+            if channel_id in self.channel_states and canon_mix in self.channel_states[channel_id]:
+                self.channel_states[channel_id][canon_mix]["muted"] = muted
+            vol = self.get_channel_volume(channel_id, canon_mix)
             self._submix_volume_queue[(channel_id, canon_mix)] = (vol, muted)
             self._volume_event.set()
-        self._sync_channel_audio_routing(channel_id)
+            self._save_state_to_config(immediate=False)
 
     def toggle_channel_mute(self, channel_id: str, mix_id: str) -> bool:
         """Toggles mute state within a specific virtual mix bus."""
@@ -1308,7 +1297,7 @@ class PipeWireManager:
         return new_mute
 
     def _volume_worker_loop(self):
-        """Persistent worker thread dispatching coalesced volume updates with zero drag latency."""
+        """Persistent worker thread dispatching coalesced volume updates with zero drag latency and cubic perceptual scaling."""
         while self.running:
             self._volume_event.wait(timeout=0.5)
             self._volume_event.clear()
@@ -1326,14 +1315,14 @@ class PipeWireManager:
 
             # 1. Process Master Channel Volume Dispatches
             for channel_id, (volume_pct, is_muted) in pending_master.items():
-                vol_frac = max(0.0, min(1.5, volume_pct / 100.0))
+                gain = self._pct_to_pipewire_gain(volume_pct)
 
                 if channel_id == "mic":
                     last_v, last_m = getattr(self, "_last_mic_dispatch", (-1.0, None))
-                    if abs(last_v - vol_frac) > 0.005 or last_m != is_muted:
-                        self._last_mic_dispatch = (vol_frac, is_muted)
+                    if abs(last_v - gain) > 0.001 or last_m != is_muted:
+                        self._last_mic_dispatch = (gain, is_muted)
                         try:
-                            subprocess.Popen(["wpctl", "set-volume", "@DEFAULT_AUDIO_SOURCE@", f"{vol_frac:.2f}"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                            subprocess.Popen(["wpctl", "set-volume", "@DEFAULT_AUDIO_SOURCE@", f"{gain:.4f}"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                             subprocess.Popen(["wpctl", "set-mute", "@DEFAULT_AUDIO_SOURCE@", "1" if is_muted else "0"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                         except Exception:
                             pass
@@ -1369,10 +1358,10 @@ class PipeWireManager:
                             if ch_sink_name in self._node_cache:
                                 sink_node_ids.update(self._node_cache[ch_sink_name])
 
-                    sink_vol_frac = 1.00 if self.is_channel_linked(channel_id) else vol_frac
+                    sink_gain = 1.00 if self.is_channel_linked(channel_id) else gain
                     for s_id in sink_node_ids:
                         try:
-                            subprocess.Popen(["wpctl", "set-volume", str(s_id), f"{sink_vol_frac:.2f}"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                            subprocess.Popen(["wpctl", "set-volume", str(s_id), f"{sink_gain:.4f}"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                             subprocess.Popen(["wpctl", "set-mute", str(s_id), "1" if is_muted else "0"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                         except Exception:
                             pass
@@ -1409,7 +1398,7 @@ class PipeWireManager:
 
                 for node_id in target_node_ids:
                     try:
-                        subprocess.Popen(["wpctl", "set-volume", str(node_id), f"{vol_frac:.2f}"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                        subprocess.Popen(["wpctl", "set-volume", str(node_id), f"{gain:.4f}"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                         subprocess.Popen(["wpctl", "set-mute", str(node_id), "1" if is_muted else "0"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                     except Exception:
                         pass
@@ -1420,11 +1409,11 @@ class PipeWireManager:
 
             # 3. Process Mix Master Bus Output Volume Dispatches
             for mix_id, (volume_pct, is_muted) in pending_mix.items():
-                vol_frac = max(0.0, min(1.5, volume_pct / 100.0))
+                mix_gain = self._pct_to_pipewire_gain(volume_pct)
                 node_ids = self._get_mix_node_ids(mix_id)
                 for n_id in node_ids:
                     try:
-                        subprocess.Popen(["wpctl", "set-volume", str(n_id), f"{vol_frac:.2f}"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                        subprocess.Popen(["wpctl", "set-volume", str(n_id), f"{mix_gain:.4f}"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                         subprocess.Popen(["wpctl", "set-mute", str(n_id), "1" if is_muted else "0"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                     except Exception:
                         pass

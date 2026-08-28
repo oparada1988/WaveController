@@ -395,6 +395,13 @@ class TestTokenMatchingInvariants(unittest.TestCase):
         self.assertIn("stream_mix", self.pwm.channel_states["discord"])
         self.assertEqual(self.pwm.channel_states["discord"]["stream_mix"]["volume"], 80)
 
+    def test_cubic_perceptual_loudness_curve(self):
+        """Invariant: Volume percentage must map to cubic perceptual loudness gain (50% = 0.125 / -18 dB)."""
+        from wavecontroller.engine.pipewire_manager import PipeWireManager
+        self.assertAlmostEqual(PipeWireManager._pct_to_pipewire_gain(100), 1.000, places=3)
+        self.assertAlmostEqual(PipeWireManager._pct_to_pipewire_gain(50), 0.125, places=3)
+        self.assertAlmostEqual(PipeWireManager._pct_to_pipewire_gain(0), 0.000, places=3)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
