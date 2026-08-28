@@ -112,14 +112,14 @@ class TestPipeWireTopologyInvariants(unittest.TestCase):
             )
 
     def test_no_direct_app_hardware_bypass(self):
-        """Assigned applications like Spotify must NOT have direct links to alsa_output when WaveController channel exists."""
+        """Assigned applications like Spotify must NOT have direct links to alsa_output when WaveController is active."""
         if not self.links_out:
             self.skipTest("PipeWire not running.")
 
         has_spotify = "spotify:output_" in self.links_out
-        has_spotify_channel = "WaveController_Channel_spotify" in self.links_out
+        has_wavecontroller = "WaveController" in self.links_out
 
-        if has_spotify and has_spotify_channel:
+        if has_spotify and has_wavecontroller:
             spotify_dests = []
             current_node = None
             for line in self.links_out.splitlines():
@@ -267,12 +267,12 @@ class TestTokenMatchingInvariants(unittest.TestCase):
     def test_application_streams_excluded_from_volume_cache(self):
         """Invariant: Client application playback streams must NEVER be cached for volume dispatch."""
         self.pwm._node_cache = {
-            "wavecontroller_channel_spotify": ["110"],
+            "output.wavecontroller_submix_spotify_personal_mix": ["110"],
             "spotify": ["114"]
         }
-        # Channel sink lookup for "spotify" must resolve to the virtual sink "110", NEVER application stream "114"
-        ch_sink = f"wavecontroller_channel_spotify"
-        matched_ids = self.pwm._node_cache.get(ch_sink, [])
+        # Submix lookup for "spotify" must resolve to the loopback node "110", NEVER application stream "114"
+        sub_node = "output.wavecontroller_submix_spotify_personal_mix"
+        matched_ids = self.pwm._node_cache.get(sub_node, [])
         self.assertIn("110", matched_ids)
         self.assertNotIn("114", matched_ids)
 

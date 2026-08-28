@@ -170,14 +170,7 @@ class PipeWireManager:
                 node_name = f"WaveController_{m_id}_Source"
                 needed_nodes[node_name] = (f"WaveController {m_name}", "Audio/Source/Virtual")
 
-        # Per-channel ingestion sinks for playback application channels
-        for ch in channels_copy:
-            ch_id = ch["id"]
-            ch_name = ch.get("name", ch_id)
-            is_source = (ch.get("type") == "source") or any(k in ch_id.lower() for k in ("mic", "fefine", "microphone", "wave", "elgato", "input", "capture"))
-            if not is_source:
-                node_name = f"WaveController_Channel_{ch_id}"
-                needed_nodes[node_name] = (f"WaveController {ch_name} Channel", "Audio/Sink")
+        # Per-channel ingestion is handled directly by submix loopback faders (no intermediate Audio/Sink nodes)
 
         existing_active_names = set()
         try:
@@ -711,7 +704,7 @@ class PipeWireManager:
 
     def _reconcile_app_streams_fast(self):
         """Ultra-fast reactive stream interceptor ensuring assigned apps
-        are immediately attached to their dedicated channel sink and severed from default mix leaks."""
+        are immediately attached to their active submix faders and severed from default mix leaks."""
         with self._lock:
             has_assigned = any(bool(apps) for apps in self.assigned_apps.values())
         if not has_assigned:
@@ -735,8 +728,7 @@ class PipeWireManager:
             with self._lock:
                 channels_copy = list(self.channels)
 
-            links_map = None
-            in_ports = None
+            links_map = self._get_pw_links_map()
             port_meta = self._get_active_port_metadata_map()
 
             for ch in channels_copy:
@@ -753,43 +745,21 @@ class PipeWireManager:
                     if not matched_ports:
                         continue
 
-                    if in_ports is None:
-                        i_raw = subprocess.check_output(["pw-link", "-i"], text=True, stderr=subprocess.DEVNULL)
-                        in_ports = [l.strip() for l in i_raw.splitlines() if l.strip()]
-
-                    ch_prefix = f"WaveController_Channel_{ch_id}:"
-                    ch_in_ports = [p for p in in_ports if p.startswith(ch_prefix) and ":playback_" in p]
-                    if not ch_in_ports:
-                        continue
-
-                    if links_map is None:
-                        links_map = self._get_pw_links_map()
-
-                    # 1. Connect to channel ingestion sink if not already linked
-                    need_link = False
+                    need_sync = False
+                    submix_prefix = f"input.WaveController_submix_{ch_id}_"
                     for sp in matched_ports:
                         connected_dests = links_map.get(sp, set())
-                        if not any(dp.startswith(ch_prefix) for dp in connected_dests):
-                            need_link = True
+                        # If leaking directly to hardware or mix sinks (bypassing matrix)
+                        if any(dp.startswith("alsa_output.") or (dp.startswith("WaveController_") and not dp.startswith("input.WaveController_submix_")) for dp in connected_dests):
+                            need_sync = True
+                            break
+                        # Or if not connected to any submix faders
+                        if not any(dp.startswith(submix_prefix) for dp in connected_dests):
+                            need_sync = True
                             break
 
-                    if need_link:
-                        self._link_stereo_ports(matched_ports, ch_in_ports, unlink=False)
-                        self._bind_app_to_wireplumber_target(app, ch_id)
-                        # Immediately sync downstream channel routing so audio flows through assigned mix without delay
+                    if need_sync:
                         self._sync_channel_audio_routing(channel_id=ch_id)
-
-                    # 2. Immediately sever any leaking links to physical outputs or other mix sinks
-                    for sp in matched_ports:
-                        connected_dests = links_map.get(sp, set())
-                        for dp in connected_dests:
-                            if dp.startswith(ch_prefix):
-                                continue
-                            if dp.startswith("alsa_output.") or (dp.startswith("WaveController_") and ":playback_" in dp):
-                                try:
-                                    subprocess.run(["pw-link", "-d", sp, dp], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                                except Exception:
-                                    pass
         except Exception:
             pass
 
@@ -1669,12 +1639,7 @@ class PipeWireManager:
                             matched_ports.append(p)
                 ch_out_ports = matched_ports
             else:
-                # Route through per-channel ingestion sink
-                ch_sink_prefix = f"WaveController_Channel_{ch_id}:"
-                ch_sink_out_ports = [p for p in out_ports if p.startswith(ch_sink_prefix) and ":monitor_" in p]
-                ch_sink_in_ports = [p for p in in_ports if p.startswith(ch_sink_prefix) and ":playback_" in p]
-
-                # Find actual application output ports
+                # Direct Submix Ingestion: Find actual application output ports
                 app_out_ports = []
                 assigned = self.get_assigned_apps(ch_id)
                 for app in assigned:
@@ -1685,16 +1650,10 @@ class PipeWireManager:
                         if ":output_" in p and self._port_matches_tokens(p, tokens, port_meta):
                             app_out_ports.append(p)
 
-                # Link apps -> channel sink (ingestion point)
-                if ch_sink_in_ports and app_out_ports:
-                    self._link_stereo_ports(app_out_ports, ch_sink_in_ports, unlink=False)
-
-                # Use channel sink monitor ports as the output for downstream mix routing
-                ch_out_ports = ch_sink_out_ports
+                ch_out_ports = app_out_ports
 
             if not is_source_channel and app_out_ports:
                 # Ensure assigned apps don't directly play out to physical hardware sinks or mix sinks (bypass isolation)
-                own_prefix = f"WaveController_Channel_{ch_id}:"
                 for src_p in app_out_ports:
                     src_links = links_map.get(src_p, set())
                     for linked_dest in list(src_links):
@@ -1703,13 +1662,12 @@ class PipeWireManager:
                                 subprocess.run(["pw-link", "-d", src_p, linked_dest], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                             except Exception:
                                 pass
-                        # Also sever links to mix sinks or OTHER channel sinks (prevent bypass & bleed)
-                        elif linked_dest.startswith("WaveController_") and ":playback_" in linked_dest:
-                            if not linked_dest.startswith(own_prefix):
-                                try:
-                                    subprocess.run(["pw-link", "-d", src_p, linked_dest], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                                except Exception:
-                                    pass
+                        # Also sever direct links to mix sinks (prevent unattenuated bypass leaks)
+                        elif linked_dest.startswith("WaveController_") and not linked_dest.startswith("input.WaveController_submix_"):
+                            try:
+                                subprocess.run(["pw-link", "-d", src_p, linked_dest], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                            except Exception:
+                                pass
 
             # Proactively sever ANY existing links from this channel to mixes where it is disabled
             for src_p in ch_out_ports:

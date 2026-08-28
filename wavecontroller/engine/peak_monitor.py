@@ -351,12 +351,17 @@ class MultiChannelPeakMonitor:
         # Map channel_id -> (target_node_name, channel_count, is_sink)
         active_channels = {}
 
-        # 1. Active Playback Channel Sinks (WaveController_Channel_<id>:monitor_FL)
+        # 1. Active Playback Channels: Target the submix input loopback monitor
         for p in all_ports:
-            if p.startswith("WaveController_Channel_") and ":monitor_" in p:
-                ch_node = p.split(":")[0]  # e.g. "WaveController_Channel_spotify"
-                ch_id = ch_node.replace("WaveController_Channel_", "")
-                active_channels[ch_id] = (ch_node, 2, True)
+            if p.startswith("input.WaveController_submix_") and ":monitor_" in p:
+                node_part = p.split(":")[0]  # e.g. "input.WaveController_submix_spotify_personal_mix"
+                clean_name = node_part.replace("input.WaveController_submix_", "")
+                if self.pipewire_mgr:
+                    for ch in getattr(self.pipewire_mgr, "channels", []):
+                        ch_id = ch.get("id", "")
+                        if (clean_name.startswith(f"{ch_id}_") or clean_name == ch_id) and ch_id not in active_channels:
+                            active_channels[ch_id] = (node_part, 2, False)
+                            break
 
         # 2. Active Input / Microphone Channels (Physical ALSA Capture nodes)
         if self.pipewire_mgr:
