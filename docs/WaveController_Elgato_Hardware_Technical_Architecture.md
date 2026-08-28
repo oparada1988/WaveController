@@ -324,4 +324,4 @@ curl -fsSL https://raw.githubusercontent.com/oparada1988/WaveController/main/dat
 
 ---
 
-*Document compiled and verified against WaveController v0.0.1.1 (Alpha 1, Pre-Alpha 1).*
+*Document compiled and verified against WaveController v0.0.1.2 (Pre-Alpha 2).*
