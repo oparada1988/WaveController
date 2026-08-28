@@ -119,13 +119,45 @@ def main():
     print("Perform your actions in the GUI whenever you're ready!\n", flush=True)
 
     event_start_times = {}
+    last_socket_states = {}
+    last_socket_masters = {}
+    last_socket_mixes = {}
 
     try:
         while True:
             t_now = time.time()
             t_str = get_timestamp()
 
-            # 1. Config Check
+            # 0. Live Socket State Check (30 Hz Zero-Debounce)
+            ipc_data = query_ipc_peaks()
+            if ipc_data and ipc_data.get("status") == "ok":
+                # Master Channels
+                curr_masters = ipc_data.get("channel_master_states", {})
+                for cid, st in curr_masters.items():
+                    old_st = last_socket_masters.get(cid, {})
+                    if st.get("volume") != old_st.get("volume") or st.get("muted") != old_st.get("muted"):
+                        print(f"[{t_str}] \033[96m[LIVE FADER: CHANNEL MASTER]\033[0m Channel '{cid}': Vol={st.get('volume')}%, Muted={st.get('muted')}", flush=True)
+                last_socket_masters = {k: dict(v) for k, v in curr_masters.items()}
+
+                # Submix Faders
+                curr_ch_states = ipc_data.get("channel_states", {})
+                for cid, m_map in curr_ch_states.items():
+                    old_m_map = last_socket_states.get(cid, {})
+                    for mid, st in m_map.items():
+                        old_st = old_m_map.get(mid, {})
+                        if st.get("volume") != old_st.get("volume") or st.get("muted") != old_st.get("muted"):
+                            print(f"[{t_str}] \033[93m[LIVE FADER: SUBMIX]\033[0m Channel '{cid}' -> Mix '{mid}': Vol={st.get('volume')}%, Muted={st.get('muted')}", flush=True)
+                last_socket_states = {k: {m: dict(v) for m, v in mv.items()} for k, mv in curr_ch_states.items()}
+
+                # Mix Masters
+                curr_mixes = ipc_data.get("mix_states", {})
+                for mid, st in curr_mixes.items():
+                    old_st = last_socket_mixes.get(mid, {})
+                    if st.get("volume") != old_st.get("volume") or st.get("muted") != old_st.get("muted"):
+                        print(f"[{t_str}] \033[94m[LIVE FADER: MASTER MIX]\033[0m Mix '{mid}': Vol={st.get('volume')}%, Muted={st.get('muted')}", flush=True)
+                last_socket_mixes = {k: dict(v) for k, v in curr_mixes.items()}
+
+            # 1. Config Check (Disk Sync)
             curr_config = {}
             if os.path.exists(CONFIG_PATH):
                 try:
