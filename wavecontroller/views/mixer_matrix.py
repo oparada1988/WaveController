@@ -573,7 +573,7 @@ class MixerMatrixView(Gtk.Box):
         actions_box.set_margin_top(4)
 
         cancel_btn = Gtk.Button(label="Cancel")
-        cancel_btn.add_css_class("flat")
+        cancel_btn.add_css_class("destructive-action")
         cancel_btn.set_hexpand(True)
         cancel_btn.connect("clicked", lambda b: (reset_create_mix_form(), popover.popdown()))
         actions_box.append(cancel_btn)
@@ -675,7 +675,7 @@ class MixerMatrixView(Gtk.Box):
         cat_box.append(dev_cat_btn)
 
         cat_cancel_btn = Gtk.Button(label="Cancel")
-        cat_cancel_btn.add_css_class("flat")
+        cat_cancel_btn.add_css_class("destructive-action")
         cat_cancel_btn.set_margin_top(4)
         cat_cancel_btn.connect("clicked", lambda b: popover.popdown())
         cat_box.append(cat_cancel_btn)
@@ -913,7 +913,7 @@ class MixerMatrixView(Gtk.Box):
         app_page_box.append(cust_app_box)
 
         app_cancel_btn = Gtk.Button(label="Cancel")
-        app_cancel_btn.add_css_class("flat")
+        app_cancel_btn.add_css_class("destructive-action")
         app_cancel_btn.connect("clicked", lambda b: popover.popdown())
         app_page_box.append(app_cancel_btn)
 
@@ -950,7 +950,7 @@ class MixerMatrixView(Gtk.Box):
         dev_page_box.append(dev_list_container)
 
         dev_cancel_btn = Gtk.Button(label="Cancel")
-        dev_cancel_btn.add_css_class("flat")
+        dev_cancel_btn.add_css_class("destructive-action")
         dev_cancel_btn.connect("clicked", lambda b: popover.popdown())
         dev_page_box.append(dev_cancel_btn)
 
