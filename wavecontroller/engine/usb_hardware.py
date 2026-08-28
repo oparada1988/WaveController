@@ -790,15 +790,20 @@ class USBHardwareManager:
             config_manager.set("hardware_settings", hw, immediate=False)
         target = self._resolve_sink_target(sink_id_or_key)
         vol_frac = max(0.0, min(1.5, self.headphone_volume / 100.0))
-        if not self._is_target_elgato(sink_id_or_key):
-            try:
-                subprocess.run(["wpctl", "set-volume", target, f"{vol_frac:.2f}"], stderr=subprocess.DEVNULL)
-            except Exception:
-                pass
+        is_elgato = self._is_target_elgato(sink_id_or_key)
+        if not is_elgato:
+            # Never attenuate virtual WaveController mix sinks when changing output headphone volume!
+            # Only physical hardware sinks (e.g. Realtek ALSA) receive PipeWire volume.
+            is_virtual = "wavecontroller" in str(target).lower() or target == "@DEFAULT_AUDIO_SINK@"
+            if not is_virtual:
+                try:
+                    subprocess.run(["wpctl", "set-volume", target, f"{vol_frac:.2f}"], stderr=subprocess.DEVNULL)
+                except Exception:
+                    pass
 
         # Sync to Elgato hardware if applicable
         elgato_dev = elgato_manager.get_device()
-        if elgato_dev and self._is_target_elgato(sink_id_or_key):
+        if elgato_dev and is_elgato:
             elgato_dev.set_headphone_volume_pct(self.headphone_volume, transient=transient)
 
     def get_monitor_mix(self) -> int:
@@ -931,8 +936,10 @@ class USBHardwareManager:
         return "@DEFAULT_AUDIO_SOURCE@"
 
     def _is_target_elgato(self, key_or_id: str = None) -> bool:
+        elgato_dev = elgato_manager.get_device()
+        has_elgato = bool(elgato_dev and getattr(elgato_dev, "is_connected", False))
         if not key_or_id:
-            return self.is_elgato or self.device_type == "elgato"
+            return has_elgato or self.is_elgato or self.device_type == "elgato"
         k = str(key_or_id)
         if k in self.discovered_devices:
             return self.discovered_devices[k].get("is_elgato", False)

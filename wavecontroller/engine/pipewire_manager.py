@@ -226,6 +226,20 @@ class PipeWireManager:
         # Real-time synchronization of PipeWire port connections (pw-link)
         self._sync_channel_audio_routing()
 
+        # Enforce all configured volumes to override stale WirePlumber state on startup
+        with self._lock:
+            for ch in self.channels:
+                ch_id = ch["id"]
+                st_dict = self.channel_states.get(ch_id, {})
+                for mx_id, st in st_dict.items():
+                    if self.is_channel_mix_enabled(ch_id, mx_id):
+                        self._submix_volume_queue[(ch_id, mx_id)] = (st.get("volume", 100), st.get("muted", False))
+            for mx in self.mixes:
+                mx_id = mx["id"]
+                st = self.mix_states.get(mx_id, {})
+                self._mix_volume_queue[mx_id] = (st.get("volume", 100), st.get("muted", False))
+            self._volume_event.set()
+
     def stop(self):
         self.running = False
         self._volume_event.set()
@@ -1148,38 +1162,41 @@ class PipeWireManager:
         
         node_ids = self._submix_node_ids.get(key, [])
         if not node_ids:
-            try:
-                out = subprocess.check_output(["pw-dump"], text=True, stderr=subprocess.DEVNULL)
-                data = json.loads(out)
-                found = []
-                for obj in data:
-                    if obj.get("type") == "PipeWire:Interface:Node":
-                        props = obj.get("info", {}).get("props", {})
-                        n_name = props.get("node.name", "").lower()
-                        if node_name.lower() in n_name:
-                            # Target strictly the playback output stream to avoid double attenuation with capture input
-                            if n_name.startswith("output.") or props.get("media.class") == "Stream/Output/Audio":
-                                found.append(str(obj["id"]))
-                                break
-                            elif n_name.startswith("input.") or props.get("media.class") == "Stream/Input/Audio":
-                                try:
-                                    subprocess.run(["wpctl", "set-volume", str(obj["id"]), "1.00"], stderr=subprocess.DEVNULL)
-                                    subprocess.run(["wpctl", "set-mute", str(obj["id"]), "0"], stderr=subprocess.DEVNULL)
-                                except Exception:
-                                    pass
-                if not found:
+            for attempt in range(6):
+                try:
+                    out = subprocess.check_output(["pw-dump"], text=True, stderr=subprocess.DEVNULL)
+                    data = json.loads(out)
+                    found = []
                     for obj in data:
                         if obj.get("type") == "PipeWire:Interface:Node":
                             props = obj.get("info", {}).get("props", {})
                             n_name = props.get("node.name", "").lower()
                             if node_name.lower() in n_name:
-                                found.append(str(obj["id"]))
-                                break
-                if found:
-                    self._submix_node_ids[key] = found
-                    node_ids = found
-            except Exception:
-                pass
+                                # Target strictly the playback output stream to avoid double attenuation with capture input
+                                if n_name.startswith("output.") or props.get("media.class") == "Stream/Output/Audio":
+                                    found.append(str(obj["id"]))
+                                elif n_name.startswith("input.") or props.get("media.class") == "Stream/Input/Audio":
+                                    try:
+                                        subprocess.run(["wpctl", "set-volume", str(obj["id"]), "1.00"], stderr=subprocess.DEVNULL)
+                                        subprocess.run(["wpctl", "set-mute", str(obj["id"]), "0"], stderr=subprocess.DEVNULL)
+                                    except Exception:
+                                        pass
+                    if not found:
+                        for obj in data:
+                            if obj.get("type") == "PipeWire:Interface:Node":
+                                props = obj.get("info", {}).get("props", {})
+                                n_name = props.get("node.name", "").lower()
+                                if node_name.lower() in n_name:
+                                    found.append(str(obj["id"]))
+                                    break
+                    if found:
+                        self._submix_node_ids[key] = found
+                        node_ids = found
+                        break
+                    elif attempt < 5:
+                        time.sleep(0.04)
+                except Exception:
+                    pass
 
         for n_id in node_ids:
             try:
