@@ -148,6 +148,13 @@ class PipeWireManager:
             mixes_copy = list(self.mixes)
             channels_copy = list(self.channels)
 
+        # Clean up any orphaned background pw-loopbacks from past crashed/killed sessions
+        try:
+            subprocess.run(["pkill", "-f", "pw-loopback.*WaveController_submix_"], stderr=subprocess.DEVNULL)
+            time.sleep(0.05)
+        except Exception:
+            pass
+
         needed_nodes = {}
         for m in mixes_copy:
             m_id = m["id"]
@@ -199,7 +206,7 @@ class PipeWireManager:
         except Exception:
             pass
 
-        # Provision any missing needed nodes
+        # 1. Provision any missing needed nodes
         nodes_created = False
         for node_name, (desc, media_class) in needed_nodes.items():
             if node_name not in existing_active_names:
@@ -1148,8 +1155,20 @@ class PipeWireManager:
                 for obj in data:
                     if obj.get("type") == "PipeWire:Interface:Node":
                         props = obj.get("info", {}).get("props", {})
-                        if node_name.lower() in props.get("node.name", "").lower():
-                            found.append(str(obj["id"]))
+                        n_name = props.get("node.name", "").lower()
+                        if node_name.lower() in n_name:
+                            # Target strictly the playback output stream to avoid double attenuation with capture input
+                            if n_name.startswith("output.") or props.get("media.class") == "Stream/Output/Audio":
+                                found.append(str(obj["id"]))
+                                break
+                if not found:
+                    for obj in data:
+                        if obj.get("type") == "PipeWire:Interface:Node":
+                            props = obj.get("info", {}).get("props", {})
+                            n_name = props.get("node.name", "").lower()
+                            if node_name.lower() in n_name:
+                                found.append(str(obj["id"]))
+                                break
                 if found:
                     self._submix_node_ids[key] = found
                     node_ids = found
@@ -1304,6 +1323,12 @@ class PipeWireManager:
 
                 # If channel is an Elgato hardware device, bypass wpctl ALSA dispatch to avoid UAC2 hardware volume fights
                 if "elgato" in channel_id.lower() or "wave_xlr" in channel_id.lower() or (ch_name and "elgato" in ch_name.lower()):
+                    continue
+
+                # Virtual playback sinks (WaveController_Channel_<ch>) must remain at 1.0 (unity gain)
+                # so that submix loopbacks can apply their independent volume attenuations without compounding.
+                is_virtual_sink = any(c.get("id") == channel_id and c.get("type") == "sink" for c in self.channels)
+                if is_virtual_sink:
                     continue
 
                 target_node_ids = set()
