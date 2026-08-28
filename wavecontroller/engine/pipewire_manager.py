@@ -1161,6 +1161,12 @@ class PipeWireManager:
                             if n_name.startswith("output.") or props.get("media.class") == "Stream/Output/Audio":
                                 found.append(str(obj["id"]))
                                 break
+                            elif n_name.startswith("input.") or props.get("media.class") == "Stream/Input/Audio":
+                                try:
+                                    subprocess.run(["wpctl", "set-volume", str(obj["id"]), "1.00"], stderr=subprocess.DEVNULL)
+                                    subprocess.run(["wpctl", "set-mute", str(obj["id"]), "0"], stderr=subprocess.DEVNULL)
+                                except Exception:
+                                    pass
                 if not found:
                     for obj in data:
                         if obj.get("type") == "PipeWire:Interface:Node":
