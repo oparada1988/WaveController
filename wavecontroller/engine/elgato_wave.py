@@ -12,6 +12,7 @@ import ctypes
 import ctypes.util
 import struct
 import threading
+import time
 from dataclasses import dataclass
 from typing import Optional, Dict, Any, Tuple
 from wavecontroller.utils.logger import get_logger
@@ -110,6 +111,8 @@ class ElgatoProfile:
     gain_scale: float = 256.0
     off_rgb_mute: Optional[int] = None
     off_rgb_ring: Optional[int] = None
+    claim_interface: Optional[int] = None
+    icon_name: str = "ElgatoWaveXLR.png"
 
 
 PROFILE_WAVE_XLR = ElgatoProfile(
@@ -145,6 +148,8 @@ PROFILE_WAVE_XLR = ElgatoProfile(
     mix_max=0x6400,
     off_rgb_mute=15,
     off_rgb_ring=18,
+    claim_interface=3,
+    icon_name="ElgatoWaveXLR.png",
 )
 
 PROFILE_WAVE_3 = ElgatoProfile(
@@ -155,7 +160,7 @@ PROFILE_WAVE_3 = ElgatoProfile(
     wvalue_config=0x0000,
     wvalue_meter=0x0001,
     wvalue_devinfo=0x000A,
-    windex=0x3303,
+    windex=0x0000,
     config_len=16,
     meter_len=8,
     devinfo_len=64,
@@ -165,6 +170,7 @@ PROFILE_WAVE_3 = ElgatoProfile(
     off_gain=0,
     gain_max_db=40.0,
     gain_raw_max=0x2800,
+    gain_scale=256.0,
     off_mute=4,
     off_phantom=None,
     off_clipguard=5,
@@ -179,6 +185,8 @@ PROFILE_WAVE_3 = ElgatoProfile(
     mix_max=0x6400,
     off_rgb_mute=None,
     off_rgb_ring=None,
+    claim_interface=None,
+    icon_name="ElgatoWave3.png",
 )
 
 ELGATO_PROFILES = [PROFILE_WAVE_XLR, PROFILE_WAVE_3]
@@ -217,6 +225,11 @@ class ElgatoWaveDevice:
         self._last_vu_time: float = 0.0
         self._vu_ballistics_level: float = 0.0
         self._last_raw_hw_mute: Optional[bool] = None
+        
+        # Anti-Flooding Circuit Breaker
+        self._consecutive_errors: int = 0
+        self._backoff_until: float = 0.0
+        self._active_windex: int = self.profile.windex
 
     def is_connected(self) -> bool:
         return self._handle is not None
@@ -233,11 +246,12 @@ class ElgatoWaveDevice:
                 handle = lib.libusb_open_device_with_vid_pid(_lib_ctx, self.profile.vid, self.profile.pid)
                 if handle:
                     self._handle = handle
-                    # Claim vendor control interface 3 for direct USB control transfers without kernel interference
-                    try:
-                        lib.libusb_claim_interface(handle, 3)
-                    except Exception:
-                        pass
+                    # Claim vendor control interface only if profile explicitly requires it
+                    if self.profile.claim_interface is not None:
+                        try:
+                            lib.libusb_claim_interface(handle, self.profile.claim_interface)
+                        except Exception as e:
+                            log.debug(f"Could not claim interface {self.profile.claim_interface}: {e}")
                     log.info(f"Successfully connected to Elgato {self.profile.display_name} (0x{self.profile.vid:04X}:0x{self.profile.pid:04X})")
                     self._read_initial_info()
                     return True
@@ -248,44 +262,89 @@ class ElgatoWaveDevice:
     def disconnect(self):
         with self._lock:
             if self._handle and _lib:
-                try:
-                    _lib.libusb_release_interface(self._handle, 3)
-                except Exception:
-                    pass
+                if self.profile.claim_interface is not None:
+                    try:
+                        _lib.libusb_release_interface(self._handle, self.profile.claim_interface)
+                    except Exception:
+                        pass
                 try:
                     _lib.libusb_close(self._handle)
                 except Exception:
                     pass
                 self._handle = None
+                self._consecutive_errors = 0
+                self._backoff_until = 0.0
 
     def _ctrl_read(self, wValue: int, length: int) -> bytearray:
         if not self._handle or not _lib:
             raise RuntimeError("Device not connected")
+        
+        now = time.time()
+        if now < self._backoff_until:
+            raise RuntimeError(f"USB circuit breaker backoff active ({self._backoff_until - now:.1f}s remaining)")
+
         buf = (ctypes.c_ubyte * length)()
         with self._lock:
             ret = _lib.libusb_control_transfer(
-                self._handle, RT_CLASS_IN, BREQUEST_READ, wValue, self.profile.windex,
-                buf, length, 1000
+                self._handle, RT_CLASS_IN, BREQUEST_READ, wValue, self._active_windex,
+                buf, length, 500
             )
         if ret < 0:
+            self._consecutive_errors += 1
+            if self._consecutive_errors >= 3:
+                backoff_duration = min(5.0, 0.25 * (2 ** (self._consecutive_errors - 3)))
+                self._backoff_until = time.time() + backoff_duration
             raise RuntimeError(f"USB control read failed (error {ret})")
+        
+        self._consecutive_errors = 0
+        self._backoff_until = 0.0
         return bytearray(buf[:ret])
 
     def _ctrl_write(self, wValue: int, data: bytes):
         if not self._handle or not _lib:
             raise RuntimeError("Device not connected")
+
+        now = time.time()
+        if now < self._backoff_until:
+            raise RuntimeError(f"USB circuit breaker backoff active ({self._backoff_until - now:.1f}s remaining)")
+
         buf = (ctypes.c_ubyte * len(data))(*data)
         with self._lock:
             ret = _lib.libusb_control_transfer(
-                self._handle, RT_CLASS_OUT, BREQUEST_WRITE, wValue, self.profile.windex,
-                buf, len(data), 1000
+                self._handle, RT_CLASS_OUT, BREQUEST_WRITE, wValue, self._active_windex,
+                buf, len(data), 500
             )
         if ret < 0:
+            self._consecutive_errors += 1
+            if self._consecutive_errors >= 3:
+                backoff_duration = min(5.0, 0.25 * (2 ** (self._consecutive_errors - 3)))
+                self._backoff_until = time.time() + backoff_duration
             raise RuntimeError(f"USB control write failed (error {ret})")
 
+        self._consecutive_errors = 0
+        self._backoff_until = 0.0
+
     def _read_initial_info(self):
-        try:
-            data = self._ctrl_read(self.profile.wvalue_devinfo, self.profile.devinfo_len)
+        # Probe working wIndex candidates for this device model
+        windex_candidates = [self.profile.windex]
+        if self.profile.key == "wave3":
+            windex_candidates = [0x0000, 0x0002, 0x0200, 0x3303]
+        elif self.profile.key == "wave_xlr":
+            windex_candidates = [0x3303, 0x0000]
+
+        data = None
+        for candidate_windex in windex_candidates:
+            self._active_windex = candidate_windex
+            self._consecutive_errors = 0
+            self._backoff_until = 0.0
+            try:
+                data = self._ctrl_read(self.profile.wvalue_devinfo, self.profile.devinfo_len)
+                if len(data) >= self.profile.devinfo_len:
+                    break
+            except Exception:
+                data = None
+
+        if data and len(data) >= self.profile.devinfo_len:
             p = self.profile
             api_ver = f"{data[p.devinfo_api[0]]}.{data[p.devinfo_api[1]]}"
             fw_ver = f"{data[p.devinfo_fw[0]]}.{data[p.devinfo_fw[1]]}.{data[p.devinfo_fw[2]]}"
@@ -296,9 +355,9 @@ class ElgatoWaveDevice:
                 "fw_version": fw_ver,
                 "serial": serial
             }
-            log.info(f"Elgato {p.display_name} Info -> FW: {fw_ver}, Serial: {serial}")
-        except Exception as e:
-            log.warning(f"Could not read device info: {e}")
+            log.info(f"Elgato {p.display_name} Info -> FW: {fw_ver}, Serial: {serial} (wIndex=0x{self._active_windex:04X})")
+        else:
+            log.warning(f"Could not read device info for {self.profile.display_name}")
             self.dev_info = {"name": self.profile.display_name, "fw_version": "Unknown", "serial": "Unknown"}
 
     def read_config(self) -> bytearray:

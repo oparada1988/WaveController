@@ -402,6 +402,20 @@ class TestTokenMatchingInvariants(unittest.TestCase):
         self.assertAlmostEqual(PipeWireManager._pct_to_pipewire_gain(50), 0.250, places=3)
         self.assertAlmostEqual(PipeWireManager._pct_to_pipewire_gain(0), 0.000, places=3)
 
+    def test_wave3_profile_and_circuit_breaker(self):
+        """Invariant: Wave:3 profile must enforce safe descriptors, 40dB gain max, and USB circuit breaker protection."""
+        from wavecontroller.engine.elgato_wave import PROFILE_WAVE_3, PROFILE_WAVE_XLR, ElgatoWaveDevice
+        self.assertEqual(PROFILE_WAVE_3.vid, 0x0FD9)
+        self.assertEqual(PROFILE_WAVE_3.pid, 0x0070)
+        self.assertEqual(PROFILE_WAVE_3.gain_max_db, 40.0)
+        self.assertIsNone(PROFILE_WAVE_3.claim_interface)
+        self.assertEqual(PROFILE_WAVE_3.icon_name, "ElgatoWave3.png")
+
+        # Test circuit breaker initialization
+        dev = ElgatoWaveDevice(PROFILE_WAVE_3)
+        self.assertEqual(dev._consecutive_errors, 0)
+        self.assertEqual(dev._backoff_until, 0.0)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

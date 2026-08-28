@@ -124,7 +124,10 @@ def main():
                 last_hw_state = dict(curr_hw)
                 last_pw_state = dict(curr_pw)
 
-            time.sleep(0.1)
+            if curr_hw.get("connected") is False or "error" in curr_hw:
+                time.sleep(1.0)
+            else:
+                time.sleep(0.1)
     except KeyboardInterrupt:
         print("\n[INFO] Live capture stopped by user.")
 

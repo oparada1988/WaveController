@@ -136,9 +136,14 @@ class UnifiedDeviceSettingsView(Gtk.Box):
             meter_row.add_suffix(meter_box)
             grp_mic.add(meter_row)
 
-            # Preamp Gain Slider (0 to 75 dB)
-            self.gain_row = Adw.ActionRow(title="Analog Preamp Gain", subtitle=f"{self.hardware_mgr.hardware_gain_db} dB")
-            self.gain_adj = Gtk.Adjustment(value=self.hardware_mgr.hardware_gain_db, lower=0, upper=75, step_increment=1, page_increment=5)
+            is_wave_3 = self.is_elgato and ("wave:3" in self.title_lbl.get_text().lower() or "wave 3" in self.title_lbl.get_text().lower() or "wave_3" in self.device_key.lower() or "wave3" in self.device_key.lower())
+            is_wave_xlr = self.is_elgato and ("xlr" in self.device_key.lower() or "xlr" in self.title_lbl.get_text().lower() or "wave xlr" in self.device_info.get("name", "").lower())
+
+            # Preamp Gain Slider (0 to 40 dB for Wave:3, 0 to 75 dB for Wave XLR)
+            max_gain = 40 if is_wave_3 else 75
+            gain_sub = f"Analog condenser microphone preamp gain (0-40 dB) • Current: {self.hardware_mgr.hardware_gain_db} dB" if is_wave_3 else f"Ultra-low-noise microphone preamp with 0-75 dB gain • Current: {self.hardware_mgr.hardware_gain_db} dB"
+            self.gain_row = Adw.ActionRow(title="Analog Preamp Gain", subtitle=gain_sub)
+            self.gain_adj = Gtk.Adjustment(value=min(max_gain, self.hardware_mgr.hardware_gain_db), lower=0, upper=max_gain, step_increment=1, page_increment=5)
             self.gain_slider = Gtk.Scale(orientation=Gtk.Orientation.HORIZONTAL, adjustment=self.gain_adj)
             self.gain_slider.set_size_request(180, -1)
             self.gain_slider.set_valign(Gtk.Align.CENTER)
@@ -147,7 +152,6 @@ class UnifiedDeviceSettingsView(Gtk.Box):
             grp_mic.add(self.gain_row)
 
             # 48V Phantom Power Switch (Strictly for Wave XLR Hardware)
-            is_wave_xlr = self.is_elgato and ("xlr" in self.device_key.lower() or "xlr" in self.title_lbl.get_text().lower() or "wave xlr" in self.device_info.get("name", "").lower())
             if is_wave_xlr:
                 self.phantom_row = Adw.SwitchRow(title="48V Phantom Power", subtitle="Provides 48V DC power to XLR condenser microphones")
                 self.phantom_row.set_active(self.hardware_mgr.phantom_power_48v)
@@ -207,11 +211,12 @@ class UnifiedDeviceSettingsView(Gtk.Box):
             bal_row.add_suffix(self.bal_slider)
             grp_out.add(bal_row)
 
-            # Low-Impedance Mode Switch
-            self.low_z_row = Adw.SwitchRow(title="Low-Impedance Headphone Mode", subtitle="Optimized for sensitive In-Ear Monitors (IEMs)")
-            self.low_z_row.set_active(self.hardware_mgr.low_impedance_mode)
-            self._low_z_handler_id = self.low_z_row.connect("notify::active", lambda r, *a: self.hardware_mgr.toggle_low_impedance())
-            grp_out.add(self.low_z_row)
+            # Low-Impedance Mode Switch (Strictly for Wave XLR)
+            if is_wave_xlr:
+                self.low_z_row = Adw.SwitchRow(title="Low-Impedance Headphone Mode", subtitle="Optimized for sensitive In-Ear Monitors (IEMs)")
+                self.low_z_row.set_active(self.hardware_mgr.low_impedance_mode)
+                self._low_z_handler_id = self.low_z_row.connect("notify::active", lambda r, *a: self.hardware_mgr.toggle_low_impedance())
+                grp_out.add(self.low_z_row)
 
             # Output Mute
             mute_row = Adw.ActionRow(title="Output Mute", subtitle="Mute sound output to this device")
@@ -250,8 +255,8 @@ class UnifiedDeviceSettingsView(Gtk.Box):
 
             pref_page.add(grp_out)
 
-        # Group 4: Hardware RGB LED Ring Customization (Elgato Wave devices)
-        if self.is_elgato:
+        # Group 4: Hardware RGB LED Ring Customization (Wave XLR devices with RGB diodes)
+        if is_wave_xlr:
             grp_led = Adw.PreferencesGroup(title="Hardware RGB LED Ring Customization")
 
             # Mic Gain Mode Color
@@ -659,14 +664,22 @@ class UnifiedDeviceSettingsView(Gtk.Box):
             self.on_device_renamed()
 
     def _get_device_hero_image_path(self) -> str:
-        candidates = [
-            os.path.join(os.path.dirname(__file__), "..", "..", "assets", "icons", "ElgatoWaveXLR_small.png"),
-            os.path.join(os.path.dirname(__file__), "..", "..", "assets", "icons", "ElgatoWaveXLR.png"),
-            os.path.join(os.path.dirname(__file__), "..", "..", "assets", "icons", "elgato-wave-xlr.png"),
-            os.path.expanduser("~/.local/share/wavecontroller/assets/icons/ElgatoWaveXLR_small.png"),
-            os.path.expanduser("~/.local/share/wavecontroller/assets/icons/ElgatoWaveXLR.png"),
-            os.path.expanduser("~/Documents/WaveController real time test/ElgatoWaveXLR.png"),
-        ]
+        is_wave_3 = "wave:3" in self.title_lbl.get_text().lower() or "wave 3" in self.title_lbl.get_text().lower() or "wave_3" in self.device_key.lower() or "wave3" in self.device_key.lower()
+        if is_wave_3:
+            candidates = [
+                os.path.join(os.path.dirname(__file__), "..", "..", "assets", "icons", "ElgatoWave3.png"),
+                os.path.expanduser("~/.local/share/wavecontroller/assets/icons/ElgatoWave3.png"),
+                os.path.expanduser("~/Project stuf/Elgato.WaveLink_3.2.10.4073_x64/Assets/ElgatoWave3.png"),
+            ]
+        else:
+            candidates = [
+                os.path.join(os.path.dirname(__file__), "..", "..", "assets", "icons", "ElgatoWaveXLR_small.png"),
+                os.path.join(os.path.dirname(__file__), "..", "..", "assets", "icons", "ElgatoWaveXLR.png"),
+                os.path.join(os.path.dirname(__file__), "..", "..", "assets", "icons", "elgato-wave-xlr.png"),
+                os.path.expanduser("~/.local/share/wavecontroller/assets/icons/ElgatoWaveXLR_small.png"),
+                os.path.expanduser("~/.local/share/wavecontroller/assets/icons/ElgatoWaveXLR.png"),
+                os.path.expanduser("~/Documents/WaveController real time test/ElgatoWaveXLR.png"),
+            ]
         for c in candidates:
             if os.path.isfile(c):
                 return c
