@@ -394,8 +394,19 @@ class MixerMatrixView(Gtk.Box):
             target_combo.set_selected(0)
             update_add_btn_state()
 
+        def reset_create_mix_form():
+            name_entry.set_text("")
+            sub_entry.set_text("")
+            type_combo.set_selected(0)
+            target_row.set_visible(False)
+            target_combo.set_selected(0)
+            select_icon("user-available-symbolic")
+            select_create_color("#9146ff")
+            update_add_btn_state()
+
         refresh_create_mix_targets()
         popover.connect("notify::visible", lambda p, *args: refresh_create_mix_targets() if p.get_visible() else None)
+        popover.connect("closed", lambda p: reset_create_mix_form())
         self._refresh_create_mix_targets = refresh_create_mix_targets
 
         def on_type_changed(combo, *args):
@@ -552,11 +563,25 @@ class MixerMatrixView(Gtk.Box):
                             return
 
                 self.pipewire_mgr.add_mix(name, subtitle=sub, mix_type=mix_type, color=c, icon=selected_icon, target_device=selected_target)
+                reset_create_mix_form()
                 popover.popdown()
                 GLib.idle_add(self._rebuild_grid)
 
         add_btn.connect("clicked", on_add)
-        box.append(add_btn)
+
+        actions_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        actions_box.set_margin_top(4)
+
+        cancel_btn = Gtk.Button(label="Cancel")
+        cancel_btn.add_css_class("flat")
+        cancel_btn.set_hexpand(True)
+        cancel_btn.connect("clicked", lambda b: (reset_create_mix_form(), popover.popdown()))
+        actions_box.append(cancel_btn)
+
+        add_btn.set_hexpand(True)
+        actions_box.append(add_btn)
+
+        box.append(actions_box)
 
         popover.set_child(box)
         menu_btn.set_popover(popover)
@@ -648,6 +673,12 @@ class MixerMatrixView(Gtk.Box):
 
         dev_cat_btn.set_child(dev_row)
         cat_box.append(dev_cat_btn)
+
+        cat_cancel_btn = Gtk.Button(label="Cancel")
+        cat_cancel_btn.add_css_class("flat")
+        cat_cancel_btn.set_margin_top(4)
+        cat_cancel_btn.connect("clicked", lambda b: popover.popdown())
+        cat_box.append(cat_cancel_btn)
 
         stack.add_named(cat_box, "cat_page")
 
@@ -881,6 +912,11 @@ class MixerMatrixView(Gtk.Box):
         cust_app_box.append(cust_app_btn)
         app_page_box.append(cust_app_box)
 
+        app_cancel_btn = Gtk.Button(label="Cancel")
+        app_cancel_btn.add_css_class("flat")
+        app_cancel_btn.connect("clicked", lambda b: popover.popdown())
+        app_page_box.append(app_cancel_btn)
+
         stack.add_named(app_page_box, "app_page")
 
         # ==========================================
@@ -913,7 +949,18 @@ class MixerMatrixView(Gtk.Box):
 
         dev_page_box.append(dev_list_container)
 
+        dev_cancel_btn = Gtk.Button(label="Cancel")
+        dev_cancel_btn.add_css_class("flat")
+        dev_cancel_btn.connect("clicked", lambda b: popover.popdown())
+        dev_page_box.append(dev_cancel_btn)
+
         stack.add_named(dev_page_box, "device_page")
+
+        def reset_create_channel_popover():
+            stack.set_visible_child_name("cat_page")
+            app_entry.set_text("")
+
+        popover.connect("closed", lambda p: reset_create_channel_popover())
 
         stack.set_visible_child_name("cat_page")
         popover.set_child(stack)
