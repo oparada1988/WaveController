@@ -30,7 +30,7 @@ class USBHardwareManager:
         }))
         self.exclusive_mic_lock: bool = bool(config_manager.get("hardware_settings", {}).get("exclusive_mic_lock", True))
         self.exclusive_output_lock: bool = bool(config_manager.get("hardware_settings", {}).get("exclusive_output_lock", True))
-        self.discovered_devices: Dict[str, dict] = {} # {device_key: dev_info_dict}
+        self.discovered_devices: dict[str, dict] = {} # {device_key: dev_info_dict}
         self.input_devices = [] # Legacy compatibility
         self.output_devices = [] # Legacy compatibility
         self.connected_audio_devices = [] # Legacy compatibility

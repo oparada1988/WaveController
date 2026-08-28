@@ -33,7 +33,7 @@ class SettingsView(Gtk.Box):
         pref_page = Adw.PreferencesPage()
 
         # Group 1: Appearance & Theme
-        grp_theme = Adw.PreferencesGroup(title="Appearance &amp; Theme")
+        grp_theme = Adw.PreferencesGroup(title="Appearance & Theme")
 
         self.theme_row = Adw.SwitchRow(
             title="Use System Theme",
@@ -63,9 +63,9 @@ class SettingsView(Gtk.Box):
         pref_page.add(grp_gen)
 
         # Group 2: Stream Deck & Integration
-        grp_sd = Adw.PreferencesGroup(title="Stream Deck &amp; Volume Controller Plus Integration")
+        grp_sd = Adw.PreferencesGroup(title="Stream Deck & Volume Controller Plus Integration")
 
-        ipc_row = Adw.ActionRow(title="Volume Controller Plus IPC Server", subtitle="Unix Socket active at /tmp/wavecontroller.sock")
+        ipc_row = Adw.ActionRow(title="Volume Controller Plus IPC Server", subtitle="Unix Socket active at ~/.config/WaveController/wavecontroller.sock")
         ipc_status = Gtk.Label(label="Connected")
         ipc_status.add_css_class("wave-icon-btn")
         ipc_status.add_css_class("active")

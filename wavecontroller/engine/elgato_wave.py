@@ -34,9 +34,20 @@ def _init_libusb():
     with _lib_lock:
         if _lib is not None:
             return _lib
-        lib_path = ctypes.util.find_library("usb-1.0") or "libusb-1.0.so.0" or "libusb-1.0.so"
+        candidates = [ctypes.util.find_library("usb-1.0"), "libusb-1.0.so.0", "libusb-1.0.so"]
+        _lib = None
+        for candidate in candidates:
+            if not candidate:
+                continue
+            try:
+                _lib = ctypes.CDLL(candidate)
+                break
+            except Exception:
+                continue
+        if _lib is None:
+            log.error("Failed to load libusb library (none of candidates succeeded)")
+            return None
         try:
-            _lib = ctypes.CDLL(lib_path)
             _lib.libusb_init.argtypes = [ctypes.POINTER(ctypes.c_void_p)]
             _lib.libusb_init.restype = ctypes.c_int
             _lib.libusb_open_device_with_vid_pid.argtypes = [ctypes.c_void_p, ctypes.c_uint16, ctypes.c_uint16]

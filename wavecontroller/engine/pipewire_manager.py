@@ -394,7 +394,7 @@ class PipeWireManager:
                 # 2. Periodic real-time stream, guard & mix reconciliation
                 sync_tick = getattr(self, "_sync_loop_tick", 0) + 1
                 self._sync_loop_tick = sync_tick
-                if sync_tick % 3 == 0:
+                if sync_tick % 10 == 0:
                     self._reconcile_app_streams_fast()
                 if sync_tick % 50 == 0:
                     self._enforce_exclusive_volume_guard()

@@ -500,7 +500,6 @@ class MultiChannelPeakMonitor:
                                 pass
                         self.sink_target = curr_sink_target
                         self.sink_proc = self._open_pw_record('wave_sink_monitor', target=curr_sink_target, channels=2, is_sink=True)
-                        time.sleep(0.1)
 
                     self._link_sink_monitor()
 
