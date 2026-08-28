@@ -749,14 +749,17 @@ class PipeWireManager:
                     submix_prefix = f"input.WaveController_submix_{ch_id}_"
                     for sp in matched_ports:
                         connected_dests = links_map.get(sp, set())
-                        # If leaking directly to hardware or mix sinks (bypassing matrix)
-                        if any(dp.startswith("alsa_output.") or (dp.startswith("WaveController_") and not dp.startswith("input.WaveController_submix_")) for dp in connected_dests):
-                            need_sync = True
-                            break
+                        # Immediately sever direct leaks to physical hardware or default sinks (bypass isolation)
+                        for dp in connected_dests:
+                            if dp.startswith("alsa_output.") or (dp.startswith("WaveController_") and not dp.startswith("input.WaveController_submix_")):
+                                try:
+                                    subprocess.run(["pw-link", "-d", sp, dp], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                                except Exception:
+                                    pass
+                                need_sync = True
                         # Or if not connected to any submix faders
                         if not any(dp.startswith(submix_prefix) for dp in connected_dests):
                             need_sync = True
-                            break
 
                     if need_sync:
                         self._sync_channel_audio_routing(channel_id=ch_id)

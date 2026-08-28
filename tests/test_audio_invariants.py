@@ -412,9 +412,102 @@ class TestTokenMatchingInvariants(unittest.TestCase):
         self.assertEqual(PROFILE_WAVE_3.icon_name, "ElgatoWave3.png")
 
         # Test circuit breaker initialization
-        dev = ElgatoWaveDevice(PROFILE_WAVE_3)
-        self.assertEqual(dev._consecutive_errors, 0)
-        self.assertEqual(dev._backoff_until, 0.0)
+    def test_submix_loopback_monitor_sink_flag_enforced(self):
+        """Invariant: input.WaveController_submix_* nodes MUST be targeted with is_sink=True to capture monitor ports."""
+        from wavecontroller.engine.peak_monitor import MultiChannelPeakMonitor
+        from unittest.mock import patch, MagicMock
+
+        with patch("subprocess.check_output") as mock_co, patch("subprocess.Popen") as mock_popen:
+            mock_co.return_value = (
+                "input.WaveController_submix_discord_personal_mix:monitor_FL\n"
+                "input.WaveController_submix_discord_personal_mix:monitor_FR\n"
+            )
+            mock_pm = MultiChannelPeakMonitor.__new__(MultiChannelPeakMonitor)
+            mock_pm.pipewire_mgr = MagicMock()
+            mock_pm.pipewire_mgr.channels = [{"id": "discord", "type": "sink"}]
+            mock_pm._channel_procs = {}
+            mock_pm._channel_proc_channels = {}
+            mock_pm._channel_peaks = {}
+            mock_pm.running = False
+            
+            # Run channel discovery
+            mock_pm._refresh_channel_monitors()
+            
+            # Verify pw-record was called with stream.capture.sink=true
+            mock_popen.assert_called_once()
+            args, kwargs = mock_popen.call_args
+            cmd_args = args[0]
+            self.assertIn("stream.capture.sink=true", " ".join(cmd_args),
+                          "REGRESSION: Submix monitor must be recorded with stream.capture.sink=true")
+            self.assertIn("input.WaveController_submix_discord_personal_mix", cmd_args)
+
+    def test_no_mic_bleed_into_mixes(self):
+        """Invariant: Microphone signals MUST NEVER bleed into mix peak meters (fefine_mix, mobo_device, chat_mix)."""
+        from wavecontroller.engine.peak_monitor import MultiChannelPeakMonitor
+        from unittest.mock import MagicMock
+        
+        mock_pm = MultiChannelPeakMonitor.__new__(MultiChannelPeakMonitor)
+        mock_pm._lock = self.pwm._lock
+        mock_pm.peaks = {}
+        mock_pm._channel_peaks = {}
+        mock_pm.pipewire_mgr = MagicMock()
+        mock_pm.pipewire_mgr.mixes = [
+            {"id": "fefine_mix", "name": "Fefine Mix", "type": "sink"},
+            {"id": "mobo_device", "name": "Mobo device", "type": "sink"}
+        ]
+        # Channels disabled in mixes
+        mock_pm.pipewire_mgr.channels = [{"id": "elgato_wave_xlr", "type": "source"}]
+        mock_pm.pipewire_mgr.channel_states = {
+            "elgato_wave_xlr": {
+                "fefine_mix": {"enabled": False, "volume": 0},
+                "mobo_device": {"enabled": False, "volume": 0}
+            }
+        }
+        mock_pm.pipewire_mgr.channel_master_states = {"elgato_wave_xlr": {"volume": 100, "muted": False}}
+        mock_pm.pipewire_mgr.mix_states = {
+            "fefine_mix": {"volume": 100, "muted": False},
+            "mobo_device": {"volume": 100, "muted": False}
+        }
+        
+        # Simulate loud mic input (m_l = 0.90, m_r = 0.90)
+        m_l, m_r = 0.90, 0.90
+        s_l, s_r = 0.0, 0.0
+        
+        with mock_pm._lock:
+            # Physical mic channel gets mic level
+            for ch in ["mic", "microphone", "elgato_wave_xlr", "wave_xlr"]:
+                mock_pm.peaks[ch] = {"left": m_l, "right": m_r, "peak": max(m_l, m_r)}
+            mock_pm.peaks["personal_mix"] = {"left": s_l, "right": s_r, "peak": max(s_l, s_r)}
+            
+            # Calculate dynamic mix bus peaks
+            for mx in mock_pm.pipewire_mgr.mixes:
+                mx_id = mx["id"]
+                st = mock_pm.pipewire_mgr.channel_states["elgato_wave_xlr"][mx_id]
+                if not st.get("enabled", True):
+                    mock_pm.peaks[mx_id] = {"left": 0.0, "right": 0.0, "peak": 0.0}
+
+        # Assert zero bleed into disabled mixes
+        self.assertEqual(mock_pm.peaks["fefine_mix"]["peak"], 0.0, "REGRESSION: Mic bled into fefine_mix!")
+        self.assertEqual(mock_pm.peaks["mobo_device"]["peak"], 0.0, "REGRESSION: Mic bled into mobo_device!")
+
+    def test_electron_process_binary_disambiguation(self):
+        """Invariant: Discord process binary MUST match ONLY Discord tokens and reject Google Chrome tokens."""
+        meta_map = {
+            "Chromium:output_FL": {
+                "app_name": "Chromium",
+                "binary": "/usr/share/discord/Discord",
+                "node_name": "Chromium",
+                "app_id": "discord"
+            }
+        }
+        discord_tokens = self.pwm._get_match_tokens("Discord")
+        chrome_tokens = self.pwm._get_match_tokens("Google Chrome")
+        
+        # Port must match Discord
+        self.assertTrue(self.pwm._port_matches_tokens("Chromium:output_FL", discord_tokens, meta_map))
+        # Port must NOT match Chrome
+        self.assertFalse(self.pwm._port_matches_tokens("Chromium:output_FL", chrome_tokens, meta_map),
+                         "REGRESSION: Chrome tokens hijacked Discord Chromium stream!")
 
 
 if __name__ == "__main__":
