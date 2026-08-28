@@ -1055,12 +1055,12 @@ class PipeWireManager:
     @staticmethod
     def _pct_to_pipewire_gain(vol_pct: int) -> float:
         """
-        Converts 0-100% volume slider percentage to PipeWire cubic perceptual amplitude gain.
-        Formula: (vol_pct / 100.0) ** 3
-        Provides silky-smooth, 1:1 acoustic linearity matching human hearing (50% = -18 dB / half perceived loudness).
+        Converts 0-100% volume slider percentage to quadratic broadcast fader gain.
+        Formula: (vol_pct / 100.0) ** 2
+        Provides silky-smooth, 1:1 acoustic linearity matching human hearing (50% = -12 dB / half perceived loudness).
         """
         frac = max(0.0, min(1.5, float(vol_pct) / 100.0))
-        return frac ** 3
+        return frac ** 2
 
     def _get_mix_node_ids(self, mix_id: str) -> list:
         canon_mix = self._match_mix_id(mix_id)
