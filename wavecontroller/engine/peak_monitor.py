@@ -255,14 +255,14 @@ class MultiChannelPeakMonitor:
         - Mastered music (-12 dB to -6 dB): ~80% - 92%
         - True peak transients / 0 dBFS limit: 95% - 100%
         """
-        mag = max(peak_raw, rms * 1.6)
-        if mag <= 0.0015:
+        mag = max(peak_raw, rms * 1.8)
+        if mag <= 0.002:
             return 0.0
         db = 20.0 * math.log10(mag)
-        if db <= -54.0:
+        if db <= -48.0:
             return 0.0
-        ratio = (db + 54.0) / 54.0
-        return max(0.0, min(1.0, ratio ** 1.15))
+        ratio = (db + 48.0) / 48.0
+        return max(0.0, min(1.0, ratio ** 1.20))
 
     def _drain_and_calc_peaks(self, proc, channels: int = 2):
         if not proc or proc.poll() is not None:

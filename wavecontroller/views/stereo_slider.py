@@ -173,26 +173,26 @@ class StereoSlider(Gtk.DrawingArea):
         cr.rectangle(margin, y_bot, vol_w, track_h)
         cr.fill()
 
-        # Live VU meter bars with single reused studio gradient (Emerald Green -> Yellow -> Red)
-        if not self.is_muted and vol_w > 0.0 and (self.peak_l > 0.005 or self.peak_r > 0.005):
-            meter_l = vol_w * self.peak_l
-            meter_r = vol_w * self.peak_r
+        # Live VU meter bars across full track with single reused studio gradient (Emerald Green -> Yellow -> Red)
+        if not self.is_muted and track_w > 0.0 and (self.peak_l > 0.005 or self.peak_r > 0.005):
+            meter_l = track_w * self.peak_l
+            meter_r = track_w * self.peak_r
             if meter_l > 0.5 or meter_r > 0.5:
-                if getattr(self, "_cached_gradient_vol_w", None) != vol_w:
-                    pat = cairo.LinearGradient(margin, 0, margin + vol_w, 0)
+                if getattr(self, "_cached_gradient_track_w", None) != track_w:
+                    pat = cairo.LinearGradient(margin, 0, margin + track_w, 0)
                     pat.add_color_stop_rgba(0.00, 0.24, 0.70, 0.34, 1.0)   # Vivid Emerald Green #3db356
                     pat.add_color_stop_rgba(0.65, 0.24, 0.70, 0.34, 1.0)  # Green up to 65%
                     pat.add_color_stop_rgba(0.85, 0.95, 0.75, 0.20, 1.0)  # Warm Yellow at 85%
                     pat.add_color_stop_rgba(1.00, 0.95, 0.30, 0.25, 1.0)  # Studio Red at 100%
                     self._cached_gradient = pat
-                    self._cached_gradient_vol_w = vol_w
+                    self._cached_gradient_track_w = track_w
                 else:
                     pat = self._cached_gradient
                 cr.set_source(pat)
                 if meter_l > 0.5:
-                    cr.rectangle(margin, y_top, meter_l, track_h)
+                    cr.rectangle(margin, y_top, min(track_w, meter_l), track_h)
                 if meter_r > 0.5:
-                    cr.rectangle(margin, y_bot, meter_r, track_h)
+                    cr.rectangle(margin, y_bot, min(track_w, meter_r), track_h)
                 cr.fill()
 
         # Draw Draggable Blue Knob
