@@ -64,7 +64,8 @@ def _init_libusb():
                 ctypes.c_uint16, ctypes.c_uint16,
                 ctypes.POINTER(ctypes.c_ubyte), ctypes.c_uint16, ctypes.c_uint,
             ]
-            _lib.libusb_control_transfer.restype = ctypes.c_int
+            _lib.libusb_exit.argtypes = [ctypes.c_void_p]
+            _lib.libusb_exit.restype = None
 
             _lib_ctx = ctypes.c_void_p()
             ret = _lib.libusb_init(ctypes.byref(_lib_ctx))
@@ -75,6 +76,25 @@ def _init_libusb():
             log.error(f"Failed to load libusb library: {e}")
             _lib = None
     return _lib
+
+def _reset_libusb_context():
+    """Flushes and re-initializes libusb device enumeration tables upon system wake."""
+    global _lib, _lib_ctx
+    with _lib_lock:
+        if _lib and _lib_ctx:
+            try:
+                _lib.libusb_exit(_lib_ctx)
+            except Exception:
+                pass
+            _lib_ctx = ctypes.c_void_p()
+            try:
+                ret = _lib.libusb_init(ctypes.byref(_lib_ctx))
+                if ret == 0:
+                    log.info("Successfully re-initialized libusb context after system wake")
+                else:
+                    log.warning(f"libusb_init on resume returned code {ret}")
+            except Exception as e:
+                log.warning(f"Failed to re-init libusb context on resume: {e}")
 
 
 @dataclass(frozen=True)
@@ -252,11 +272,14 @@ class ElgatoWaveDevice:
                             lib.libusb_claim_interface(handle, self.profile.claim_interface)
                         except Exception as e:
                             log.debug(f"Could not claim interface {self.profile.claim_interface}: {e}")
+                    if not self._read_initial_info():
+                        self.disconnect()
+                        return False
                     log.info(f"Successfully connected to Elgato {self.profile.display_name} (0x{self.profile.vid:04X}:0x{self.profile.pid:04X})")
-                    self._read_initial_info()
                     return True
             except Exception as e:
                 log.warning(f"Failed to open Elgato device: {e}")
+                self.disconnect()
         return False
 
     def disconnect(self):
@@ -362,13 +385,16 @@ class ElgatoWaveDevice:
                 "serial": serial
             }
             log.info(f"Elgato {p.display_name} Info -> FW: {fw_ver}, Serial: {serial} (wIndex=0x{self._active_windex:04X})")
+            self._consecutive_errors = 0
+            self._backoff_until = 0.0
+            return True
         else:
             self._active_windex = self.profile.windex
             log.warning(f"Could not read device info for {self.profile.display_name}")
             self.dev_info = {"name": self.profile.display_name, "fw_version": "Unknown", "serial": "Unknown"}
-
-        self._consecutive_errors = 0
-        self._backoff_until = 0.0
+            self._consecutive_errors = 0
+            self._backoff_until = 0.0
+            return False
 
     def read_config(self) -> bytearray:
         return self._ctrl_read(self.profile.wvalue_config, self.profile.config_len)
@@ -918,6 +944,7 @@ class ElgatoManager:
     def on_system_resume(self):
         """Restores background sync loop and reconnects Elgato hardware after wake."""
         self._stop_poll = False
+        _reset_libusb_context()
         dev = self.detect_device()
         if dev:
             self._start_sync_loop()
