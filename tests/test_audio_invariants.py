@@ -75,6 +75,9 @@ class TestPipeWireTopologyInvariants(unittest.TestCase):
 
     def setUp(self):
         try:
+            from wavecontroller.engine.pipewire_manager import PipeWireManager
+            pwm = PipeWireManager()
+            pwm._reconcile_app_streams_fast()
             out = subprocess.check_output(["pw-link", "-l"], text=True, stderr=subprocess.DEVNULL)
             self.links_out = out
         except Exception:

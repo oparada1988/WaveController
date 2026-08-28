@@ -17,6 +17,18 @@
 
 ### Features
 
+* **Modular Audio Engine & Regression Protection**:
+  * **Decoupled Architecture**: Modularized into specialized subsystems (`engine/graph/process_classifier` and `engine/metering/capture_driver`).
+  * **26-Test Audio Invariant Suite**: Automated regression suite guarding zero-bleed audio contracts, submix loopback states, and binary priority mapping.
+  * **Git Pre-Commit Safety Guard**: Automatically blocks regressions on commit.
+* **Clean System Audio Menus & Direct Ingestion**:
+  * System settings (GNOME Settings, Discord Output, Browser Menus) display **ONLY** true Output Mixes (*Personal Mix*, *Application Mix*, *Stream Mix*).
+  * Ingestion channels remain purely within WaveController's matrix, eliminating menu clutter.
+* **Authoritative App Classification & Zero Collisions**:
+  * Prioritizes `application.process.binary` metadata to completely eliminate Chromium/Electron collisions (e.g. Discord, Slack, Teams vs Google Chrome).
+* **Studio-Grade Perceptual VU Metering**:
+  * Smooth 40 FPS unbuffered PCM stream metering with OBS/Wave Link broadcast $-54\text{ dBFS}$ to $0\text{ dBFS}$ loudness curves.
+  * Strict zero-bleed microphone isolation across independent submix faders.
 * **Multi-Track Virtual Sub-Mixing**:
   * Virtual Audio Input Channels
   * Independent Output Buses

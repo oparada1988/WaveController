@@ -53,7 +53,7 @@ PAYLOAD=$(jq -n \
           },
           {
             name: "🏷️ Channel",
-            value: "Pre-Alpha Release",
+            value: "Alpha Release",
             inline: true
           },
           {
