@@ -56,7 +56,7 @@ class EffectsView(Gtk.Box):
         pref_page.add(grp_fx)
 
         # Group: VST3 / LV2 Plugin Hosting
-        grp_vst = Adw.PreferencesGroup(title="External VST3 & LV2 Plugin Directory")
+        grp_vst = Adw.PreferencesGroup(title="External VST3 &amp; LV2 Plugin Directory")
         vst_row = Adw.ActionRow(title="Scan VST3 / LV2 Plugins", subtitle="~/.vst3, /usr/lib/vst3, ~/.lv2")
         scan_btn = Gtk.Button(label="Scan Plugins")
         scan_btn.set_valign(Gtk.Align.CENTER)
