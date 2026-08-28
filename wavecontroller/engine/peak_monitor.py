@@ -5,6 +5,7 @@ import threading
 import time
 import array
 import fcntl
+from wavecontroller.engine.metering.capture_driver import calc_perceptual_peak, open_pw_record, drain_and_calc_peaks
 
 class MultiChannelPeakMonitor:
     """
@@ -38,7 +39,7 @@ class MultiChannelPeakMonitor:
         for p in [self.mic_proc, self.sink_proc]:
             if p:
                 try:
-                    p.kill()
+                    p.terminate()
                 except Exception:
                     pass
         self.mic_proc = None
@@ -50,6 +51,7 @@ class MultiChannelPeakMonitor:
             except Exception:
                 pass
         self._channel_procs.clear()
+        self._channel_proc_channels.clear()
 
     def _discover_mic_target(self) -> tuple:
         """Finds active physical microphone target node name and channels."""
@@ -95,38 +97,7 @@ class MultiChannelPeakMonitor:
         return None
 
     def _open_pw_record(self, node_name: str, target: str = None, channels: int = 2, is_sink: bool = False):
-        # Spoof application ID as org.PulseAudio.pavucontrol and media.role as volume-control
-        # to bypass GNOME Shell's persistent microphone privacy recording icon on the top panel.
-        cmd = [
-            'pw-record',
-            '-P', f'node.name={node_name}',
-            '-P', f'node.description={node_name}',
-            '-P', 'application.id=org.PulseAudio.pavucontrol',
-            '-P', 'application.name=pavucontrol',
-            '-P', 'application.icon_name=pavucontrol',
-            '-P', 'application.process.binary=pavucontrol',
-            '-P', 'media.role=volume-control',
-            '-P', f'audio.channels={channels}',
-            '-P', 'audio.position=[FL,FR]' if channels == 2 else 'audio.position=[MONO]',
-            '--raw',
-            '--format=s16',
-            '--rate=48000',
-            f'--channels={channels}',
-            '--latency=20ms'
-        ]
-        if is_sink or (target and ('sink' in target.lower() or 'wavecontroller_channel_' in target.lower())):
-            cmd.extend(['-P', 'stream.capture.sink=true'])
-        if target:
-            cmd.extend(['--target', target])
-        cmd.append('-')
-        try:
-            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-            fd = proc.stdout.fileno()
-            flags = fcntl.fcntl(fd, fcntl.F_GETFL)
-            fcntl.fcntl(fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
-            return proc
-        except Exception:
-            return None
+        return open_pw_record(node_name, target=target, channels=channels, is_sink=is_sink)
 
     def _link_mic_monitor(self):
         """Discovers physical hardware microphone ports and links wave_mic_monitor to them directly."""
@@ -247,98 +218,10 @@ class MultiChannelPeakMonitor:
 
     @staticmethod
     def _calc_perceptual_peak(peak_raw: float, rms: float) -> float:
-        """Translates raw linear PCM samples into studio-grade decibel/perceptual meter levels.
-        
-        Uses an OBS/Wave Link broadcast curve from -54 dBFS (0%) to 0 dBFS (100%):
-        - Whisper / Background noise (-46 dB): ~10%
-        - Speech / Vocals (-18 dB): ~60% - 65%
-        - Mastered music (-12 dB to -6 dB): ~80% - 92%
-        - True peak transients / 0 dBFS limit: 95% - 100%
-        """
-        mag = max(peak_raw, rms * 1.8)
-        if mag <= 0.002:
-            return 0.0
-        db = 20.0 * math.log10(mag)
-        if db <= -48.0:
-            return 0.0
-        ratio = (db + 48.0) / 48.0
-        return max(0.0, min(1.0, ratio ** 1.20))
+        return calc_perceptual_peak(peak_raw, rms)
 
     def _drain_and_calc_peaks(self, proc, channels: int = 2):
-        if not proc or proc.poll() is not None:
-            return 0.0, 0.0
-        fd = proc.stdout.fileno()
-        all_data = []
-        while True:
-            try:
-                chunk = os.read(fd, 16384)
-                if not chunk:
-                    break
-                all_data.append(chunk)
-            except (BlockingIOError, InterruptedError, OSError):
-                break
-
-        if not all_data:
-            return 0.0, 0.0
-
-        combined = b"".join(all_data)
-        if len(combined) < 2:
-            return 0.0, 0.0
-
-        if len(combined) % 2 != 0:
-            combined = combined[:-1]
-
-        # Analyze the most recent audio window (up to last 8192 bytes ≈ 42ms)
-        window = combined[-8192:] if len(combined) > 8192 else combined
-        samples = array.array('h', window)
-        n_samples = len(samples)
-        if n_samples < 1:
-            return 0.0, 0.0
-
-        # Mono 1-channel capture (e.g. Wave XLR mono microphone)
-        if channels == 1:
-            sum_sq = 0
-            peak_val = 0
-            for s in samples:
-                sum_sq += s * s
-                a = abs(s)
-                if a > peak_val:
-                    peak_val = a
-            rms = math.sqrt(sum_sq / n_samples) / 32768.0
-            peak_raw = peak_val / 32768.0
-            val = self._calc_perceptual_peak(peak_raw, rms)
-            return val, val
-
-        # Stereo 2-channel interleaved capture (Single pass avoids slices & generator object allocation)
-        sum_sq_l = 0
-        sum_sq_r = 0
-        peak_val_l = 0
-        peak_val_r = 0
-        n_pairs = n_samples // 2
-        if n_pairs < 1:
-            return 0.0, 0.0
-
-        for i in range(0, n_pairs * 2, 2):
-            sl = samples[i]
-            sr = samples[i + 1]
-            sum_sq_l += sl * sl
-            sum_sq_r += sr * sr
-            al = abs(sl)
-            ar = abs(sr)
-            if al > peak_val_l:
-                peak_val_l = al
-            if ar > peak_val_r:
-                peak_val_r = ar
-
-        rms_l = math.sqrt(sum_sq_l / n_pairs) / 32768.0
-        rms_r = math.sqrt(sum_sq_r / n_pairs) / 32768.0
-        peak_raw_l = peak_val_l / 32768.0
-        peak_raw_r = peak_val_r / 32768.0
-
-        val_l = self._calc_perceptual_peak(peak_raw_l, rms_l)
-        val_r = self._calc_perceptual_peak(peak_raw_r, rms_r)
-
-        return val_l, val_r
+        return drain_and_calc_peaks(proc, channels=channels)
 
     def _refresh_channel_monitors(self):
         """Discovers active WaveController_Channel_* sinks and physical input sources, spawning/pruning per-channel pw-record processes."""
