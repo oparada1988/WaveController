@@ -1072,6 +1072,10 @@ class PipeWireManager:
         ids = []
         target_sink = f"wavecontroller_{canon_mix.lower()}_sink"
         target_src = f"wavecontroller_{canon_mix.lower()}_source"
+        with self._lock:
+            mix_obj = next((m for m in self.mixes if m["id"] == canon_mix), None)
+            target_dev = mix_obj.get("target_device") if mix_obj else None
+            m_type = mix_obj.get("type", "source") if mix_obj else "source"
 
         try:
             out = subprocess.check_output(["pw-dump"], text=True, stderr=subprocess.DEVNULL)
@@ -1080,11 +1084,20 @@ class PipeWireManager:
                 if obj.get("type") == "PipeWire:Interface:Node":
                     props = obj.get("info", {}).get("props", {})
                     n_name = props.get("node.name", "").lower()
+                    media_class = props.get("media.class", "")
                     obj_id = str(obj["id"])
                     
-                    # Target strictly the dedicated virtual mix bus adapter for single-point gain staging
-                    if target_sink in n_name or target_src in n_name:
-                        ids.append(obj_id)
+                    # 1. Physical Hardware Sink Mix (e.g. Fifine, Mobo, USB DAC, etc.)
+                    if (m_type == "sink" or "personal" in canon_mix) and target_dev and target_dev not in ("none", ""):
+                        if "elgato" not in target_dev.lower() and "wave" not in target_dev.lower():
+                            clean_target = target_dev.replace("alsa_card.", "").replace("alsa_output.", "").replace("alsa_input.", "").strip().lower()
+                            if media_class == "Audio/Sink" and (clean_target in n_name or clean_target in props.get("node.description", "").lower()):
+                                ids.append(obj_id)
+
+                    # 2. Virtual Broadcast Source Mixes (e.g. Stream Mix, Chat Mix) or fallback when no physical dev assigned
+                    if not ids:
+                        if target_src in n_name or target_sink in n_name:
+                            ids.append(obj_id)
         except Exception:
             pass
 
@@ -1297,10 +1310,12 @@ class PipeWireManager:
         return new_mute
 
     def _volume_worker_loop(self):
-        """Persistent worker thread dispatching coalesced volume updates with zero drag latency and cubic perceptual scaling."""
+        """Persistent worker thread dispatching coalesced volume updates with zero drag latency and broadcast fader curve."""
         while self.running:
             self._volume_event.wait(timeout=0.5)
             self._volume_event.clear()
+            # Coalesce high-frequency mouse drag events (60-120 Hz) into clean 100 FPS updates with zero queue backlog
+            time.sleep(0.010)
 
             if time.time() - self._last_cache_time > 5.0:
                 self._refresh_node_cache()
