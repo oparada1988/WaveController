@@ -183,15 +183,17 @@ class WaveControllerApp(Adw.Application):
             if hasattr(self, "pipewire_mgr") and self.pipewire_mgr:
                 self.pipewire_mgr.on_system_suspend()
         else:
-            log.info("[WaveController.Power] System resumed from sleep/suspend. Scheduling state restoration...")
-            # 1.2-second settling grace period for kernel USB and PipeWire/WirePlumber to re-enumerate
-            GLib.timeout_add(1200, self._on_system_resume_delayed)
+            log.info("[WaveController.Power] System resumed from sleep/suspend. Triggering immediate restoration...")
+            # 1. Hardware restore starts IMMEDIATELY upon wake signal with fast-polling (no 1.2s delay)
+            if hasattr(self, "hardware_mgr") and self.hardware_mgr:
+                self.hardware_mgr.on_system_resume()
+
+            # 2. PipeWire audio routing & UI refresh runs with a brief 250ms settling window
+            GLib.timeout_add(250, self._on_system_resume_delayed)
 
     def _on_system_resume_delayed(self):
         try:
-            log.info("[WaveController.Power] Restoring hardware and audio routing following resume...")
-            if hasattr(self, "hardware_mgr") and self.hardware_mgr:
-                self.hardware_mgr.on_system_resume()
+            log.info("[WaveController.Power] Restoring audio routing and UI following resume...")
             if hasattr(self, "pipewire_mgr") and self.pipewire_mgr:
                 self.pipewire_mgr.on_system_resume()
             if hasattr(self, "peak_monitor") and self.peak_monitor:

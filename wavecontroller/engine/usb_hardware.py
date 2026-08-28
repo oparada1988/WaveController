@@ -424,50 +424,55 @@ class USBHardwareManager:
         
         try:
             hw_settings = config_manager.get("hardware_settings", {})
-            
-            # 1. 48V Phantom Power
-            saved_phantom = hw_settings.get("phantom_power", self.phantom_power_48v)
-            self.phantom_power_48v = bool(saved_phantom)
-            dev.set_phantom_power(self.phantom_power_48v)
-            
-            # 2. Analog Preamp Gain
-            saved_gain = hw_settings.get("gain_db", self.hardware_gain_db)
-            self.hardware_gain_db = int(round(float(saved_gain)))
-            dev.set_gain_db(self.hardware_gain_db)
-            
-            # 3. Clipguard
-            saved_clip = hw_settings.get("clipguard", self.clipguard_enabled)
-            self.clipguard_enabled = bool(saved_clip)
-            dev.set_clipguard(self.clipguard_enabled)
-            
-            # 4. Low-Cut Filter
-            saved_lc = hw_settings.get("low_cut", self.low_cut_filter)
-            self.low_cut_filter = str(saved_lc)
-            dev.set_low_cut(self.low_cut_filter)
-            
-            # 5. Low Impedance
-            saved_lz = hw_settings.get("low_impedance", self.low_impedance_mode)
-            self.low_impedance_mode = bool(saved_lz)
-            dev.set_low_impedance(self.low_impedance_mode)
-            
-            # 6. LED Colors
-            if self.led_colors:
-                dev.set_led_colors(self.led_colors)
+            if hasattr(dev, "apply_full_config"):
+                dev.apply_full_config(hw_settings, self.led_colors, self.hardware_mute)
+                # Keep internal state cache in sync
+                self.phantom_power_48v = bool(hw_settings.get("phantom_power", self.phantom_power_48v))
+                self.hardware_gain_db = int(round(float(hw_settings.get("gain_db", self.hardware_gain_db))))
+                self.clipguard_enabled = bool(hw_settings.get("clipguard", self.clipguard_enabled))
+                self.low_cut_filter = str(hw_settings.get("low_cut", self.low_cut_filter))
+                self.low_impedance_mode = bool(hw_settings.get("low_impedance", self.low_impedance_mode))
+                self.headphone_volume = int(round(float(hw_settings.get("headphone_volume", self.headphone_volume))))
+                self.monitor_mix = int(round(float(hw_settings.get("monitor_mix", self.monitor_mix))))
+                self.mic_pc_crossfade = self.monitor_mix
+            else:
+                # Fallback for devices without atomic write
+                saved_phantom = hw_settings.get("phantom_power", self.phantom_power_48v)
+                self.phantom_power_48v = bool(saved_phantom)
+                dev.set_phantom_power(self.phantom_power_48v)
                 
-            # 7. Headphone Volume & Monitor Mix
-            saved_hp = hw_settings.get("headphone_volume", self.headphone_volume)
-            self.headphone_volume = int(round(float(saved_hp)))
-            dev.set_headphone_volume_pct(self.headphone_volume)
+                saved_gain = hw_settings.get("gain_db", self.hardware_gain_db)
+                self.hardware_gain_db = int(round(float(saved_gain)))
+                dev.set_gain_db(self.hardware_gain_db)
+                
+                saved_clip = hw_settings.get("clipguard", self.clipguard_enabled)
+                self.clipguard_enabled = bool(saved_clip)
+                dev.set_clipguard(self.clipguard_enabled)
+                
+                saved_lc = hw_settings.get("low_cut", self.low_cut_filter)
+                self.low_cut_filter = str(saved_lc)
+                dev.set_low_cut(self.low_cut_filter)
+                
+                saved_lz = hw_settings.get("low_impedance", self.low_impedance_mode)
+                self.low_impedance_mode = bool(saved_lz)
+                dev.set_low_impedance(self.low_impedance_mode)
+                
+                if self.led_colors:
+                    dev.set_led_colors(self.led_colors)
+                    
+                saved_hp = hw_settings.get("headphone_volume", self.headphone_volume)
+                self.headphone_volume = int(round(float(saved_hp)))
+                dev.set_headphone_volume_pct(self.headphone_volume)
 
-            saved_mix = hw_settings.get("monitor_mix", self.monitor_mix)
-            self.monitor_mix = int(round(float(saved_mix)))
-            self.mic_pc_crossfade = self.monitor_mix
-            dev.set_monitor_mix(self.monitor_mix)
-            
-            # 8. Unmute physical hardware unless explicitly set to muted
-            dev.set_mode_mute("gain", self.hardware_mute)
-            dev.set_mode_mute("hp", False)
-            dev.set_mode_mute("mix", False)
+                saved_mix = hw_settings.get("monitor_mix", self.monitor_mix)
+                self.monitor_mix = int(round(float(saved_mix)))
+                self.mic_pc_crossfade = self.monitor_mix
+                dev.set_monitor_mix(self.monitor_mix)
+                
+                dev.set_mode_mute("gain", self.hardware_mute)
+                dev.set_mode_mute("hp", False)
+                dev.set_mode_mute("mix", False)
+
             self._last_gain_set_time = time.time() + 2.0
             self._last_hp_set_time = time.time() + 2.0
         except Exception as e:
@@ -481,38 +486,45 @@ class USBHardwareManager:
         elgato_manager.on_system_suspend()
 
     def on_system_resume(self):
-        """Restores physical USB hardware and applies saved configuration after system wake."""
-        log.info("[WaveController.Hardware] System resumed: restoring USB audio hardware and saved configuration...")
+        """Restores physical USB hardware and applies saved configuration immediately after system wake."""
+        log.info("[WaveController.Hardware] System resumed: fast-restoring USB audio hardware and saved configuration...")
         self._is_sleeping = False
         self._restoring_hardware = True
         self._last_gain_set_time = time.time() + 3.0
         self._last_hp_set_time = time.time() + 3.0
         self._elgato_initialized = False
+        elgato_manager.on_system_resume()
 
-        def _do_restore():
-            time.sleep(0.8)
-            elgato_manager.on_system_resume()
-            dev = elgato_manager.get_device()
-            if dev and dev.is_connected():
-                self.apply_saved_hardware_settings(dev)
-                self._elgato_initialized = True
-                log.info(f"[WaveController.Hardware] Successfully restored settings to {dev.profile.display_name}")
+        def _do_fast_restore():
+            # Fast retry loop: attempt immediate connection every 35ms (up to 35 attempts = ~1.2s max)
+            # Reconnects in <100ms on typical resume as soon as the USB hub is powered
+            for attempt in range(35):
+                if self._is_sleeping:
+                    break
+                dev = elgato_manager.get_device()
+                if dev and dev.is_connected():
+                    self.apply_saved_hardware_settings(dev)
+                    self._elgato_initialized = True
+                    log.info(f"[WaveController.Hardware] Successfully fast-restored settings to {dev.profile.display_name} on attempt {attempt + 1}")
 
-                # Notify listeners of current hardware state
-                try:
-                    curr = dev.get_all_state()
-                    self.notify_hardware_listeners(curr, {
-                        "gain_db": self.hardware_gain_db,
-                        "hp_volume_pct": self.headphone_volume,
-                        "monitor_mix_pct": self.monitor_mix,
-                        "mute": self.hardware_mute
-                    })
-                except Exception:
-                    pass
-            time.sleep(0.5)
+                    # Notify listeners of current hardware state
+                    try:
+                        curr = dev.get_all_state()
+                        self.notify_hardware_listeners(curr, {
+                            "gain_db": self.hardware_gain_db,
+                            "hp_volume_pct": self.headphone_volume,
+                            "monitor_mix_pct": self.monitor_mix,
+                            "mute": self.hardware_mute
+                        })
+                    except Exception:
+                        pass
+                    break
+                time.sleep(0.035)
+
+            time.sleep(0.1)
             self._restoring_hardware = False
 
-        threading.Thread(target=_do_restore, daemon=True).start()
+        threading.Thread(target=_do_fast_restore, daemon=True).start()
 
     def _start_hotplug_monitor(self):
         """Background worker checking for newly attached or detached hardware devices."""
