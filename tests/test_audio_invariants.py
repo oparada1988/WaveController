@@ -366,6 +366,35 @@ class TestTokenMatchingInvariants(unittest.TestCase):
         self.assertEqual(res["channel_master_states"]["spotify"]["volume"], 85)
         self.assertIn("is_connected", res["hardware"])
 
+    def test_add_channel_and_mix_state_initialization(self):
+        """Invariant: Adding a channel or mix must proactively initialize all master and submix volume states."""
+        self.pwm.channels = []
+        self.pwm.mixes = []
+        self.pwm.channel_master_states = {}
+        self.pwm.mix_states = {}
+        self.pwm.channel_states = {}
+        self.pwm.assigned_apps = {}
+        self.pwm._volume_queue = {}
+        self.pwm._mix_volume_queue = {}
+        self.pwm._submix_volume_queue = {}
+        import threading
+        self.pwm._volume_event = threading.Event()
+
+        # Add mix
+        new_mix = self.pwm.add_mix("Stream Mix", mix_type="source")
+        self.assertEqual(new_mix["id"], "stream_mix")
+        self.assertIn("stream_mix", self.pwm.mix_states)
+        self.assertEqual(self.pwm.mix_states["stream_mix"]["volume"], 100)
+
+        # Add channel
+        new_ch = self.pwm.add_channel("Discord", ch_type="sink")
+        self.assertEqual(new_ch["id"], "discord")
+        self.assertIn("discord", self.pwm.channel_master_states)
+        self.assertEqual(self.pwm.channel_master_states["discord"]["volume"], 80)
+        self.assertIn("discord", self.pwm.channel_states)
+        self.assertIn("stream_mix", self.pwm.channel_states["discord"])
+        self.assertEqual(self.pwm.channel_states["discord"]["stream_mix"]["volume"], 80)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

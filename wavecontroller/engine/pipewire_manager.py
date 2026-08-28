@@ -1200,10 +1200,11 @@ class PipeWireManager:
 
         for n_id in node_ids:
             try:
-                subprocess.run(["wpctl", "set-volume", str(n_id), f"{vol_frac:.2f}"], stderr=subprocess.DEVNULL)
-                subprocess.run(["wpctl", "set-mute", str(n_id), "1" if is_muted else "0"], stderr=subprocess.DEVNULL)
+                subprocess.Popen(["wpctl", "set-volume", str(n_id), f"{vol_frac:.2f}"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                subprocess.Popen(["wpctl", "set-mute", str(n_id), "1" if is_muted else "0"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             except Exception:
-                pass
+                with self._lock:
+                    self._submix_node_ids.pop(key, None)
 
     def _ensure_submix_loopback(self, ch_id: str, m_id: str, vol_pct: int, is_muted: bool):
         """Provisions an isolated, ultra-low latency sub-mix loopback stream with independent hardware DSP gain."""
@@ -1213,6 +1214,7 @@ class PipeWireManager:
         with self._lock:
             proc = self._submix_procs.get(key)
             if proc is None or proc.poll() is not None:
+                self._submix_node_ids.pop(key, None)
                 cmd = [
                     "pw-loopback",
                     "--capture-props={ node.autoconnect=false application.id=org.PulseAudio.pavucontrol media.role=volume-control }",
@@ -1348,14 +1350,33 @@ class PipeWireManager:
                 if "elgato" in channel_id.lower() or "wave_xlr" in channel_id.lower() or (ch_name and "elgato" in ch_name.lower()):
                     continue
 
-                # Virtual playback sinks (WaveController_Channel_<ch>) must remain at 1.0 (unity gain)
-                # so that submix loopbacks can apply their independent volume attenuations without compounding.
+                # Virtual playback sinks (WaveController_Channel_<ch>):
+                # - When linked: virtual ingestion sink remains at unity (1.00) while submix loopback faders scale in lockstep.
+                # - When unlinked: apply master channel volume directly to the virtual ingestion sink as pre-fader channel attenuation.
                 is_virtual_sink = any(c.get("id") == channel_id and c.get("type") == "sink" for c in self.channels)
-                if is_virtual_sink:
-                    continue
-
                 target_node_ids = set()
                 ch_sink_name = f"wavecontroller_channel_{channel_id}".lower()
+
+                if is_virtual_sink:
+                    sink_node_ids = set()
+                    with self._lock:
+                        if ch_sink_name in self._node_cache:
+                            sink_node_ids.update(self._node_cache[ch_sink_name])
+
+                    if not sink_node_ids:
+                        self._refresh_node_cache()
+                        with self._lock:
+                            if ch_sink_name in self._node_cache:
+                                sink_node_ids.update(self._node_cache[ch_sink_name])
+
+                    sink_vol_frac = 1.00 if self.is_channel_linked(channel_id) else vol_frac
+                    for s_id in sink_node_ids:
+                        try:
+                            subprocess.Popen(["wpctl", "set-volume", str(s_id), f"{sink_vol_frac:.2f}"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                            subprocess.Popen(["wpctl", "set-mute", str(s_id), "1" if is_muted else "0"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                        except Exception:
+                            pass
+                    continue
 
                 # Priority 1: Direct volume dispatch to the channel's dedicated virtual sink adapter
                 with self._lock:
@@ -1370,7 +1391,8 @@ class PipeWireManager:
 
                 # Priority 2: For hardware input capture sources (e.g. Fifine Mic, Mobo Mic) that don't use virtual playback sinks
                 if not target_node_ids:
-                    is_source = any(k in channel_id.lower() for k in ("mic", "fefine", "fifine", "microphone", "input", "capture", "mobo"))
+                    ch_type = ch_obj.get("type", "source") if ch_obj else "source"
+                    is_source = (ch_type == "source") or any(k in channel_id.lower() for k in ("mic", "fefine", "fifine", "microphone", "input", "capture", "mobo"))
                     if is_source:
                         hw_search = set([channel_id.lower()])
                         if "fefine" in hw_search:
@@ -1387,8 +1409,8 @@ class PipeWireManager:
 
                 for node_id in target_node_ids:
                     try:
-                        subprocess.run(["wpctl", "set-volume", str(node_id), f"{vol_frac:.2f}"], stderr=subprocess.DEVNULL)
-                        subprocess.run(["wpctl", "set-mute", str(node_id), "1" if is_muted else "0"], stderr=subprocess.DEVNULL)
+                        subprocess.Popen(["wpctl", "set-volume", str(node_id), f"{vol_frac:.2f}"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                        subprocess.Popen(["wpctl", "set-mute", str(node_id), "1" if is_muted else "0"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                     except Exception:
                         pass
 
@@ -1402,8 +1424,8 @@ class PipeWireManager:
                 node_ids = self._get_mix_node_ids(mix_id)
                 for n_id in node_ids:
                     try:
-                        subprocess.run(["wpctl", "set-volume", str(n_id), f"{vol_frac:.2f}"], stderr=subprocess.DEVNULL)
-                        subprocess.run(["wpctl", "set-mute", str(n_id), "1" if is_muted else "0"], stderr=subprocess.DEVNULL)
+                        subprocess.Popen(["wpctl", "set-volume", str(n_id), f"{vol_frac:.2f}"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                        subprocess.Popen(["wpctl", "set-mute", str(n_id), "1" if is_muted else "0"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                     except Exception:
                         pass
 
@@ -1439,14 +1461,21 @@ class PipeWireManager:
             if channel_id not in self.channel_states:
                 self.channel_states[channel_id] = {}
             if mix_id not in self.channel_states[channel_id]:
+                master_vol = self.get_channel_master_volume(channel_id)
                 self.channel_states[channel_id][mix_id] = {
-                    "volume": 80,
+                    "volume": master_vol,
                     "muted": False,
                     "linked": True,
                     "enabled": enabled
                 }
             else:
                 self.channel_states[channel_id][mix_id]["enabled"] = enabled
+            
+            if enabled:
+                st = self.channel_states[channel_id][mix_id]
+                self._submix_volume_queue[(channel_id, mix_id)] = (st.get("volume", 80), st.get("muted", False))
+                self._volume_event.set()
+
             self._save_state_to_config(immediate=True)
         self._sync_channel_audio_routing(channel_id=channel_id)
 
@@ -1827,20 +1856,25 @@ class PipeWireManager:
                 ch_id = f"{ch_id}_{len(self.channels)}"
 
             resolved_icon = icon or self.resolve_icon_for_app(name)
+            default_vol = 80
             new_ch = {
                 "id": ch_id,
                 "name": name,
                 "type": ch_type,
                 "icon": resolved_icon,
-                "default_vol": 80,
+                "default_vol": default_vol,
                 "sync_meter": sync_meter
             }
             self.channels.append(new_ch)
+            self.channel_master_states[ch_id] = {
+                "volume": default_vol,
+                "muted": False
+            }
             self.channel_states[ch_id] = {}
             self.assigned_apps[ch_id] = assigned_apps if assigned_apps is not None else ([name] if ch_type == "sink" else [])
             for mx in self.mixes:
                 self.channel_states[ch_id][mx["id"]] = {
-                    "volume": 80,
+                    "volume": default_vol,
                     "muted": False,
                     "linked": True,
                     "enabled": False
@@ -1849,6 +1883,8 @@ class PipeWireManager:
             self._refresh_node_cache()
             self._save_state_to_config(immediate=True)
             self._ensure_virtual_mix_nodes()
+            self._volume_queue[ch_id] = (default_vol, False)
+            self._volume_event.set()
             self._sync_channel_audio_routing(channel_id=ch_id)
             return new_ch
 
@@ -2081,12 +2117,14 @@ class PipeWireManager:
                 "target_device": target_device if mix_type == "sink" else "none"
             }
             self.mixes.append(new_mix)
+            self.mix_states[mix_id] = {"volume": 100, "muted": False}
             for ch in self.channels:
                 ch_id = ch["id"]
+                master_vol = self.get_channel_master_volume(ch_id)
                 if ch_id not in self.channel_states:
                     self.channel_states[ch_id] = {}
                 self.channel_states[ch_id][mix_id] = {
-                    "volume": 80,
+                    "volume": master_vol,
                     "muted": False,
                     "linked": True,
                     "enabled": False
@@ -2094,6 +2132,8 @@ class PipeWireManager:
             self._save_state_to_config(immediate=True)
             self._ensure_virtual_mix_nodes()
             self._refresh_node_cache()
+            self._mix_volume_queue[mix_id] = (100, False)
+            self._volume_event.set()
             self._sync_channel_audio_routing(mix_id=mix_id)
             return new_mix
 

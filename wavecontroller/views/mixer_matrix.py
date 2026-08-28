@@ -911,6 +911,8 @@ class MixerMatrixView(Gtk.Box):
     def _on_cell_changed(self, channel_id: str, mix_id: str):
         state = self.pipewire_mgr.get_channel_state(channel_id, mix_id)
         if state.get("linked", True):
+            if channel_id in self.channel_cards:
+                self.channel_cards[channel_id].update_ui_state()
             for m in self.pipewire_mgr.mixes:
                 cell = self.matrix_cells.get((channel_id, m["id"]))
                 if cell:
@@ -1097,6 +1099,8 @@ class MixerMatrixView(Gtk.Box):
         GLib.idle_add(self._rebuild_grid)
 
     def _on_link_toggled(self, channel_id: str, is_linked: bool):
+        if channel_id in self.channel_cards:
+            self.channel_cards[channel_id].update_ui_state()
         for m in self.pipewire_mgr.mixes:
             cell = self.matrix_cells.get((channel_id, m["id"]))
             if cell:
