@@ -283,7 +283,8 @@ class MultiChannelPeakMonitor:
 
                 assigned = self.pipewire_mgr.get_assigned_apps(ch_id) if hasattr(self.pipewire_mgr, "get_assigned_apps") else []
 
-                # 1A. Submix Loopbacks (For channels with assigned apps or active submix routing)
+                # 1A. Submix Loopbacks (For channels with active submix routing)
+                has_active_target = False
                 for p in all_ports:
                     if p.startswith("input.WaveController_submix_") and ":monitor_" in p:
                         node_part = p.split(":")[0]
@@ -292,13 +293,36 @@ class MultiChannelPeakMonitor:
                             if node_part not in target_map:
                                 target_map[node_part] = {"channels": 2, "is_sink": True, "keys": set()}
                             target_map[node_part]["keys"].add(ch_id)
+                            has_active_target = True
 
-                # 1B. Dedicated Pre-Fader Channel Virtual Ingestion Sinks
+                # 1B. Dedicated Pre-Fader Channel Virtual Ingestion Sinks (if expose_sink is enabled)
                 sink_node = f"WaveController_Channel_{ch_id}"
                 if any(p.startswith(f"{sink_node}:monitor_") for p in all_ports):
                     if sink_node not in target_map:
                         target_map[sink_node] = {"channels": 2, "is_sink": True, "keys": set()}
                     target_map[sink_node]["keys"].add(ch_id)
+                    has_active_target = True
+
+                # 1C. Direct Pre-Fader Application Stream Monitoring (When NO submixes or virtual sinks are active)
+                if not has_active_target and assigned:
+                    port_meta = self.pipewire_mgr._get_active_port_metadata_map() if hasattr(self.pipewire_mgr, "_get_active_port_metadata_map") else {}
+                    for app in assigned:
+                        tokens = self.pipewire_mgr._get_match_tokens(app) if hasattr(self.pipewire_mgr, "_get_match_tokens") else set()
+                        for p in all_ports:
+                            if p.startswith("output.WaveController_") or p.startswith("WaveController_") or ":monitor_" in p:
+                                continue
+                            if ":output_" in p:
+                                matches = False
+                                if hasattr(self.pipewire_mgr, "_port_matches_tokens"):
+                                    matches = self.pipewire_mgr._port_matches_tokens(p, tokens, port_meta)
+                                else:
+                                    p_low = p.lower()
+                                    matches = any(tok in p_low for tok in tokens if len(tok) >= 3)
+                                if matches:
+                                    app_node = p.split(":")[0]
+                                    if app_node not in target_map:
+                                        target_map[app_node] = {"channels": 2, "is_sink": False, "keys": set()}
+                                    target_map[app_node]["keys"].add(ch_id)
 
         # 2. Source Channels
         if self.pipewire_mgr:
@@ -372,7 +396,7 @@ class MultiChannelPeakMonitor:
 
             self._target_keys = {t: info["keys"] for t, info in target_map.items()}
 
-            # For any channel in pipewire_mgr not mapped to any active target, decay its peaks gracefully
+            # For any channel in pipewire_mgr not mapped to any active target, reset its peaks immediately
             mapped_keys = set()
             for t, info in target_map.items():
                 mapped_keys.update(info.get("keys", set()))
@@ -381,12 +405,9 @@ class MultiChannelPeakMonitor:
                 for ch in getattr(self.pipewire_mgr, "channels", []):
                     cid = ch.get("id")
                     if cid and cid not in mapped_keys:
-                        if cid in self._channel_peaks:
-                            prev_l = self._channel_peaks[cid].get("left", 0.0) * 0.5
-                            prev_r = self._channel_peaks[cid].get("right", 0.0) * 0.5
-                            self._channel_peaks[cid] = {"left": prev_l, "right": prev_r, "peak": max(prev_l, prev_r)}
-                        else:
-                            self._channel_peaks[cid] = {"left": 0.0, "right": 0.0, "peak": 0.0}
+                        self._channel_peaks[cid] = {"left": 0.0, "right": 0.0, "peak": 0.0}
+                        self.peaks[cid] = {"left": 0.0, "right": 0.0, "peak": 0.0}
+                        self.peaks[f"wavecontroller_channel_{cid}"] = {"left": 0.0, "right": 0.0, "peak": 0.0}
 
         # Spawn processes for new unique target nodes (outside lock)
         for target_node, info in target_map.items():
@@ -731,10 +752,19 @@ class MultiChannelPeakMonitor:
                         for non_p in ["chat_mix", "chat", "mobo_mix", "mobo", "stream_mix", "stream"]:
                             self.peaks[non_p] = {"left": 0.0, "right": 0.0, "peak": 0.0}
 
-                    # Isolated per-channel ingestion peaks
-                    for ch_id, ch_p in self._channel_peaks.items():
-                        self.peaks[ch_id] = ch_p
-                        self.peaks[f"wavecontroller_channel_{ch_id}"] = ch_p
+                    # Explicitly update per-channel ingestion peaks and zero-out inactive channels
+                    if self.pipewire_mgr:
+                        for ch in getattr(self.pipewire_mgr, "channels", []):
+                            cid = ch.get("id")
+                            if not cid or ch.get("type") == "source":
+                                continue
+                            ch_p = self._channel_peaks.get(cid, {"left": 0.0, "right": 0.0, "peak": 0.0})
+                            self.peaks[cid] = ch_p
+                            self.peaks[f"wavecontroller_channel_{cid}"] = ch_p
+                    else:
+                        for ch_id, ch_p in self._channel_peaks.items():
+                            self.peaks[ch_id] = ch_p
+                            self.peaks[f"wavecontroller_channel_{ch_id}"] = ch_p
             except Exception:
                 pass
 
@@ -760,11 +790,6 @@ class MultiChannelPeakMonitor:
             # 2. Per-Channel Dedicated Isolated VU Meter Process Peaks
             if ch_low in self._channel_peaks:
                 p = self._channel_peaks[ch_low]
-                return p.get("left", 0.0), p.get("right", 0.0)
-
-            # 3. Exact match in global channel peaks dict
-            if ch_low in self.peaks:
-                p = self.peaks[ch_low]
                 return p.get("left", 0.0), p.get("right", 0.0)
 
             # Return 0.0 for quiet, unassigned, or secondary mics — Strict Zero Cross-Bleed!

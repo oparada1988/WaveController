@@ -187,12 +187,11 @@ class PipeWireManager:
                 node_name = f"WaveController_{m_id}_Source"
                 needed_nodes[node_name] = (f"WaveController {m_name}", "Audio/Source/Virtual")
 
-        # Provision dedicated pre-fader virtual ingestion sinks for all playback/app/group channels
+        # Provision dedicated pre-fader virtual ingestion sinks ONLY for channels with expose_sink enabled
         for ch in channels_copy:
             ch_id = ch["id"]
             ch_name = ch.get("name", ch_id)
-            ch_type = ch.get("type", "sink")
-            if ch_type in ("app", "sink", "group") or (ch_type != "source" and not any(k in ch_id.lower() for k in ("mic", "fefine", "fifine", "capture", "input"))):
+            if ch.get("expose_sink", False):
                 node_name = f"WaveController_Channel_{ch_id}"
                 needed_nodes[node_name] = (f"WaveController {ch_name} (Sink)", "Audio/Sink")
 
@@ -759,11 +758,12 @@ class PipeWireManager:
                     need_sync = False
                     channel_sink_prefix = f"WaveController_Channel_{ch_id}:playback_"
                     submix_prefix = f"input.WaveController_submix_{ch_id}_"
+                    has_enabled_submixes = any(self.is_channel_mix_enabled(ch_id, m["id"]) for m in self.mixes) or self.is_channel_sink_exposed(ch_id)
                     for sp in matched_ports:
                         connected_dests = links_map.get(sp, set())
                         # 1. Immediately sever direct leaks to physical hardware or unauthorized mix sinks
                         for dp in connected_dests:
-                            is_auth = dp.startswith(channel_sink_prefix) or dp.startswith(submix_prefix)
+                            is_auth = dp.startswith(channel_sink_prefix) or dp.startswith(submix_prefix) or dp.startswith("wave_meter_")
                             if not is_auth:
                                 try:
                                     subprocess.run(["pw-link", "-d", sp, dp], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -772,9 +772,10 @@ class PipeWireManager:
                                 need_sync = True
 
                         # 2. Verify app is cleanly attached to its pre-fader channel ingestion sink or active submixes
-                        is_attached = any(dp.startswith(channel_sink_prefix) or dp.startswith(submix_prefix) for dp in connected_dests)
-                        if not is_attached:
-                            need_sync = True
+                        if has_enabled_submixes:
+                            is_attached = any(dp.startswith(channel_sink_prefix) or dp.startswith(submix_prefix) for dp in connected_dests)
+                            if not is_attached:
+                                need_sync = True
 
                     if need_sync:
                         self._sync_channel_audio_routing(channel_id=ch_id)

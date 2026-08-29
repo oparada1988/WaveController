@@ -402,6 +402,25 @@ class TestTokenMatchingInvariants(unittest.TestCase):
             # Must NOT trigger redundant routing sync
             self.pwm._sync_channel_audio_routing.assert_not_called()
 
+    def test_reconcile_app_streams_authorizes_wave_meter(self):
+        """Invariant: _reconcile_app_streams_fast must NEVER sever connections to wave_meter_."""
+        from unittest.mock import patch, MagicMock
+        with patch("subprocess.check_output") as mock_co, patch("subprocess.run") as mock_run:
+            mock_co.side_effect = lambda cmd, **kwargs: (
+                "spotify:output_FL\nspotify:output_FR\n" if "-o" in cmd
+                else "spotify:output_FL\n  |-> wave_meter_spotify:input_FL\n"
+                     "spotify:output_FR\n  |-> wave_meter_spotify:input_FR\n"
+            )
+            self.pwm.channels = [{"id": "spotify", "type": "app"}]
+            self.pwm.assigned_apps = {"spotify": ["Spotify"]}
+            self.pwm.mixes = [{"id": "personal_mix", "name": "Personal Mix"}]
+            self.pwm.channel_states = {"spotify": {"personal_mix": {"enabled": False}}}
+
+            self.pwm._reconcile_app_streams_fast()
+
+            # Must NOT call pw-link -d to sever the meter connection
+            mock_run.assert_not_called()
+
     def test_no_blanket_pkill_in_node_sync(self):
         """Invariant: _ensure_virtual_mix_nodes must NEVER execute blanket pkill during runtime."""
         import inspect
@@ -699,6 +718,12 @@ class TestTokenMatchingInvariants(unittest.TestCase):
         self.pwm.set_channel_sink_exposed(ch_id, True)
         self.assertTrue(self.pwm.is_channel_sink_exposed(ch_id))
 
+    def test_app_channels_do_not_provision_exposed_sinks(self):
+        """Invariant: Regular application channels must not have expose_sink enabled or create Audio/Sink nodes."""
+        ch = self.pwm.add_channel("Spotify", ch_type="app", assigned_apps=["Spotify"])
+        ch_id = ch["id"]
+        self.assertFalse(self.pwm.is_channel_sink_exposed(ch_id), "App channel should have expose_sink=False!")
+
 
     def test_mic_monitor_always_linked_in_discovery(self):
         """Invariant: _do_refresh_discovery and _link_mic_monitor MUST link physical microphone ports to wave_mic_monitor."""
@@ -903,6 +928,40 @@ class TestTokenMatchingInvariants(unittest.TestCase):
         self.assertFalse(hw._is_target_elgato("Shortwave"))
         self.assertTrue(hw._is_target_elgato("Elgato Wave XLR"))
         self.assertTrue(hw._is_target_elgato("wave_xlr"))
+
+    def test_unrouted_channel_peaks_report_zero(self):
+        """Invariant: When a channel has no active submix or is removed and app is quiet, its peaks must strictly return (0.0, 0.0)."""
+        from wavecontroller.engine.peak_monitor import MultiChannelPeakMonitor
+        pm = MultiChannelPeakMonitor()
+        pm.pipewire_mgr = self.pwm
+
+        # Simulate previous stale value in pm.peaks
+        pm.peaks["spotify"] = {"left": 0.45, "right": 0.45, "peak": 0.45}
+        pm._channel_peaks = {}  # No active submix monitor
+
+        l, r = pm.get_channel_stereo_peaks("spotify")
+        self.assertEqual(l, 0.0, "REGRESSION: Stale peak returned for unrouted channel!")
+        self.assertEqual(r, 0.0, "REGRESSION: Stale peak returned for unrouted channel!")
+
+    def test_direct_app_stream_monitoring_without_submixes(self):
+        """Invariant: PeakMonitor must discover direct app output ports for pre-fader channel metering even when no submixes are active."""
+        from wavecontroller.engine.peak_monitor import MultiChannelPeakMonitor
+        from unittest.mock import patch, MagicMock
+
+        mock_pwm = MagicMock()
+        mock_pwm.channels = [{"id": "spotify", "name": "Spotify", "type": "app"}]
+        mock_pwm.get_assigned_apps.return_value = ["Spotify"]
+        mock_pwm._get_active_port_metadata_map.return_value = {}
+        mock_pwm._get_match_tokens.return_value = {"spotify"}
+        mock_pwm._port_matches_tokens.side_effect = lambda p, toks, meta: any(t in p.lower() for t in toks)
+
+        pm = MultiChannelPeakMonitor()
+        pm.pipewire_mgr = mock_pwm
+
+        with patch("subprocess.check_output") as mock_co, patch("subprocess.run"), patch.object(pm, "_open_pw_record", return_value=None), patch.object(pm, "_link_and_audit_channel_monitors"):
+            mock_co.side_effect = lambda cmd, **kw: "spotify:output_FL\nspotify:output_FR\n" if cmd == ['pw-link', '-o'] else ""
+            pm._refresh_channel_monitors()
+            self.assertIn("spotify", pm._target_keys.get("spotify", set()), "Direct app output stream was not mapped for pre-fader metering!")
 
 
 if __name__ == "__main__":
