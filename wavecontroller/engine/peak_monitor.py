@@ -19,6 +19,8 @@ class MultiChannelPeakMonitor:
         self.mic_proc = None
         self.sink_proc = None
         self.thread = None
+        self._discovery_thread = None
+        self._refresh_event = threading.Event()
         self._lock = threading.Lock()
         self.pipewire_mgr = pipewire_mgr
         self.hardware_mgr = hardware_mgr
@@ -35,32 +37,41 @@ class MultiChannelPeakMonitor:
 
     def start(self):
         self.running = True
-        self._refresh_requested = False
+        self._refresh_event.clear()
+        # Initial discovery before starting the loops
+        self._do_refresh_discovery()
+
+        # 1. Continuous 40 FPS real-time audio capture loop
         self.thread = threading.Thread(target=self._run_capture_loop, daemon=True)
         self.thread.start()
 
+        # 2. Background asynchronous graph discovery & link auditing worker
+        self._discovery_thread = threading.Thread(target=self._run_discovery_loop, daemon=True)
+        self._discovery_thread.start()
+
     def trigger_refresh(self):
-        """Signals the capture loop to immediately re-evaluate active audio channels and stream targets (<10ms)."""
-        self._refresh_requested = True
+        """Signals the background discovery worker to immediately re-evaluate active audio channels and stream targets without blocking the capture loop."""
+        self._refresh_event.set()
 
     def stop(self):
         self.running = False
-        for p in [self.mic_proc, self.sink_proc]:
+        self._refresh_event.set()
+        with self._lock:
+            procs = [self.mic_proc, self.sink_proc] + list(self._channel_procs.values())
+            self.mic_proc = None
+            self.sink_proc = None
+            self._channel_procs.clear()
+            self._channel_proc_channels.clear()
+
+        for p in procs:
             if p:
                 try:
                     p.terminate()
                 except Exception:
-                    pass
-        self.mic_proc = None
-        self.sink_proc = None
-        # Stop all per-channel monitor processes
-        for ch_id, proc in list(self._channel_procs.items()):
-            try:
-                proc.kill()
-            except Exception:
-                pass
-        self._channel_procs.clear()
-        self._channel_proc_channels.clear()
+                    try:
+                        p.kill()
+                    except Exception:
+                        pass
 
     def _discover_mic_target(self) -> tuple:
         """Finds active physical microphone target node name and channels."""
@@ -234,6 +245,21 @@ class MultiChannelPeakMonitor:
 
     def _refresh_channel_monitors(self):
         """Discovers active WaveController_Channel_* sinks and physical input sources, spawning/pruning per-channel pw-record processes."""
+        if not hasattr(self, "_lock") or self._lock is None:
+            self._lock = threading.Lock()
+        if not hasattr(self, "_refresh_event") or self._refresh_event is None:
+            self._refresh_event = threading.Event()
+        if not hasattr(self, "_channel_procs"):
+            self._channel_procs = {}
+        if not hasattr(self, "_channel_proc_channels"):
+            self._channel_proc_channels = {}
+        if not hasattr(self, "_channel_peaks"):
+            self._channel_peaks = {}
+        if not hasattr(self, "_target_keys"):
+            self._target_keys = {}
+        if not hasattr(self, "_target_peaks"):
+            self._target_peaks = {}
+
         try:
             out = subprocess.check_output(['pw-link', '-o'], text=True, stderr=subprocess.DEVNULL)
             all_ports = [l.strip() for l in out.splitlines() if l.strip()]
@@ -326,52 +352,57 @@ class MultiChannelPeakMonitor:
                             target_map[src_name]["keys"].add(clean_k)
 
         # Prune processes for targets no longer active
-        for target_node in list(self._channel_procs.keys()):
-            if target_node not in target_map:
-                proc = self._channel_procs.pop(target_node, None)
-                if proc:
-                    try:
-                        proc.kill()
-                    except Exception:
-                        pass
-                self._channel_proc_channels.pop(target_node, None)
+        with self._lock:
+            for target_node in list(self._channel_procs.keys()):
+                if target_node not in target_map:
+                    proc = self._channel_procs.pop(target_node, None)
+                    if proc:
+                        try:
+                            proc.kill()
+                        except Exception:
+                            pass
+                    self._channel_proc_channels.pop(target_node, None)
 
-        if not hasattr(self, "_target_keys"):
-            self._target_keys = {}
-        if not hasattr(self, "_target_peaks"):
-            self._target_peaks = {}
+            # Prune stale target peaks for targets no longer active
+            for target_node in list(self._target_peaks.keys()):
+                if target_node not in target_map:
+                    self._target_peaks.pop(target_node, None)
 
-        # Prune stale target peaks for targets no longer active
-        for target_node in list(self._target_peaks.keys()):
-            if target_node not in target_map:
-                self._target_peaks.pop(target_node, None)
+            self._target_keys = {t: info["keys"] for t, info in target_map.items()}
 
-        self._target_keys = {t: info["keys"] for t, info in target_map.items()}
+            # For any channel in pipewire_mgr not mapped to any active target, decay its peaks gracefully
+            mapped_keys = set()
+            for t, info in target_map.items():
+                mapped_keys.update(info.get("keys", set()))
 
-        # For any channel in pipewire_mgr not mapped to any active target, zero its peaks immediately
-        mapped_keys = set()
-        for t, info in target_map.items():
-            mapped_keys.update(info.get("keys", set()))
+            if self.pipewire_mgr:
+                for ch in getattr(self.pipewire_mgr, "channels", []):
+                    cid = ch.get("id")
+                    if cid and cid not in mapped_keys:
+                        if cid in self._channel_peaks:
+                            prev_l = self._channel_peaks[cid].get("left", 0.0) * 0.5
+                            prev_r = self._channel_peaks[cid].get("right", 0.0) * 0.5
+                            self._channel_peaks[cid] = {"left": prev_l, "right": prev_r, "peak": max(prev_l, prev_r)}
+                        else:
+                            self._channel_peaks[cid] = {"left": 0.0, "right": 0.0, "peak": 0.0}
 
-        if self.pipewire_mgr:
-            for ch in getattr(self.pipewire_mgr, "channels", []):
-                cid = ch.get("id")
-                if cid and cid not in mapped_keys:
-                    self._channel_peaks[cid] = {"left": 0.0, "right": 0.0, "peak": 0.0}
-
-        # Spawn processes for new unique target nodes
+        # Spawn processes for new unique target nodes (outside lock)
         for target_node, info in target_map.items():
-            proc = self._channel_procs.get(target_node)
-            if proc and proc.poll() is None:
-                continue  # Already running
+            with self._lock:
+                proc = self._channel_procs.get(target_node)
+                is_running = proc and proc.poll() is None
+            if is_running:
+                continue
+
             clean_tag = target_node.replace("alsa_input.", "").replace("input.WaveController_submix_", "").replace(".", "_")
             node_name = f"wave_meter_{clean_tag[:28]}"
             new_proc = self._open_pw_record(node_name, target=target_node, channels=info["channels"], is_sink=info["is_sink"])
             if new_proc:
-                self._channel_procs[target_node] = new_proc
-                self._channel_proc_channels[target_node] = info["channels"]
-                if target_node not in self._target_peaks:
-                    self._target_peaks[target_node] = {"left": 0.0, "right": 0.0}
+                with self._lock:
+                    self._channel_procs[target_node] = new_proc
+                    self._channel_proc_channels[target_node] = info["channels"]
+                    if target_node not in self._target_peaks:
+                        self._target_peaks[target_node] = {"left": 0.0, "right": 0.0}
 
         # Explicit 1:1 Patch Linking & Ingestion Audit (Sever WirePlumber fallbacks & rogue links)
         self._link_and_audit_channel_monitors(target_map, all_ports)
@@ -461,39 +492,76 @@ class MultiChannelPeakMonitor:
         except Exception:
             pass
 
-    def _run_capture_loop(self):
-        # 1. Open mic capture directly targeted to physical microphone node
-        mic_target, mic_channels = self._discover_mic_target()
-        self.mic_channels = mic_channels
-        self.mic_target = mic_target
-        self.mic_proc = self._open_pw_record('wave_mic_monitor', target=mic_target, channels=mic_channels)
-        if not mic_target:
-            time.sleep(0.1)
-            self._link_mic_monitor()
-        
-        # 2. Open playback capture targeted to active mix sink monitor
-        sink_target = self._discover_sink_target()
-        self.sink_target = sink_target
-        self.sink_proc = self._open_pw_record('wave_sink_monitor', target=sink_target, channels=2, is_sink=True)
-        time.sleep(0.15)
-        self._link_sink_monitor()
+    def _run_discovery_loop(self):
+        """Background asynchronous graph discovery worker that audits links and manages pw-record processes."""
+        while self.running:
+            self._refresh_event.wait(timeout=2.0)
+            if not self.running:
+                break
+            self._refresh_event.clear()
+            try:
+                self._do_refresh_discovery()
+            except Exception:
+                pass
 
-        # 3. Discover and open per-channel monitors for active ingestion sinks
+    def _do_refresh_discovery(self):
+        """Executes full PipeWire target discovery, process management, and link auditing in the background."""
         self._refresh_channel_monitors()
 
+        curr_target, curr_ch = self._discover_mic_target()
+        with self._lock:
+            need_mic_restart = (curr_target != getattr(self, "mic_target", None) or not self.mic_proc or self.mic_proc.poll() is not None)
+            old_mic_proc = self.mic_proc if need_mic_restart else None
+
+        if need_mic_restart:
+            if old_mic_proc:
+                try:
+                    old_mic_proc.terminate()
+                except Exception:
+                    pass
+            new_mic_proc = self._open_pw_record('wave_mic_monitor', target=curr_target, channels=curr_ch)
+            with self._lock:
+                self.mic_target = curr_target
+                self.mic_channels = curr_ch
+                self.mic_proc = new_mic_proc
+            if not curr_target:
+                self._link_mic_monitor()
+
+        curr_sink_target = self._discover_sink_target()
+        with self._lock:
+            need_sink_restart = (curr_sink_target != getattr(self, "sink_target", None) or not self.sink_proc or self.sink_proc.poll() is not None)
+            old_sink_proc = self.sink_proc if need_sink_restart else None
+
+        if need_sink_restart:
+            if old_sink_proc:
+                try:
+                    old_sink_proc.terminate()
+                except Exception:
+                    pass
+            new_sink_proc = self._open_pw_record('wave_sink_monitor', target=curr_sink_target, channels=2, is_sink=True)
+            with self._lock:
+                self.sink_target = curr_sink_target
+                self.sink_proc = new_sink_proc
+
+        self._link_sink_monitor()
+
+    def _run_capture_loop(self):
+        """Pure real-time 40 FPS audio capture and peak calculation loop without blocking subprocess calls."""
         mic_l, mic_r = 0.0, 0.0
         sink_l, sink_r = 0.0, 0.0
-        tick_counter = 0
 
         while self.running:
             try:
-                raw_ml, raw_mr = self._drain_and_calc_peaks(self.mic_proc, channels=self.mic_channels)
-                raw_sl, raw_sr = self._drain_and_calc_peaks(self.sink_proc, channels=2)
-
-                # Read per-channel monitor peaks for all active channel sinks
                 with self._lock:
+                    m_proc = self.mic_proc
+                    m_ch = getattr(self, "mic_channels", 2)
+                    s_proc = self.sink_proc
                     ch_items = list(self._channel_procs.items())
 
+                raw_ml, raw_mr = self._drain_and_calc_peaks(m_proc, channels=m_ch)
+                raw_sl, raw_sr = self._drain_and_calc_peaks(s_proc, channels=2)
+
+                # Read per-channel monitor peaks for all active channel sinks
                 for target_node, proc in ch_items:
                     if proc and proc.poll() is None:
                         proc_ch = self._channel_proc_channels.get(target_node, 2)
@@ -535,52 +603,14 @@ class MultiChannelPeakMonitor:
                 with self._lock:
                     self._channel_peaks = new_channel_peaks
 
-                # Instant Recovery: Check if any process died or if an explicit refresh was triggered
-                need_immediate_refresh = getattr(self, "_refresh_requested", False)
-                if not need_immediate_refresh:
-                    for target_node, proc in ch_items:
-                        if proc and proc.poll() is not None:
-                            need_immediate_refresh = True
-                            break
-
-                tick_counter += 1
-                if need_immediate_refresh or (tick_counter % 80 == 0):
-                    self._refresh_requested = False
-                    self._refresh_channel_monitors()
-
-                    curr_target, curr_ch = self._discover_mic_target()
-                    if curr_target != self.mic_target or not self.mic_proc or self.mic_proc.poll() is not None:
-                        if self.mic_proc:
-                            try:
-                                self.mic_proc.terminate()
-                            except Exception:
-                                pass
-                        self.mic_target = curr_target
-                        self.mic_channels = curr_ch
-                        self.mic_proc = self._open_pw_record('wave_mic_monitor', target=curr_target, channels=curr_ch)
-                        if not curr_target:
-                            self._link_mic_monitor()
-
-                    curr_sink_target = self._discover_sink_target()
-                    if curr_sink_target != self.sink_target or not self.sink_proc or self.sink_proc.poll() is not None:
-                        if self.sink_proc:
-                            try:
-                                self.sink_proc.terminate()
-                            except Exception:
-                                pass
-                        self.sink_target = curr_sink_target
-                        self.sink_proc = self._open_pw_record('wave_sink_monitor', target=curr_sink_target, channels=2, is_sink=True)
-
-                    self._link_sink_monitor()
-
-                # Re-spawn if exited
-                if (not self.mic_proc or self.mic_proc.poll() is not None) and self.running:
-                    self.mic_proc = self._open_pw_record('wave_mic_monitor', target=self.mic_target, channels=self.mic_channels)
-                    if not self.mic_target:
-                        self._link_mic_monitor()
-                if (not self.sink_proc or self.sink_proc.poll() is not None) and self.running:
-                    self.sink_proc = self._open_pw_record('wave_sink_monitor', target=self.sink_target, channels=2, is_sink=True)
-                    self._link_sink_monitor()
+                # Detect if any process exited unexpectedly and trigger background discovery
+                proc_dead = False
+                for target_node, proc in ch_items:
+                    if proc and proc.poll() is not None:
+                        proc_dead = True
+                        break
+                if proc_dead or (not m_proc or m_proc.poll() is not None) or (not s_proc or s_proc.poll() is not None):
+                    self._refresh_event.set()
 
                 # Fast attack (instant punch on rise) + smooth exponential release & graceful fade-down to 0
                 if raw_ml > mic_l:
@@ -749,29 +779,5 @@ class MultiChannelPeakMonitor:
 
     def on_system_resume(self):
         """Refreshes peak monitor processes and re-links VU monitor streams after system wake."""
-        try:
-            self._refresh_channel_monitors()
-            curr_mic, curr_ch = self._discover_mic_target()
-            if self.mic_proc:
-                try:
-                    self.mic_proc.terminate()
-                except Exception:
-                    pass
-            self.mic_target = curr_mic
-            self.mic_channels = curr_ch
-            self.mic_proc = self._open_pw_record('wave_mic_monitor', target=curr_mic, channels=curr_ch)
-            if not curr_mic:
-                self._link_mic_monitor()
-
-            curr_sink = self._discover_sink_target()
-            if self.sink_proc:
-                try:
-                    self.sink_proc.terminate()
-                except Exception:
-                    pass
-            self.sink_target = curr_sink
-            self.sink_proc = self._open_pw_record('wave_sink_monitor', target=curr_sink, channels=2, is_sink=True)
-            self._link_sink_monitor()
-        except Exception:
-            pass
+        self._refresh_event.set()
 

@@ -919,10 +919,23 @@ class PipeWireManager:
                     bin_file = bin_low.split("/")[-1].split("\\")[-1] if bin_low else ""
                     if bin_file in self.KNOWN_AUDIO_BINARIES:
                         known_name, known_icon = self.KNOWN_AUDIO_BINARIES[bin_file]
-                        if name_low in ("chromium", "webrtc voiceengine", "webrtc", "electron", "playback") or not name:
+                        if name_low in ("chromium", "webrtc voiceengine", "webrtc", "electron", "playback", "chromium input", "chromium output") or not name or name_low == bin_file:
                             name = known_name
-                            icon = icon or known_icon
-                        
+                        icon = known_icon
+
+                    # If icon is missing or generic (e.g. chromium on Electron apps), resolve from app name and binary
+                    if not icon or (icon in ("chromium", "google-chrome", "audio-x-generic", "audio-x-generic-symbolic", "application-default-icon") and "chrome" not in name_low and "chromium" not in name_low):
+                        resolved = self.resolve_icon_for_app(name)
+                        if resolved and resolved not in ("audio-x-generic-symbolic", "audio-card-symbolic"):
+                            icon = resolved
+                        elif bin_file:
+                            resolved_bin = self.resolve_icon_for_app(bin_file)
+                            if resolved_bin and resolved_bin not in ("audio-x-generic-symbolic", "audio-card-symbolic"):
+                                icon = resolved_bin
+
+                    if not icon:
+                        icon = self.resolve_icon_for_app(name)
+
                     if name not in seen and name.lower() not in seen:
                         seen.add(name)
                         seen.add(name.lower())

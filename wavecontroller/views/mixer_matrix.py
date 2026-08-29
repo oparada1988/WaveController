@@ -141,77 +141,124 @@ class MixerMatrixView(Gtk.Box):
         GLib.timeout_add(25, self._on_ui_tick)
 
     def _build_grid(self):
+        current_ch_ids = [c["id"] for c in self.pipewire_mgr.channels]
+        current_mix_ids = [m["id"] for m in self.pipewire_mgr.mixes]
+
+        # 1. Prune removed channels from internal dict
+        for ch_id in list(self.channel_cards.keys()):
+            if ch_id not in current_ch_ids:
+                self.channel_cards.pop(ch_id, None)
+
+        # 2. Prune removed mixes from internal dict
+        for m_id in list(self.mix_headers.keys()):
+            if m_id not in current_mix_ids:
+                self.mix_headers.pop(m_id, None)
+
+        # 3. Prune removed matrix cells from internal dict
+        for (ch_id, m_id) in list(self.matrix_cells.keys()):
+            if ch_id not in current_ch_ids or m_id not in current_mix_ids:
+                self.matrix_cells.pop((ch_id, m_id), None)
+
+        # Detach all current children from grid to rearrange rows/columns
+        while self.grid.get_first_child():
+            self.grid.remove(self.grid.get_first_child())
+
         # Top-left empty header cell
-        spacer = Gtk.Box()
-        spacer.set_hexpand(False)
-        spacer.set_size_request(370, 48)
-        self.grid.attach(spacer, 0, 0, 1, 1)
+        if not hasattr(self, "_header_spacer") or self._header_spacer is None:
+            self._header_spacer = Gtk.Box()
+            self._header_spacer.set_hexpand(False)
+            self._header_spacer.set_size_request(370, 48)
+        self.grid.attach(self._header_spacer, 0, 0, 1, 1)
 
         # Mix Column Headers (Row 0, Columns 1..N)
         for col_idx, mix in enumerate(self.pipewire_mgr.mixes, start=1):
-            mix_header = MixHeaderCard(
-                mix,
-                pipewire_mgr=self.pipewire_mgr,
-                hardware_mgr=self.hardware_mgr,
-                on_remove_callback=lambda m_id: GLib.idle_add(self._rebuild_grid),
-                on_edit_callback=None,
-                on_reorder_callback=self._on_reorder_mix,
-                on_hover_col_callback=self._on_hover_col,
-                on_move_left_callback=self._on_move_mix_left,
-                on_move_right_callback=self._on_move_mix_right
-            )
-            self.mix_headers[mix["id"]] = mix_header
+            m_id = mix["id"]
+            if m_id in self.mix_headers:
+                mix_header = self.mix_headers[m_id]
+                mix_header.mix_info = mix
+                if hasattr(mix_header, "update_ui_state"):
+                    mix_header.update_ui_state()
+            else:
+                mix_header = MixHeaderCard(
+                    mix,
+                    pipewire_mgr=self.pipewire_mgr,
+                    hardware_mgr=self.hardware_mgr,
+                    on_remove_callback=lambda m_id: GLib.idle_add(self._rebuild_grid),
+                    on_edit_callback=None,
+                    on_reorder_callback=self._on_reorder_mix,
+                    on_hover_col_callback=self._on_hover_col,
+                    on_move_left_callback=self._on_move_mix_left,
+                    on_move_right_callback=self._on_move_mix_right
+                )
+                self.mix_headers[m_id] = mix_header
             self.grid.attach(mix_header, col_idx, 0, 1, 1)
 
         # Create Mix (+) Button Card (Column N+1)
         create_mix_col = len(self.pipewire_mgr.mixes) + 1
-        create_mix_card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
-        create_mix_card.add_css_class("mix-header-card")
-        create_mix_card.set_hexpand(False)
-        create_mix_card.set_size_request(52, 48)
-        create_mix_card.set_valign(Gtk.Align.CENTER)
-        
-        plus_btn = Gtk.MenuButton()
-        plus_btn.set_icon_name("list-add-symbolic")
-        plus_btn.add_css_class("flat")
-        plus_btn.add_css_class("wave-icon-btn")
-        plus_btn.set_tooltip_text("Add Custom Mix")
-        self._setup_create_mix_popover(plus_btn)
-        create_mix_card.append(plus_btn)
-        self.grid.attach(create_mix_card, create_mix_col, 0, 1, 1)
+        if not hasattr(self, "_create_mix_card") or self._create_mix_card is None:
+            create_mix_card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+            create_mix_card.add_css_class("mix-header-card")
+            create_mix_card.set_hexpand(False)
+            create_mix_card.set_size_request(52, 48)
+            create_mix_card.set_valign(Gtk.Align.CENTER)
+            
+            plus_btn = Gtk.MenuButton()
+            plus_btn.set_icon_name("list-add-symbolic")
+            plus_btn.add_css_class("flat")
+            plus_btn.add_css_class("wave-icon-btn")
+            plus_btn.set_tooltip_text("Add Custom Mix")
+            self._setup_create_mix_popover(plus_btn)
+            create_mix_card.append(plus_btn)
+            self._create_mix_card = create_mix_card
+        self.grid.attach(self._create_mix_card, create_mix_col, 0, 1, 1)
 
         # Channel Rows (Rows 1..N)
         for row_idx, ch in enumerate(self.pipewire_mgr.channels, start=1):
+            ch_id = ch["id"]
             # Left Header Card
-            card = ChannelCard(
-                ch,
-                self.pipewire_mgr,
-                self.hardware_mgr,
-                on_link_toggle_callback=self._on_link_toggled,
-                on_sync_meter_callback=self._on_sync_meter_toggled,
-                on_channel_removed_callback=self._on_channel_deleted,
-                on_channel_renamed_callback=lambda ch_id, name: GLib.idle_add(self._rebuild_grid),
-                on_reorder_callback=self._on_reorder_channel,
-                on_hover_row_callback=self._on_hover_row
-            )
-            self.channel_cards[ch["id"]] = card
+            if ch_id in self.channel_cards:
+                card = self.channel_cards[ch_id]
+                card.channel_info = ch
+                if hasattr(card, "update_ui_state"):
+                    card.update_ui_state()
+            else:
+                card = ChannelCard(
+                    ch,
+                    self.pipewire_mgr,
+                    self.hardware_mgr,
+                    on_link_toggle_callback=self._on_link_toggled,
+                    on_sync_meter_callback=self._on_sync_meter_toggled,
+                    on_channel_removed_callback=self._on_channel_deleted,
+                    on_channel_renamed_callback=lambda ch_id, name: GLib.idle_add(self._rebuild_grid),
+                    on_reorder_callback=self._on_reorder_channel,
+                    on_hover_row_callback=self._on_hover_row
+                )
+                self.channel_cards[ch_id] = card
             self.grid.attach(card, 0, row_idx, 1, 1)
 
             # Sub-Mix Cells
             for col_idx, mix in enumerate(self.pipewire_mgr.mixes, start=1):
-                cell = MatrixCell(ch["id"], mix["id"], self.pipewire_mgr, on_change_callback=self._on_cell_changed)
-                self.matrix_cells[(ch["id"], mix["id"])] = cell
+                cell_k = (ch_id, mix["id"])
+                if cell_k in self.matrix_cells:
+                    cell = self.matrix_cells[cell_k]
+                    if hasattr(cell, "update_ui_state"):
+                        cell.update_ui_state()
+                else:
+                    cell = MatrixCell(ch_id, mix["id"], self.pipewire_mgr, on_change_callback=self._on_cell_changed)
+                    self.matrix_cells[cell_k] = cell
                 self.grid.attach(cell, col_idx, row_idx, 1, 1)
 
         # Bottom "+ Create channel" button with dark Popover
         bottom_row = len(self.pipewire_mgr.channels) + 1
-        create_btn = Gtk.MenuButton()
-        create_btn.set_label("+ Create channel")
-        create_btn.add_css_class("create-channel-btn")
-        create_btn.set_hexpand(False)
-        create_btn.set_size_request(340, -1)
-        self._setup_create_channel_popover(create_btn)
-        self.grid.attach(create_btn, 0, bottom_row, 1, 1)
+        if not hasattr(self, "_create_channel_btn") or self._create_channel_btn is None:
+            create_btn = Gtk.MenuButton()
+            create_btn.set_label("+ Create channel")
+            create_btn.add_css_class("create-channel-btn")
+            create_btn.set_hexpand(False)
+            create_btn.set_size_request(340, -1)
+            self._setup_create_channel_popover(create_btn)
+            self._create_channel_btn = create_btn
+        self.grid.attach(self._create_channel_btn, 0, bottom_row, 1, 1)
 
     def _on_hover_row(self, ch_id: str, is_hovered: bool):
         card = self.channel_cards.get(ch_id)
@@ -760,12 +807,17 @@ class MixerMatrixView(Gtk.Box):
             if available_apps:
                 for app_info in available_apps:
                     app_name = app_info["name"]
+                    app_bin = app_info.get("binary", "")
                     item_btn = Gtk.Button()
                     item_btn.add_css_class("flat")
                     item_btn.add_css_class("wave-sidebar-row")
 
                     item_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-                    icon_name = app_info.get("icon") or self.pipewire_mgr.resolve_icon_for_app(app_name)
+                    resolved_ic = self.pipewire_mgr.resolve_icon_for_app(app_name) if self.pipewire_mgr else None
+                    if not resolved_ic or resolved_ic in ("audio-x-generic-symbolic", "audio-card-symbolic"):
+                        resolved_ic = self.pipewire_mgr.resolve_icon_for_app(app_bin) if (self.pipewire_mgr and app_bin) else None
+                    icon_name = resolved_ic or app_info.get("icon") or "applications-multimedia-symbolic"
+
                     i_img = Gtk.Image.new_from_icon_name(icon_name)
                     i_img.set_pixel_size(18)
                     i_lbl = Gtk.Label(label=app_name)
@@ -780,14 +832,14 @@ class MixerMatrixView(Gtk.Box):
                     item_row.append(add_ic)
                     item_btn.set_child(item_row)
 
-                    def make_app_click_handler(name):
+                    def make_app_click_handler(name, ic):
                         def handler(btn):
-                            self.pipewire_mgr.add_channel(name, ch_type="app", assigned_apps=[name])
+                            self.pipewire_mgr.add_channel(name, icon=ic, ch_type="app", assigned_apps=[name])
                             popover.popdown()
                             GLib.idle_add(self._rebuild_grid)
                         return handler
 
-                    item_btn.connect("clicked", make_app_click_handler(app_name))
+                    item_btn.connect("clicked", make_app_click_handler(app_name, icon_name))
                     apps_list_container.append(item_btn)
             else:
                 if running_apps:
@@ -1336,11 +1388,6 @@ class MixerMatrixView(Gtk.Box):
                 cell.update_ui_state()
 
     def _rebuild_grid(self):
-        while self.grid.get_first_child():
-            self.grid.remove(self.grid.get_first_child())
-        self.channel_cards.clear()
-        self.matrix_cells.clear()
-        self.mix_headers.clear()
         self._build_grid()
         if self.peak_monitor and hasattr(self.peak_monitor, "trigger_refresh"):
             self.peak_monitor.trigger_refresh()
