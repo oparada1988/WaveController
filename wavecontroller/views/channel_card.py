@@ -32,7 +32,16 @@ class ChannelCard(Gtk.Box):
         # Identify if this channel corresponds to Elgato Wave hardware
         ch_id = str(channel_info.get("id", ""))
         ch_name = str(channel_info.get("name", "")).lower()
-        self.is_wave_channel = (ch_id in ("mic", "elgato_wave_xlr") or "wave" in ch_id.lower() or "wave" in ch_name) and (
+        ch_type = str(channel_info.get("type", "sink")).lower()
+        self.is_wave_channel = (ch_type in ("source", "hardware")) and (
+            ch_id in ("mic", "elgato_wave_xlr") or
+            ch_id.startswith("elgato_wave") or
+            "wave_xlr" in ch_id.lower() or
+            "wave_3" in ch_id.lower() or
+            "wave_1" in ch_id.lower() or
+            "wave_neo" in ch_id.lower() or
+            (self.hardware_mgr and hasattr(self.hardware_mgr, "device_key") and self.hardware_mgr.device_key and (ch_id == self.hardware_mgr.device_key or self.hardware_mgr.device_key in str(channel_info.get("name", ""))))
+        ) and (
             getattr(self.hardware_mgr, "is_elgato", False) or 
             getattr(self.hardware_mgr, "device_type", "") == "elgato" or 
             "wave" in str(getattr(self.hardware_mgr, "device_name", "")).lower()
@@ -69,7 +78,11 @@ class ChannelCard(Gtk.Box):
 
         # Determine if this is a physical microphone / hardware capture channel
         ch_id = str(channel_info.get("id", "")).lower()
-        self.is_mic_channel = (self.is_wave_channel or channel_info.get("type") == "source" or any(k in ch_id for k in ("mic", "fefine", "fifine", "capture", "input")))
+        self.is_mic_channel = (
+            self.is_wave_channel or
+            ch_type == "source" or
+            (ch_type not in ("app", "sink", "group") and any(k in ch_id for k in ("mic", "fefine", "fifine", "capture", "input")))
+        )
 
         # Determine if this is a group channel (bundles multiple apps and/or exposes a system device)
         self.is_group_channel = (
@@ -253,13 +266,17 @@ class ChannelCard(Gtk.Box):
             return "elgato-wave-xlr-symbolic"
 
         ch_icon = self.channel_info.get("icon")
-        if ch_icon and ch_icon != "network-offline-symbolic":
+        if ch_icon and ch_icon not in ("network-offline-symbolic", "elgato-wave-xlr-symbolic"):
+            return ch_icon
+        elif ch_icon == "elgato-wave-xlr-symbolic" and self.is_wave_channel:
             return ch_icon
 
         assigned = self.pipewire_mgr.get_assigned_apps(self.channel_info["id"]) if self.pipewire_mgr else []
         primary_app = assigned[0] if assigned else self.channel_info.get("name", "")
         resolved = self.pipewire_mgr.resolve_icon_for_app(primary_app) if self.pipewire_mgr else None
-        if not resolved or resolved == "network-offline-symbolic":
+        if not resolved or resolved in ("network-offline-symbolic", "audio-card-symbolic", "audio-x-generic-symbolic"):
+            if ch_icon and ch_icon != "network-offline-symbolic" and (ch_icon != "elgato-wave-xlr-symbolic" or self.is_wave_channel):
+                return ch_icon
             return "audio-input-microphone-symbolic" if self.channel_info.get("type") == "source" else "audio-card-symbolic"
         return resolved
 

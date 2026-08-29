@@ -638,7 +638,7 @@ class USBHardwareManager:
         for k, dev in self.discovered_devices.items():
             if dev.get("name") == k_str or k_str.lower() in dev.get("name", "").lower():
                 return dev.get("icon", "audio-input-microphone-symbolic")
-        if "wave xlr" in k_str.lower() or "wave" in k_str.lower() or (k_str == self.device_name and self.device_type == "elgato"):
+        if any(w in k_str.lower() for w in ("wave xlr", "wave_xlr", "wave:3", "wave_3", "wave:1", "wave_1", "wave neo", "wave_neo", "elgato wave")) or (k_str == self.device_name and self.device_type == "elgato") or "0fd9" in k_str.lower():
             return "elgato-wave-xlr-symbolic"
         if any(m in k_str.lower() for m in ("mic", "fefine", "fifine", "capture", "input")):
             return "audio-input-microphone-symbolic"
@@ -1050,7 +1050,8 @@ class USBHardwareManager:
         k = str(key_or_id)
         if k in self.discovered_devices:
             return self.discovered_devices[k].get("is_elgato", False)
-        return "wave" in k.lower() or "elgato" in k.lower()
+        k_low = k.lower()
+        return any(w in k_low for w in ("elgato", "wave_xlr", "wave:3", "wave:1", "wave neo", "wave_neo", "0fd9")) or k_low.startswith("elgato_wave") or k == self.device_name
 
     # Input Gain & Hardware DSP Controls
     def set_gain(self, gain_db: int, source_id_or_key: str = None, transient: bool = False):
@@ -1150,7 +1151,7 @@ class USBHardwareManager:
             self.detect_connected_hardware()
             dev = self.discovered_devices.get(k, {})
 
-        is_el = dev.get("is_elgato", False) or "wave" in str(dev.get("name", "")).lower() or "0fd9" in k.lower()
+        is_el = dev.get("is_elgato", False) or any(w in str(dev.get("name", "")).lower() for w in ("elgato", "wave xlr", "wave_xlr", "wave:3", "wave:1", "wave neo")) or "0fd9" in k.lower()
         dev_name = self.get_device_display_name(k)
 
         # 1. Elgato Wave Hardware

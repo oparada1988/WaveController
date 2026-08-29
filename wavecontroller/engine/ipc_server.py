@@ -138,12 +138,12 @@ class IPCServer:
         if not self._is_hardware_connected():
             return False
         c = str(ch_id).lower()
-        if c in ("mic", "microphone", "elgato_wave_xlr", "wave", "wave_xlr"):
+        if c in ("mic", "elgato_wave_xlr") or c.startswith("elgato_wave") or "wave_xlr" in c or "wave_3" in c or "wave_1" in c or "wave_neo" in c:
             return True
         ch_info = self.pipewire_mgr.get_channel_info(ch_id) if hasattr(self.pipewire_mgr, "get_channel_info") else None
-        if ch_info:
+        if ch_info and ch_info.get("type") in ("source", "hardware"):
             n = ch_info.get("name", "").lower()
-            if "wave" in n or "elgato" in n or "0fd9" in n:
+            if "elgato" in n or "wave_xlr" in n or "wave:3" in n or "wave:1" in n or "wave neo" in n or "0fd9" in n:
                 return True
         return False
 

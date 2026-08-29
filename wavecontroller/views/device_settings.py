@@ -27,8 +27,8 @@ class UnifiedDeviceSettingsView(Gtk.Box):
         self.on_device_removed = on_device_removed
 
         self.device_key = device_info.get("device_key", "")
-        self.device_type = device_info.get("type", "duplex") # "duplex", "input", "output"
-        self.is_elgato = device_info.get("is_elgato", False) or "wave" in device_info.get("name", "").lower()
+        dev_name_low = str(device_info.get("name", "")).lower()
+        self.is_elgato = device_info.get("is_elgato", False) or any(w in dev_name_low for w in ("elgato", "wave xlr", "wave:3", "wave:1", "wave neo")) or "0fd9" in self.device_key.lower()
         self._syncing_from_hw = False
 
         self.set_margin_top(16)

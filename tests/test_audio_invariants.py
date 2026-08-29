@@ -792,9 +792,122 @@ class TestTokenMatchingInvariants(unittest.TestCase):
             self.assertIsNotNone(discord_app, "REGRESSION: Discord stream was not recognized!")
             self.assertEqual(discord_app["icon"], "discord", "REGRESSION: Discord icon was overwritten with chromium fallback!")
 
+    def test_wave_named_apps_not_misidentified_as_hardware(self):
+        """Invariant: Applications with 'wave' in their name (e.g. Shortwave) must never be misclassified as Wave hardware."""
+        from wavecontroller.views.channel_card import ChannelCard
+        import gi
+        gi.require_version("Gtk", "4.0")
+        from gi.repository import Gtk
+
+        class MockHardwareMgr:
+            is_elgato = True
+            device_type = "elgato"
+            device_name = "Elgato Wave XLR"
+            device_key = "usb-Elgato_Systems_Elgato_Wave_XLR_DS16M2A01160-00"
+            input_devices = []
+            discovered_devices = {}
+            def get_device_display_name(self, d): return "Elgato Wave XLR"
+            def get_device_icon(self, d): return "elgato-wave-xlr-symbolic"
+
+        mock_hw = MockHardwareMgr()
+        app_ch = {
+            "id": "shortwave",
+            "name": "Shortwave",
+            "type": "app",
+            "icon": "de.haeckerfelix.Shortwave",
+            "default_vol": 80
+        }
+
+        # Initialize GTK app if not running in test runner
+        _ = Gtk.Application()
+        card = ChannelCard(app_ch, self.pwm, mock_hw)
+        self.assertFalse(card.is_wave_channel, "REGRESSION: Shortwave was misidentified as an Elgato Wave hardware device!")
+        self.assertFalse(card.is_mic_channel, "REGRESSION: Shortwave was misidentified as a microphone/source channel!")
+        self.assertNotEqual(card.icon_img.get_icon_name(), "elgato-wave-xlr-symbolic", "REGRESSION: Shortwave icon fell back to wave-xlr!")
+
+    def test_shortwave_icon_resolution(self):
+        """Invariant: Shortwave must resolve to its official Freedesktop/Flatpak icon, never elgato-wave-xlr."""
+        from wavecontroller.engine.pipewire_manager import PipeWireManager
+        icon1 = PipeWireManager.resolve_icon_for_app("Shortwave")
+        icon2 = PipeWireManager.resolve_icon_for_app("shortwave")
+        icon3 = PipeWireManager.resolve_icon_for_app("de.haeckerfelix.Shortwave")
+
+        self.assertEqual(icon1, "de.haeckerfelix.Shortwave", "REGRESSION: Shortwave did not resolve to Flatpak/desktop icon!")
+        self.assertEqual(icon2, "de.haeckerfelix.Shortwave", "REGRESSION: lowercase shortwave did not resolve to Flatpak/desktop icon!")
+        self.assertEqual(icon3, "de.haeckerfelix.Shortwave", "REGRESSION: de.haeckerfelix.Shortwave did not resolve to Flatpak/desktop icon!")
+
+    def test_flatpak_portal_app_id_stream_discovery(self):
+        """Invariant: Flatpak audio streams with portal app IDs must resolve their specific icon."""
+        from unittest.mock import patch
+        import json
+        fake_dump = [
+            {
+                "id": 125,
+                "info": {
+                    "props": {
+                        "media.class": "Stream/Output/Audio",
+                        "application.name": "Shortwave",
+                        "application.process.binary": "shortwave",
+                        "pipewire.access.portal.app_id": "de.haeckerfelix.Shortwave"
+                    }
+                }
+            }
+        ]
+
+        with patch("subprocess.check_output") as mock_co:
+            mock_co.return_value = json.dumps(fake_dump)
+            detected = self.pwm.get_active_application_streams()
+            shortwave_app = next((a for a in detected if a["name"] == "Shortwave"), None)
+            self.assertIsNotNone(shortwave_app, "Shortwave stream not found in active streams!")
+            self.assertEqual(shortwave_app["icon"], "de.haeckerfelix.Shortwave", "Shortwave did not resolve portal icon!")
+
+    def test_wave_app_tokens_do_not_contain_hardware_aliases(self):
+        """Invariant: App tokens for Shortwave or Waveform must never contain Elgato hardware tokens."""
+        from wavecontroller.engine.graph.process_classifier import get_match_tokens
+        tokens = get_match_tokens("Shortwave")
+        self.assertIn("shortwave", tokens)
+        self.assertNotIn("elgato", tokens, "REGRESSION: Shortwave inherited elgato hardware token!")
+        self.assertNotIn("0fd9", tokens, "REGRESSION: Shortwave inherited 0fd9 hardware token!")
+        self.assertNotIn("wave_xlr", tokens, "REGRESSION: Shortwave inherited wave_xlr hardware token!")
+
+    def test_wave_apps_do_not_trigger_hardware_mute_on_master(self):
+        """Invariant: Toggling master mute on Shortwave channel must NOT mute physical Elgato mic."""
+        from unittest.mock import MagicMock
+        mock_hw = MagicMock()
+        self.pwm.hardware_mgr = mock_hw
+        self.pwm.channels = [
+            {"id": "shortwave", "name": "Shortwave", "type": "app"},
+            {"id": "mic", "name": "Wave XLR", "type": "source"}
+        ]
+        self.pwm.toggle_channel_master_mute("shortwave")
+        mock_hw.set_mode_mute.assert_not_called()
+
+        self.pwm.toggle_channel_master_mute("mic")
+        mock_hw.set_mode_mute.assert_called_once()
+
+    def test_ipc_server_wave_channel_detection_isolation(self):
+        """Invariant: IPC server must not classify app channels with 'wave' as hardware devices."""
+        from unittest.mock import MagicMock
+        from wavecontroller.engine.ipc_server import IPCServer
+        mock_hw = MagicMock()
+        mock_hw.device_name = "Elgato Wave XLR"
+        ipc = IPCServer(pipewire_mgr=self.pwm, peak_monitor=MagicMock(), hardware_mgr=mock_hw)
+        self.assertFalse(ipc._is_wave_channel("shortwave"))
+        self.assertTrue(ipc._is_wave_channel("mic"))
+        self.assertTrue(ipc._is_wave_channel("elgato_wave_xlr"))
+
+    def test_usb_hardware_is_target_elgato_isolation(self):
+        """Invariant: USB Hardware manager _is_target_elgato must not match non-hardware apps."""
+        from wavecontroller.engine.usb_hardware import USBHardwareManager
+        hw = USBHardwareManager()
+        self.assertFalse(hw._is_target_elgato("Shortwave"))
+        self.assertTrue(hw._is_target_elgato("Elgato Wave XLR"))
+        self.assertTrue(hw._is_target_elgato("wave_xlr"))
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
 
 
 

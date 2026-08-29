@@ -39,7 +39,9 @@ KNOWN_AUDIO_BINARIES = {
     "telegram-desktop": ("Telegram", "telegram"),
     "telegram": ("Telegram", "telegram"),
     "skypeforlinux": ("Skype", "skype"),
-    "zoom": ("Zoom", "zoom")
+    "zoom": ("Zoom", "zoom"),
+    "shortwave": ("Shortwave", "de.haeckerfelix.Shortwave"),
+    "de.haeckerfelix.shortwave": ("Shortwave", "de.haeckerfelix.Shortwave")
 }
 
 def get_match_tokens(name_or_id: str) -> set:
@@ -58,7 +60,7 @@ def get_match_tokens(name_or_id: str) -> set:
     tokens.add(raw.replace("-", ""))
     tokens.add(raw.replace("_", ""))
 
-    # 2. Known audio binary mappings (Chrome, VLC, Discord, Steam, OBS, etc.)
+    # 2. Known audio binary mappings (Chrome, VLC, Discord, Steam, OBS, Shortwave, etc.)
     for bin_name, (disp, alt) in KNOWN_AUDIO_BINARIES.items():
         if bin_name in raw or disp.lower() in raw or alt.lower() in raw:
             tokens.add(bin_name)
@@ -76,7 +78,7 @@ def get_match_tokens(name_or_id: str) -> set:
         tokens.update({"chrome", "google-chrome", "google_chrome", "chromium"})
 
     # 4. Known hardware device aliases
-    if any(w in raw for w in ("wave", "elgato", "0fd9")):
+    if raw in ("elgato", "elgato wave xlr", "wave xlr", "wave:3", "wave:1", "wave neo") or raw.startswith("elgato_wave") or "wave_xlr" in raw or "wave:3" in raw or "wave:1" in raw or "wave_neo" in raw or "0fd9" in raw:
         tokens.update({"wave", "elgato", "0fd9", "wave_xlr", "wave-xlr"})
     if any(w in raw for w in ("fefine", "fifine", "3142")):
         tokens.update({"fifine", "fefine", "3142"})

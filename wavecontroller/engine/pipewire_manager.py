@@ -191,7 +191,8 @@ class PipeWireManager:
         for ch in channels_copy:
             ch_id = ch["id"]
             ch_name = ch.get("name", ch_id)
-            if ch.get("type") != "source" and not any(k in ch_id.lower() for k in ("mic", "fefine", "fifine", "capture", "input")):
+            ch_type = ch.get("type", "sink")
+            if ch_type in ("app", "sink", "group") or (ch_type != "source" and not any(k in ch_id.lower() for k in ("mic", "fefine", "fifine", "capture", "input"))):
                 node_name = f"WaveController_Channel_{ch_id}"
                 needed_nodes[node_name] = (f"WaveController {ch_name} (Sink)", "Audio/Sink")
 
@@ -285,7 +286,8 @@ class PipeWireManager:
 
             if default_phys_in:
                 for ch in self.channels:
-                    if ch.get("type") != "source" and not any(k in ch["id"].lower() for k in ("mic", "fefine", "microphone", "wave", "elgato", "input", "capture")):
+                    ch_type = ch.get("type", "sink")
+                    if ch_type in ("app", "sink", "group") or (ch_type != "source" and not any(k in ch["id"].lower() for k in ("mic", "fefine", "microphone", "input", "capture"))):
                         ch_out = []
                         assigned = self.get_assigned_apps(ch["id"])
                         for app in assigned:
@@ -314,17 +316,45 @@ class PipeWireManager:
             self._mix_node_ids_cache.clear()
             self._mix_volume_queue.clear()
 
-        # 3. Destroy per-channel ingestion sink nodes
+        # 3. Destroy virtual mixing and per-channel ingestion sink nodes
         try:
             out = subprocess.check_output(["pw-dump"], text=True, stderr=subprocess.DEVNULL)
             data = json.loads(out)
+            phys_sink_id = None
+            phys_source_id = None
+
             for obj in data:
-                props = obj.get("info", {}).get("props", {})
-                n_name = props.get("node.name", "")
-                if n_name.startswith("WaveController_Channel_"):
+                if obj.get("type") == "PipeWire:Interface:Node":
+                    props = obj.get("info", {}).get("props", {})
+                    media_class = props.get("media.class", "")
+                    n_name = props.get("node.name", "")
                     obj_id = obj.get("id")
-                    if obj_id:
-                        subprocess.run(["pw-cli", "destroy", str(obj_id)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+                    # Destroy WaveController virtual nodes so PipeWire falls back to physical devices
+                    if n_name.startswith("WaveController_Channel_") or n_name.startswith("WaveController_") or n_name.startswith("input.WaveController_") or n_name.startswith("output.WaveController_"):
+                        if obj_id:
+                            subprocess.run(["pw-cli", "destroy", str(obj_id)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    elif media_class == "Audio/Sink" and (n_name.startswith("alsa_output.") or props.get("device.api") == "alsa"):
+                        if not phys_sink_id or "elgato" in n_name.lower() or "wave" in n_name.lower():
+                            phys_sink_id = obj_id
+                    elif media_class == "Audio/Source" and (n_name.startswith("alsa_input.") or props.get("device.api") == "alsa"):
+                        if not phys_source_id or "elgato" in n_name.lower() or "wave" in n_name.lower():
+                            phys_source_id = obj_id
+
+            # 4. Restore system default audio sink and source back to physical hardware
+            if phys_sink_id:
+                subprocess.run(["wpctl", "set-default", str(phys_sink_id)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            if phys_source_id:
+                subprocess.run(["wpctl", "set-default", str(phys_source_id)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+            # 5. Clear all target.object and target.node metadata bindings on active streams
+            for obj in data:
+                if obj.get("type") == "PipeWire:Interface:Node":
+                    props = obj.get("info", {}).get("props", {})
+                    if props.get("media.class") == "Stream/Output/Audio":
+                        nid = str(obj["id"])
+                        subprocess.run(["pw-metadata", "-n", "default", "-d", nid, "target.object"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                        subprocess.run(["pw-metadata", "-n", "default", "-d", nid, "target.node"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         except Exception:
             pass
 
@@ -496,9 +526,9 @@ class PipeWireManager:
                     props = obj.get("info", {}).get("props", {})
                     n_name = props.get("node.name", "").lower()
                     media_class = props.get("media.class", "")
-                    if "wavecontroller" in n_name or n_name.startswith("input.wavecontroller") or n_name.startswith("output.wavecontroller"):
-                        continue
-                    if "wave" in n_name or "elgato" in n_name:
+                    is_alsa = props.get("device.api") == "alsa" or n_name.startswith("alsa_")
+                    is_elgato_hw = is_alsa and ("elgato" in n_name or "0fd9" in n_name or any(k in n_name for k in ("wave_xlr", "wave:3", "wave:1", "wave_neo")))
+                    if is_elgato_hw:
                         if excl_out and media_class == "Audio/Sink":
                             out_node_ids.add(str(obj["id"]))
                         elif excl_mic and (media_class == "Audio/Source" or "source" in media_class.lower()):
@@ -871,7 +901,9 @@ class PipeWireManager:
         "telegram-desktop": ("Telegram", "telegram"),
         "telegram": ("Telegram", "telegram"),
         "skypeforlinux": ("Skype", "skype"),
-        "zoom": ("Zoom", "zoom")
+        "zoom": ("Zoom", "zoom"),
+        "shortwave": ("Shortwave", "de.haeckerfelix.Shortwave"),
+        "de.haeckerfelix.shortwave": ("Shortwave", "de.haeckerfelix.Shortwave")
     }
 
     def get_active_application_streams(self) -> list:
@@ -889,6 +921,7 @@ class PipeWireManager:
                 media_type = props.get("media.type", "")
                 node_name = props.get("node.name", "")
                 app_id = props.get("application.id", "")
+                portal_app_id = props.get("pipewire.access.portal.app_id") or props.get("application.id") or ""
                 
                 # Only include genuine client audio playback streams (not sinks, sources, or internal loopbacks)
                 if media_class == "Stream/Output/Audio" or (media_type == "Audio" and not media_class.startswith("Audio/")):
@@ -903,6 +936,7 @@ class PipeWireManager:
                     bin_low = str(binary).lower()
                     node_low = str(node_name).lower()
                     app_id_low = str(app_id).lower()
+                    portal_low = str(portal_app_id).lower()
                     
                     # Exclude internal virtual submixes, loopbacks, meters, and system utilities
                     internal_keywords = [
@@ -912,7 +946,7 @@ class PipeWireManager:
                         "speech-dispatcher", "null-sink", "pw-loopback", "monitor",
                         "pavucontrol", "org.pulseaudio.pavucontrol"
                     ]
-                    if any(kw in name_low or kw in bin_low or kw in node_low or kw in app_id_low for kw in internal_keywords):
+                    if any(kw in name_low or kw in bin_low or kw in node_low or kw in app_id_low or kw in portal_low for kw in internal_keywords):
                         continue
 
                     # For Electron and WebRTC streams, map process binary to human-readable application name
@@ -922,19 +956,32 @@ class PipeWireManager:
                         if name_low in ("chromium", "webrtc voiceengine", "webrtc", "electron", "playback", "chromium input", "chromium output") or not name or name_low == bin_file:
                             name = known_name
                         icon = known_icon
+                    elif portal_low in self.KNOWN_AUDIO_BINARIES:
+                        known_name, known_icon = self.KNOWN_AUDIO_BINARIES[portal_low]
+                        if not name or name_low in ("chromium", "playback"):
+                            name = known_name
+                        icon = known_icon
 
-                    # If icon is missing or generic (e.g. chromium on Electron apps), resolve from app name and binary
+                    # If icon is missing or generic (e.g. chromium on Electron apps), resolve from app name, portal ID, and binary
                     if not icon or (icon in ("chromium", "google-chrome", "audio-x-generic", "audio-x-generic-symbolic", "application-default-icon") and "chrome" not in name_low and "chromium" not in name_low):
-                        resolved = self.resolve_icon_for_app(name)
-                        if resolved and resolved not in ("audio-x-generic-symbolic", "audio-card-symbolic"):
-                            icon = resolved
-                        elif bin_file:
-                            resolved_bin = self.resolve_icon_for_app(bin_file)
-                            if resolved_bin and resolved_bin not in ("audio-x-generic-symbolic", "audio-card-symbolic"):
-                                icon = resolved_bin
+                        if portal_app_id:
+                            resolved_portal = self.resolve_icon_for_app(portal_app_id)
+                            if resolved_portal and resolved_portal not in ("audio-x-generic-symbolic", "audio-card-symbolic"):
+                                icon = resolved_portal
+                        if not icon or icon in ("audio-x-generic-symbolic", "audio-card-symbolic"):
+                            resolved = self.resolve_icon_for_app(name)
+                            if resolved and resolved not in ("audio-x-generic-symbolic", "audio-card-symbolic"):
+                                icon = resolved
+                            elif bin_file:
+                                resolved_bin = self.resolve_icon_for_app(bin_file)
+                                if resolved_bin and resolved_bin not in ("audio-x-generic-symbolic", "audio-card-symbolic"):
+                                    icon = resolved_bin
 
                     if not icon:
-                        icon = self.resolve_icon_for_app(name)
+                        if portal_app_id:
+                            icon = self.resolve_icon_for_app(portal_app_id)
+                        if not icon or icon in ("audio-x-generic-symbolic", "audio-card-symbolic"):
+                            icon = self.resolve_icon_for_app(name)
 
                     if name not in seen and name.lower() not in seen:
                         seen.add(name)
@@ -1223,8 +1270,17 @@ class PipeWireManager:
             self._save_state_to_config(immediate=False)
             self._sync_channel_audio_routing(channel_id)
 
-            # Sync physical Elgato hardware mute if this is a mic channel
-            if self.hardware_mgr and any(k in channel_id.lower() for k in ("elgato", "wave", "mic", "microphone")):
+            # Sync physical Elgato hardware mute if this is a genuine hardware mic channel
+            ch_obj = next((c for c in self.channels if c["id"] == channel_id), None)
+            is_hw_mic = bool(ch_obj and ch_obj.get("type") in ("source", "hardware") and (
+                channel_id in ("mic", "elgato_wave_xlr") or
+                channel_id.startswith("elgato_wave") or
+                "wave_xlr" in channel_id.lower() or
+                "wave_3" in channel_id.lower() or
+                "wave_1" in channel_id.lower() or
+                "wave_neo" in channel_id.lower()
+            ))
+            if self.hardware_mgr and is_hw_mic:
                 self.hardware_mgr.set_mode_mute("gain", muted, transient=True)
 
     def toggle_channel_master_mute(self, channel_id: str) -> bool:
@@ -1248,8 +1304,17 @@ class PipeWireManager:
             self._save_state_to_config(immediate=False)
             self._sync_channel_audio_routing(channel_id)
 
-            # Sync physical Elgato hardware mute if this is a mic channel
-            if self.hardware_mgr and any(k in channel_id.lower() for k in ("elgato", "wave", "mic", "microphone")):
+            # Sync physical Elgato hardware mute if this is a genuine hardware mic channel
+            ch_obj = next((c for c in self.channels if c["id"] == channel_id), None)
+            is_hw_mic = bool(ch_obj and ch_obj.get("type") in ("source", "hardware") and (
+                channel_id in ("mic", "elgato_wave_xlr") or
+                channel_id.startswith("elgato_wave") or
+                "wave_xlr" in channel_id.lower() or
+                "wave_3" in channel_id.lower() or
+                "wave_1" in channel_id.lower() or
+                "wave_neo" in channel_id.lower()
+            ))
+            if self.hardware_mgr and is_hw_mic:
                 self.hardware_mgr.set_mode_mute("gain", new_mute, transient=True)
 
             return new_mute
@@ -1629,7 +1694,7 @@ class PipeWireManager:
                 # Priority 2: For hardware input capture sources (e.g. Fifine Mic, Mobo Mic) that don't use virtual playback sinks
                 if not target_node_ids:
                     ch_type = ch_obj.get("type", "source") if ch_obj else "source"
-                    is_source = (ch_type == "source") or any(k in channel_id.lower() for k in ("mic", "fefine", "fifine", "microphone", "input", "capture", "mobo"))
+                    is_source = (ch_type == "source") or (ch_type not in ("app", "sink", "group") and any(k in channel_id.lower() for k in ("mic", "fefine", "fifine", "microphone", "input", "capture", "mobo")))
                     if is_source:
                         hw_search = set([channel_id.lower()])
                         if "fefine" in hw_search:
@@ -1768,7 +1833,8 @@ class PipeWireManager:
         for ch in channels_to_sync:
             ch_id = ch["id"]
             is_linked = self.is_channel_linked(ch_id)
-            is_source_channel = (ch.get("type") == "source") or any(k in ch_id.lower() for k in ("mic", "fefine", "microphone", "wave", "elgato", "input", "capture"))
+            ch_type = ch.get("type", "sink")
+            is_source_channel = (ch_type == "source") or (ch_type not in ("app", "sink", "group") and any(k in ch_id.lower() for k in ("mic", "fefine", "fifine", "microphone", "elgato_wave_xlr", "input", "capture")))
             
             # Find output ports for this channel
             ch_out_ports = []
@@ -2508,16 +2574,20 @@ class PipeWireManager:
 
     @staticmethod
     def resolve_icon_for_app(app_name: str) -> str:
+        """Determines the best GTK/Freedesktop icon name for a given application or device string."""
         if not app_name:
             return "audio-x-generic-symbolic"
 
-        app_low = app_name.lower().strip()
+        app_str = str(app_name).strip()
+        app_low = app_str.lower()
 
-        # 1. Exact / Substring known mappings
+        # 1. Exact / Known application mappings
         if "spotify" in app_low:
             return "spotify"
         elif "discord" in app_low:
             return "discord"
+        elif "shortwave" in app_low:
+            return "de.haeckerfelix.Shortwave"
         elif "steam" in app_low or "game" in app_low:
             return "steam"
         elif "firefox" in app_low:
@@ -2538,11 +2608,9 @@ class PipeWireManager:
             return "slack"
         elif "teams" in app_low:
             return "teams"
-        elif "stream" in app_low:
-            return "view-grid-symbolic"
-        elif "elgato" in app_low or "wave" in app_low or "xlr" in app_low:
+        elif app_low in ("elgato wave xlr", "wave xlr", "wave:3", "wave:1", "wave neo", "elgato") or app_low.startswith("elgato wave"):
             return "elgato-wave-xlr-symbolic"
-        elif "mic" in app_low or "input" in app_low:
+        elif app_low in ("mic", "microphone", "input"):
             return "audio-input-microphone-symbolic"
 
         # 2. Dynamic GTK Icon Theme Lookup
@@ -2554,16 +2622,46 @@ class PipeWireManager:
             if display:
                 theme = Gtk.IconTheme.get_for_display(display)
                 candidates = [
+                    app_str,
                     app_low,
                     app_low.replace(" ", "-"),
                     app_low.replace(" ", "_"),
-                    f"com.google.{app_name}",
-                    f"org.gnome.{app_name}"
+                    f"{app_str}-symbolic",
+                    f"{app_low}-symbolic",
+                    f"de.haeckerfelix.{app_str}",
+                    f"org.gnome.{app_str}",
+                    f"com.google.{app_str}",
+                    f"org.{app_str}",
+                    f"com.{app_str}"
                 ]
                 for cand in candidates:
                     if theme.has_icon(cand):
                         return cand
         except Exception:
             pass
+
+        # 3. Search Desktop Entry files for Icon=
+        for d in (
+            "/var/lib/flatpak/exports/share/applications",
+            os.path.expanduser("~/.local/share/flatpak/exports/share/applications"),
+            "/usr/share/applications",
+            os.path.expanduser("~/.local/share/applications")
+        ):
+            if os.path.isdir(d):
+                try:
+                    for fname in os.listdir(d):
+                        if fname.endswith(".desktop") and (app_low in fname.lower() or app_str in fname):
+                            full_p = os.path.join(d, fname)
+                            try:
+                                with open(full_p, "r", encoding="utf-8", errors="ignore") as f:
+                                    for line in f:
+                                        if line.startswith("Icon="):
+                                            ic = line.strip().split("=", 1)[1]
+                                            if ic:
+                                                return ic
+                            except Exception:
+                                pass
+                except Exception:
+                    pass
 
         return "audio-x-generic-symbolic"
