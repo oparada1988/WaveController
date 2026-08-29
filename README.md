@@ -1,5 +1,7 @@
 <img width="987" height="347" alt="WaveController-banner" src="https://github.com/user-attachments/assets/fcfb7e80-d887-4def-8a87-501ffbf00e78" />
 
+## **NOTICE: EARLY STAGES OF DEVELOPMENT**
+
 **WaveController** is a modern, native Linux multi-track audio mixing engine, PipeWire compatible, and hardware manager. Designed to provide the complete **Elgato Wave Link**, **Wave Device** tier-1, first class experience on Linux. It also supports other 3rd party USB devices. It is **HEAVILY** developed using Google Antigravity, but heavily tested, and troubleshot by a real human! Currently only supports the Wave XLR(non MK2) and other USB based audio devicess, with the goal to support all Elgato Wave devices, and popular third party hardware.
 
 <p align="center">
