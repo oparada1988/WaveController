@@ -567,7 +567,7 @@ class ChannelCard(Gtk.Box):
             vbox.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
             from .led_color_picker import LEDColorButton
             
-            # 1. Mic Gain Mode LED Ring Color
+            # Mic Gain Mode LED Ring Color
             gain_led_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
             gain_led_lbl = Gtk.Label(label="Mic Gain Mode Ring Color:", hexpand=True, halign=Gtk.Align.START)
             gain_led_lbl.add_css_class("mix-header-subtitle")
@@ -575,15 +575,6 @@ class ChannelCard(Gtk.Box):
             gain_led_row.append(gain_led_lbl)
             gain_led_row.append(gain_led_btn)
             vbox.append(gain_led_row)
-
-            # 2. Mute State LED Ring Color
-            mute_led_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-            mute_led_lbl = Gtk.Label(label="Hardware Mute Ring Color:", hexpand=True, halign=Gtk.Align.START)
-            mute_led_lbl.add_css_class("mix-header-subtitle")
-            mute_led_btn = LEDColorButton(self.hardware_mgr, "mute", title="Hardware Mute LED", parent_popover=popover)
-            mute_led_row.append(mute_led_lbl)
-            mute_led_row.append(mute_led_btn)
-            vbox.append(mute_led_row)
 
         vbox.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
 

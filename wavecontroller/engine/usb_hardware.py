@@ -30,6 +30,7 @@ class USBHardwareManager:
             "mix": "#FF9500",
             "mute": "#FF0000"
         }))
+        self.led_colors["mute"] = "#FF0000"
         self.exclusive_mic_lock: bool = bool(config_manager.get("hardware_settings", {}).get("exclusive_mic_lock", True))
         self.exclusive_output_lock: bool = bool(config_manager.get("hardware_settings", {}).get("exclusive_output_lock", True))
         self.discovered_devices: dict[str, dict] = {} # {device_key: dev_info_dict}
@@ -891,7 +892,10 @@ class USBHardwareManager:
         return self.led_colors.get(mode, "#FFFFFF")
 
     def set_led_color(self, mode: str, color_hex: str):
+        if mode == "mute":
+            color_hex = "#FF0000"
         self.led_colors[mode] = color_hex
+        self.led_colors["mute"] = "#FF0000"
         hw = dict(config_manager.get("hardware_settings", {}))
         hw["led_colors"] = dict(self.led_colors)
         config_manager.set("hardware_settings", hw, immediate=True)
