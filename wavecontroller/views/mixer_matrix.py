@@ -1088,14 +1088,19 @@ class MixerMatrixView(Gtk.Box):
         # 4. Update Headphone Monitor Mix Header ONLY when knob is in Output / HP Mode (Mode 2 / 2nd LED on Wave hardware)
         if "hp_volume_pct" in changed and dial_mode == "hp":
             hp_vol = int(round(changed["hp_volume_pct"]))
-            assigned_mix = "personal"
+            assigned_mix = "personal_mix"
             if self.hardware_mgr:
-                assigned_mix = self.hardware_mgr.get_device_assigned_mix("Wave XLR") or self.hardware_mgr.get_device_assigned_mix(self.hardware_mgr.device_name) or "personal"
+                if hasattr(self.hardware_mgr, "_get_elgato_output_mix_id"):
+                    assigned_mix = self.hardware_mgr._get_elgato_output_mix_id() or "personal_mix"
+                else:
+                    assigned_mix = self.hardware_mgr.get_device_assigned_mix("Wave XLR") or self.hardware_mgr.get_device_assigned_mix(self.hardware_mgr.device_name) or "personal_mix"
             
             target_header = self.mix_headers.get(assigned_mix)
             if not target_header:
                 for m_id, header in self.mix_headers.items():
-                    if m_id in (assigned_mix, "personal", "personal_mix") or "personal" in str(header.mix_info.get("name", "")).lower() or "wave" in str(header.mix_info.get("name", "")).lower():
+                    h_name = str(header.mix_info.get("name", "")).lower()
+                    h_target = str(header.mix_info.get("target_device", "")).lower()
+                    if m_id in (assigned_mix, "personal", "personal_mix") or "personal" in h_name or "wave" in h_name or "application" in h_name or "elgato" in h_target or "wave" in h_target:
                         target_header = header
                         assigned_mix = m_id
                         break

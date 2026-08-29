@@ -790,7 +790,14 @@ class USBHardwareManager:
 
     def get_device_assigned_mix(self, device_key: str) -> str:
         mixes = config_manager.get("device_assigned_mixes", {})
-        return mixes.get(device_key, "personal_mix")
+        if not device_key:
+            return ""
+        if device_key in mixes:
+            return mixes[device_key]
+        for k, v in mixes.items():
+            if str(k).lower() == str(device_key).lower() or str(device_key).lower() in str(k).lower():
+                return v
+        return ""
 
     def set_active_output_device(self, sink_id_or_key: str):
         """Sets the selected primary hardware output device in configuration."""

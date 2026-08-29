@@ -452,18 +452,20 @@ class PipeWireManager:
 
         if hasattr(self.hardware_mgr, "discovered_devices"):
             for dev_key, dev in self.hardware_mgr.discovered_devices.items():
+                if "wavecontroller" in str(dev_key).lower():
+                    continue
                 is_elgato = dev.get("is_elgato", False) or "wave" in str(dev.get("name", "")).lower()
                 if is_elgato:
                     if excl_out and dev.get("primary_sink_id"):
                         out_node_ids.add(str(dev["primary_sink_id"]))
                     for s in dev.get("sinks", []):
-                        if excl_out and s.get("id"):
+                        if excl_out and s.get("id") and "wavecontroller" not in str(s.get("name", "")).lower():
                             out_node_ids.add(str(s["id"]))
 
                     if excl_mic and dev.get("primary_source_id"):
                         in_node_ids.add(str(dev["primary_source_id"]))
                     for src in dev.get("sources", []):
-                        if excl_mic and src.get("id"):
+                        if excl_mic and src.get("id") and "wavecontroller" not in str(src.get("name", "")).lower():
                             in_node_ids.add(str(src["id"]))
 
         # Fallback to scanning pw-dump if discovered_devices is not fully populated yet
@@ -477,10 +479,12 @@ class PipeWireManager:
                     props = obj.get("info", {}).get("props", {})
                     n_name = props.get("node.name", "").lower()
                     media_class = props.get("media.class", "")
+                    if "wavecontroller" in n_name or n_name.startswith("input.wavecontroller") or n_name.startswith("output.wavecontroller"):
+                        continue
                     if "wave" in n_name or "elgato" in n_name:
                         if excl_out and media_class == "Audio/Sink":
                             out_node_ids.add(str(obj["id"]))
-                        elif excl_mic and media_class == "Audio/Source":
+                        elif excl_mic and (media_class == "Audio/Source" or "source" in media_class.lower()):
                             in_node_ids.add(str(obj["id"]))
             except Exception:
                 pass
