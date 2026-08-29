@@ -21,18 +21,23 @@
 
 * **Modular Audio Engine & Regression Protection**:
   * **Decoupled Architecture**: Modularized into specialized subsystems (`engine/graph/process_classifier` and `engine/metering/capture_driver`).
-  * **26-Test Audio Invariant Suite**: Automated regression suite guarding zero-bleed audio contracts, submix loopback states, and binary priority mapping.
+  * **31-Test Audio Invariant Suite**: Automated regression suite guarding zero-bleed audio contracts, submix loopback states, group channel isolation, and binary priority mapping.
   * **Git Pre-Commit Safety Guard**: Automatically blocks regressions on commit.
+* **App Group Channels & Virtual System Audio Devices**:
+  * **Multi-App Bundling**: Group multiple audio streams (e.g., Discord + Slack + Zoom, or Spotify + Firefox) into a unified channel strip with dynamic stream chips and `[✕]` remove buttons.
+  * **Expose as System Audio Device**: Optionally expose any Group Channel as a dedicated virtual PipeWire sink (`WaveController_Channel_<name>`), allowing applications with in-app device selectors (Discord, OBS, games) or KDE settings to route directly into the group.
+  * **Strict Channel Exclusivity**: Dedicated **Application Channels** provide streamlined 1:1 control, while **Group Channels** handle multi-app bundling and virtual sink exposure.
+  * **Instant (<25ms) Zero-Bleed Metering**: Event-driven hooks attach VU taps on the very next frame with zero idle process churn and zero cross-bleed.
 * **Clean System Audio Menus & Direct Ingestion**:
-  * System settings (GNOME Settings, Discord Output, Browser Menus) display **ONLY** true Output Mixes (*Personal Mix*, *Application Mix*, *Stream Mix*).
-  * Ingestion channels remain purely within WaveController's matrix, eliminating menu clutter.
+  * System settings (GNOME Settings, Discord Output, Browser Menus) display **ONLY** true Output Mixes (*Personal Mix*, *Application Mix*, *Stream Mix*) and explicitly exposed Group Channels.
+  * Internal ingestion channels remain purely within WaveController's matrix, eliminating menu clutter.
 * **Authoritative App Classification & Zero Collisions**:
   * Prioritizes `application.process.binary` metadata to completely eliminate Chromium/Electron collisions (e.g. Discord, Slack, Teams vs Google Chrome).
 * **Studio-Grade Perceptual VU Metering**:
   * Smooth 40 FPS unbuffered PCM stream metering with OBS/Wave Link broadcast $-54\text{ dBFS}$ to $0\text{ dBFS}$ loudness curves.
-  * Strict zero-bleed microphone isolation across independent submix faders.
+  * Strict zero-bleed microphone and channel isolation across independent submix faders.
 * **Multi-Track Virtual Sub-Mixing**:
-  * Virtual Audio Input Channels
+  * Virtual Audio Input Channels & App Groups
   * Independent Output Buses
   * Independent Faders & Mute Controls per channel and mix bus.
 * **Tier 1 First-Class Elgato Hardware Integration**:
