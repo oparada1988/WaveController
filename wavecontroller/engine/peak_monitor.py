@@ -122,7 +122,7 @@ class MultiChannelPeakMonitor:
     def _link_mic_monitor(self):
         """Discovers physical hardware microphone ports and links wave_mic_monitor to them directly."""
         try:
-            # 1. Unlink any virtual sources or sink monitors that WirePlumber auto-linked
+            current_links = set()
             try:
                 links_out = subprocess.check_output(['pw-link', '-l'], text=True, stderr=subprocess.DEVNULL)
                 current_node = None
@@ -135,6 +135,8 @@ class MultiChannelPeakMonitor:
                         # Unlink if not an alsa_input physical hardware port or if it is a monitor port
                         if not src_port.startswith("alsa_input.") or "monitor" in src_port.lower():
                             subprocess.run(['pw-link', '-d', src_port, current_node], stderr=subprocess.DEVNULL)
+                        else:
+                            current_links.add((src_port, current_node))
             except Exception:
                 pass
 
@@ -154,18 +156,18 @@ class MultiChannelPeakMonitor:
             # Check for MONO capture (e.g. Wave XLR capture_MONO)
             mono_port = next((p for p in selected_ports if p.lower().endswith("mono") or "mono" in p.lower()), None)
             if mono_port:
-                subprocess.run(['pw-link', mono_port, 'wave_mic_monitor:input_FL'], stderr=subprocess.DEVNULL)
-                subprocess.run(['pw-link', mono_port, 'wave_mic_monitor:input_FR'], stderr=subprocess.DEVNULL)
-                subprocess.run(['pw-link', mono_port, 'wave_mic_monitor:input_MONO'], stderr=subprocess.DEVNULL)
+                for dst_port in ('wave_mic_monitor:input_FL', 'wave_mic_monitor:input_FR', 'wave_mic_monitor:input_MONO'):
+                    if (mono_port, dst_port) not in current_links:
+                        subprocess.run(['pw-link', mono_port, dst_port], stderr=subprocess.DEVNULL)
                 return
 
             # Stereo capture
             fl_port = next((p for p in selected_ports if p.lower().endswith("fl") or p.endswith("1")), selected_ports[0])
             fr_port = next((p for p in selected_ports if p.lower().endswith("fr") or p.endswith("2")), fl_port)
 
-            if fl_port:
+            if fl_port and (fl_port, 'wave_mic_monitor:input_FL') not in current_links:
                 subprocess.run(['pw-link', fl_port, 'wave_mic_monitor:input_FL'], stderr=subprocess.DEVNULL)
-            if fr_port:
+            if fr_port and (fr_port, 'wave_mic_monitor:input_FR') not in current_links:
                 subprocess.run(['pw-link', fr_port, 'wave_mic_monitor:input_FR'], stderr=subprocess.DEVNULL)
         except Exception:
             pass
@@ -524,8 +526,6 @@ class MultiChannelPeakMonitor:
                 self.mic_target = curr_target
                 self.mic_channels = curr_ch
                 self.mic_proc = new_mic_proc
-            if not curr_target:
-                self._link_mic_monitor()
 
         curr_sink_target = self._discover_sink_target()
         with self._lock:
@@ -543,6 +543,7 @@ class MultiChannelPeakMonitor:
                 self.sink_target = curr_sink_target
                 self.sink_proc = new_sink_proc
 
+        self._link_mic_monitor()
         self._link_sink_monitor()
 
     def _run_capture_loop(self):

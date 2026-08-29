@@ -700,7 +700,101 @@ class TestTokenMatchingInvariants(unittest.TestCase):
         self.assertTrue(self.pwm.is_channel_sink_exposed(ch_id))
 
 
+    def test_mic_monitor_always_linked_in_discovery(self):
+        """Invariant: _do_refresh_discovery and _link_mic_monitor MUST link physical microphone ports to wave_mic_monitor."""
+        from wavecontroller.engine.peak_monitor import MultiChannelPeakMonitor
+        from unittest.mock import patch, MagicMock
+
+        with patch("subprocess.check_output") as mock_co, patch("subprocess.run") as mock_run, patch("subprocess.Popen") as mock_popen:
+            # Simulate pw-link -o output containing Wave XLR mono capture
+            mock_co.side_effect = lambda cmd, **kwargs: (
+                "alsa_input.usb-Elgato_Systems_Elgato_Wave_XLR_DS16M2A01160-00.mono-fallback:capture_MONO\n"
+                "WaveController_personal_mix_Sink:monitor_FL\n"
+                "WaveController_personal_mix_Sink:monitor_FR\n"
+            )
+            mock_pm = MultiChannelPeakMonitor()
+            mock_pm._lock = self.pwm._lock
+            mock_pm.pipewire_mgr = MagicMock()
+            mock_pm.pipewire_mgr.channels = [{"id": "elgato_wave_xlr", "type": "source"}]
+            mock_pm.pipewire_mgr.mixes = []
+
+            # Execute discovery
+            mock_pm._do_refresh_discovery()
+
+            # Verify pw-link was called to link capture_MONO to wave_mic_monitor
+            linked_calls = [c[0][0] for c in mock_run.call_args_list if c[0] and isinstance(c[0][0], list) and c[0][0][0] == "pw-link"]
+            self.assertTrue(any("wave_mic_monitor" in " ".join(cmd) for cmd in linked_calls),
+                            "REGRESSION: wave_mic_monitor was NOT linked to physical microphone capture ports!")
+
+    def test_physical_mic_peak_propagation_to_channels(self):
+        """Invariant: Measured mic peaks MUST propagate to physical microphone channels and source channels."""
+        from wavecontroller.engine.peak_monitor import MultiChannelPeakMonitor
+        from unittest.mock import MagicMock
+
+        mock_pm = MultiChannelPeakMonitor()
+        mock_pm._lock = self.pwm._lock
+        mock_pm.pipewire_mgr = MagicMock()
+        mock_pm.pipewire_mgr.channels = [
+            {"id": "elgato_wave_xlr", "type": "source"},
+            {"id": "custom_mic", "type": "source"}
+        ]
+        mock_pm._last_mic_peaks = {"left": 0.75, "right": 0.75, "peak": 0.75}
+
+        # Check standard channel IDs and source channels
+        l_xlr, r_xlr = mock_pm.get_channel_stereo_peaks("elgato_wave_xlr")
+        self.assertAlmostEqual(l_xlr, 0.75, places=2)
+        self.assertAlmostEqual(r_xlr, 0.75, places=2)
+
+        l_mic, r_mic = mock_pm.get_channel_stereo_peaks("mic")
+        self.assertAlmostEqual(l_mic, 0.75, places=2)
+        self.assertAlmostEqual(r_mic, 0.75, places=2)
+
+        l_cust, r_cust = mock_pm.get_channel_stereo_peaks("custom_mic")
+        self.assertAlmostEqual(l_cust, 0.75, places=2)
+        self.assertAlmostEqual(r_cust, 0.75, places=2)
+
+    def test_electron_webrtc_stream_icon_resolution_invariant(self):
+        """Invariant: get_active_application_streams MUST resolve accurate app icon for Electron/WebRTC streams."""
+        from unittest.mock import patch
+        import json
+
+        fake_dump = [
+            {
+                "id": 110,
+                "info": {
+                    "props": {
+                        "media.class": "Stream/Output/Audio",
+                        "application.name": "WEBRTC VoiceEngine",
+                        "application.process.binary": "Discord",
+                        "application.icon-name": "chromium",
+                        "application.id": "com.discordapp.Discord"
+                    }
+                }
+            },
+            {
+                "id": 120,
+                "info": {
+                    "props": {
+                        "media.class": "Stream/Output/Audio",
+                        "application.name": "Google Chrome",
+                        "application.process.binary": "chrome",
+                        "application.icon-name": "google-chrome",
+                        "application.id": "com.google.Chrome"
+                    }
+                }
+            }
+        ]
+
+        with patch("subprocess.check_output") as mock_co:
+            mock_co.return_value = json.dumps(fake_dump)
+            detected = self.pwm.get_active_application_streams()
+            discord_app = next((a for a in detected if a["name"] == "Discord"), None)
+            self.assertIsNotNone(discord_app, "REGRESSION: Discord stream was not recognized!")
+            self.assertEqual(discord_app["icon"], "discord", "REGRESSION: Discord icon was overwritten with chromium fallback!")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
 
 
