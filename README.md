@@ -25,11 +25,11 @@
   * **Git Pre-Commit Safety Guard**: Automatically blocks regressions on commit.
 * **App Group Channels & Virtual System Audio Devices**:
   * **Multi-App Bundling**: Group multiple audio streams (e.g., Discord + Slack + Zoom, or Spotify + Firefox) into a unified channel strip with dynamic stream chips and `[✕]` remove buttons.
-  * **Expose as System Audio Device**: Optionally expose any Group Channel as a dedicated virtual PipeWire sink (`WaveController_Channel_<name>`), allowing applications with in-app device selectors (Discord, OBS, games) or KDE settings to route directly into the group.
+  * **Expose as System Audio Device**: Optionally expose any Group Channel as a dedicated virtual PipeWire sink (`WaveController_Channel_<name>`), allowing applications with in-app device selectors (Discord, OBS, games) or Desktop Settings to route directly into the group.
   * **Strict Channel Exclusivity**: Dedicated **Application Channels** provide streamlined 1:1 control, while **Group Channels** handle multi-app bundling and virtual sink exposure.
   * **Instant (<25ms) Zero-Bleed Metering**: Event-driven hooks attach VU taps on the very next frame with zero idle process churn and zero cross-bleed.
 * **Clean System Audio Menus & Direct Ingestion**:
-  * System settings (GNOME Settings, Discord Output, Browser Menus) display **ONLY** true Output Mixes (*Personal Mix*, *Application Mix*, *Stream Mix*) and explicitly exposed Group Channels.
+  * System settings (Desktop Settings, Discord Output, Browser Menus) display **ONLY** true Output Mixes (*Personal Mix*, *Application Mix*, *Stream Mix*) and explicitly exposed Group Channels.
   * Internal ingestion channels remain purely within WaveController's matrix, eliminating menu clutter.
 * **Authoritative App Classification & Zero Collisions**:
   * Prioritizes `application.process.binary` metadata to completely eliminate Chromium/Electron collisions (e.g. Discord, Slack, Teams vs Google Chrome).

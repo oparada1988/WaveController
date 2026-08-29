@@ -511,7 +511,7 @@ class ChannelCard(Gtk.Box):
                             badge = Gtk.Label(label="In-App")
                             badge.add_css_class("device-badge")
                             badge.add_css_class("online")
-                            badge.set_tooltip_text("Connected via in-app output setting or KDE mixer")
+                            badge.set_tooltip_text("Connected via in-app output setting or Desktop Settings")
                             row.append(badge)
 
                         del_btn = Gtk.Button.new_from_icon_name("window-close-symbolic")

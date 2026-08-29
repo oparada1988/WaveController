@@ -1057,7 +1057,7 @@ class PipeWireManager:
     def get_channel_connected_apps(self, channel_id: str) -> list:
         """
         Discovers applications currently playing into this channel's dedicated virtual sink
-        (e.g., Discord or browser streams assigned to this sink in KDE or in-app settings).
+        (e.g., Discord or browser streams assigned to this sink in Desktop Settings or in-app settings).
         """
         connected = []
         sink_target = f"WaveController_Channel_{channel_id}:playback_"
