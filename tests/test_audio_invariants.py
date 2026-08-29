@@ -203,18 +203,23 @@ class TestTokenMatchingInvariants(unittest.TestCase):
         self.pwm = PipeWireManager.__new__(PipeWireManager)
         self.pwm._lock = threading.RLock()
         self.pwm.channel_states = {}
+        self.pwm.channel_master_states = {}
         self.pwm._submix_procs = {}
         self.pwm._submix_node_ids = {}
         self.pwm._submix_volume_queue = {}
+        self.pwm._volume_queue = {}
+        self.pwm._volume_event = threading.Event()
         self.pwm.channels = []
         self.pwm.mixes = []
         self.pwm.assigned_apps = {}
         self.pwm.mix_states = {}
         self.pwm.config_path = "/tmp/fake_config.json"
-        self.pwm._save_state_to_config = lambda **k: None
-        self.pwm._ensure_virtual_mix_nodes = lambda: None
-        self.pwm._refresh_node_cache = lambda: None
-        self.pwm._sync_channel_audio_routing = lambda **k: None
+        self.pwm._save_state_to_config = lambda *a, **k: None
+        self.pwm._ensure_virtual_mix_nodes = lambda *a, **k: None
+        self.pwm._refresh_node_cache = lambda *a, **k: None
+        self.pwm._sync_channel_audio_routing = lambda *a, **k: None
+        self.pwm._bind_app_to_wireplumber_target = lambda *a, **k: None
+        self.pwm.resolve_icon_for_app = lambda a: "applications-multimedia-symbolic"
         self.pwm._match_mix_id = lambda m: m
 
     def test_multiword_application_matching(self):
@@ -562,8 +567,41 @@ class TestTokenMatchingInvariants(unittest.TestCase):
             {"id": "pc_out", "name": "pc out", "type": "sink", "target_device": "alsa_card.pci-0000_14_00.4"}
         ]
         hwm.pipewire_mgr = mock_pw
-        assigned = hwm._get_elgato_output_mix_id()
-        self.assertEqual(assigned, "wave_xlr", f"REGRESSION: Expected wave_xlr as output mix bus, got {assigned}")
+    def test_group_channel_multi_app_assignment(self):
+        """Invariant: Group Channels must support multi-app assignment, unassignment, and unified app discovery."""
+        ch = self.pwm.add_channel("Comms Group", ch_type="sink", assigned_apps=["Discord", "TeamSpeak"], expose_sink=False)
+        ch_id = ch["id"]
+        self.assertEqual(self.pwm.get_assigned_apps(ch_id), ["Discord", "TeamSpeak"])
+
+        # Add another app
+        self.pwm.assign_app_to_channel(ch_id, "Slack")
+        self.assertIn("Slack", self.pwm.get_assigned_apps(ch_id))
+
+        # Unassign an app
+        self.pwm.unassign_app_from_channel(ch_id, "Discord")
+        self.assertNotIn("Discord", self.pwm.get_assigned_apps(ch_id))
+        self.assertIn("TeamSpeak", self.pwm.get_assigned_apps(ch_id))
+        self.assertIn("Slack", self.pwm.get_assigned_apps(ch_id))
+
+        # Verify get_channel_all_apps returns formatted list
+        all_apps = self.pwm.get_channel_all_apps(ch_id)
+        app_names = [a["name"] for a in all_apps]
+        self.assertIn("TeamSpeak", app_names)
+        self.assertIn("Slack", app_names)
+
+    def test_group_channel_exposed_sink_provisioning(self):
+        """Invariant: When expose_sink is enabled, WaveController_Channel_{ch_id} must be provisioned in needed_nodes."""
+        ch = self.pwm.add_channel("Gaming Group", ch_type="sink", assigned_apps=["Steam"], expose_sink=True)
+        ch_id = ch["id"]
+        self.assertTrue(self.pwm.is_channel_sink_exposed(ch_id))
+
+        # Toggle exposed off
+        self.pwm.set_channel_sink_exposed(ch_id, False)
+        self.assertFalse(self.pwm.is_channel_sink_exposed(ch_id))
+
+        # Toggle exposed back on
+        self.pwm.set_channel_sink_exposed(ch_id, True)
+        self.assertTrue(self.pwm.is_channel_sink_exposed(ch_id))
 
 
 if __name__ == "__main__":

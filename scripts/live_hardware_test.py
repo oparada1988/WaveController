@@ -77,7 +77,8 @@ def print_snapshot(label):
         print(f"  [WaveController App State]")
         print(f"    Mic Channel Master State: Muted = {elgato_master.get('muted')}, Volume = {elgato_master.get('volume')}%")
         mixes = ipc_data.get("mix_states", {})
-        print(f"    Personal Mix State: Muted = {mixes.get('personal_mix', {}).get('muted')}, Volume = {mixes.get('personal_mix', {}).get('volume')}%")
+        for m_id, m_state in mixes.items():
+            print(f"    Mix '{m_id}' State: Muted = {m_state.get('muted')}, Volume = {m_state.get('volume')}%")
     
     print(f"  [PipeWire / WirePlumber]")
     print(f"    @DEFAULT_AUDIO_SOURCE@: Muted = {pw['mic_muted']} (Volume = {pw['mic_vol']})")

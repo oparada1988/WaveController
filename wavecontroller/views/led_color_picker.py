@@ -54,7 +54,7 @@ class LEDColorButton(Gtk.MenuButton):
     def _setup_popover(self):
         popover = Gtk.Popover()
         popover.set_autohide(True)
-        popover.set_cascade_popdown(False)
+        popover.set_cascade_popdown(True)
         popover.add_css_class("wave-popover")
         self.popover = popover
 

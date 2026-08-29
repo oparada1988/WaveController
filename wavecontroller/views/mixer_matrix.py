@@ -312,6 +312,7 @@ class MixerMatrixView(Gtk.Box):
     def _setup_create_mix_popover(self, menu_btn: Gtk.MenuButton):
         popover = Gtk.Popover()
         popover.set_autohide(True)
+        popover.set_cascade_popdown(True)
         popover.add_css_class("wave-popover")
 
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
@@ -592,6 +593,7 @@ class MixerMatrixView(Gtk.Box):
     def _setup_create_channel_popover(self, menu_btn: Gtk.MenuButton):
         popover = Gtk.Popover()
         popover.set_autohide(True)
+        popover.set_cascade_popdown(True)
         popover.add_css_class("wave-popover")
 
         stack = Gtk.Stack()
@@ -618,7 +620,36 @@ class MixerMatrixView(Gtk.Box):
         sub_lbl.set_halign(Gtk.Align.START)
         cat_box.append(sub_lbl)
 
-        # Category 1: Application
+        # Category 1: App Group Channel (Multi-App & Virtual Sink)
+        group_cat_btn = Gtk.Button()
+        group_cat_btn.add_css_class("flat")
+        group_cat_btn.add_css_class("wave-sidebar-row")
+
+        group_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+        group_icon = Gtk.Image.new_from_icon_name("folder-symbolic")
+        group_icon.set_pixel_size(22)
+        group_row.append(group_icon)
+
+        group_text_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=1)
+        group_text_box.set_hexpand(True)
+        group_title = Gtk.Label(label="App Group Channel")
+        group_title.add_css_class("channel-title")
+        group_title.set_halign(Gtk.Align.START)
+        group_text_box.append(group_title)
+
+        group_desc = Gtk.Label(label="Group multiple apps & virtual sink")
+        group_desc.add_css_class("mix-header-subtitle")
+        group_desc.set_halign(Gtk.Align.START)
+        group_text_box.append(group_desc)
+        group_row.append(group_text_box)
+
+        arrow_grp = Gtk.Image.new_from_icon_name("go-next-symbolic")
+        arrow_grp.set_pixel_size(14)
+        group_row.append(arrow_grp)
+        group_cat_btn.set_child(group_row)
+        cat_box.append(group_cat_btn)
+
+        # Category 2: Application
         app_cat_btn = Gtk.Button()
         app_cat_btn.add_css_class("flat")
         app_cat_btn.add_css_class("wave-sidebar-row")
@@ -635,7 +666,7 @@ class MixerMatrixView(Gtk.Box):
         app_title.set_halign(Gtk.Align.START)
         app_text_box.append(app_title)
 
-        app_desc = Gtk.Label(label="Route audio from running apps")
+        app_desc = Gtk.Label(label="Route a running audio application")
         app_desc.add_css_class("mix-header-subtitle")
         app_desc.set_halign(Gtk.Align.START)
         app_text_box.append(app_desc)
@@ -647,7 +678,7 @@ class MixerMatrixView(Gtk.Box):
         app_cat_btn.set_child(app_row)
         cat_box.append(app_cat_btn)
 
-        # Category 2: Input Device
+        # Category 3: Input Device
         dev_cat_btn = Gtk.Button()
         dev_cat_btn.add_css_class("flat")
         dev_cat_btn.add_css_class("wave-sidebar-row")
@@ -751,7 +782,7 @@ class MixerMatrixView(Gtk.Box):
 
                     def make_app_click_handler(name):
                         def handler(btn):
-                            self.pipewire_mgr.add_channel(name, ch_type="sink", assigned_apps=[name])
+                            self.pipewire_mgr.add_channel(name, ch_type="app", assigned_apps=[name])
                             popover.popdown()
                             GLib.idle_add(self._rebuild_grid)
                         return handler
@@ -906,7 +937,7 @@ class MixerMatrixView(Gtk.Box):
         def on_cust_app_add(b):
             name = app_entry.get_text().strip()
             if name:
-                self.pipewire_mgr.add_channel(name, ch_type="sink", assigned_apps=[name])
+                self.pipewire_mgr.add_channel(name, ch_type="app", assigned_apps=[name])
                 popover.popdown()
                 GLib.idle_add(self._rebuild_grid)
 
@@ -958,6 +989,130 @@ class MixerMatrixView(Gtk.Box):
         dev_page_box.append(dev_cancel_btn)
 
         stack.add_named(dev_page_box, "device_page")
+
+        # ==========================================
+        # PAGE 4: App Group Channel Creator
+        # ==========================================
+        group_page_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        group_page_box.set_margin_top(12)
+        group_page_box.set_margin_bottom(12)
+        group_page_box.set_margin_start(12)
+        group_page_box.set_margin_end(12)
+        group_page_box.set_size_request(280, -1)
+
+        group_top_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        back_group_btn = Gtk.Button.new_from_icon_name("go-previous-symbolic")
+        back_group_btn.add_css_class("flat")
+        back_group_btn.add_css_class("wave-icon-btn")
+        back_group_btn.connect("clicked", lambda b: stack.set_visible_child_name("cat_page"))
+        group_top_box.append(back_group_btn)
+
+        group_head_lbl = Gtk.Label(label="Create App Group")
+        group_head_lbl.add_css_class("mix-header-title")
+        group_head_lbl.set_halign(Gtk.Align.START)
+        group_top_box.append(group_head_lbl)
+        group_page_box.append(group_top_box)
+
+        # Name Entry
+        name_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=3)
+        name_lbl = Gtk.Label(label="Group Name:")
+        name_lbl.add_css_class("mix-header-subtitle")
+        name_lbl.set_halign(Gtk.Align.START)
+        name_box.append(name_lbl)
+        group_name_entry = Gtk.Entry(placeholder_text="e.g. Work & Comms, Music Group")
+        name_box.append(group_name_entry)
+        group_page_box.append(name_box)
+
+        # Expose as System Audio Device toggle row
+        sink_toggle_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        sink_toggle_row.set_margin_top(4)
+        sink_toggle_lbl = Gtk.Label(label="Expose as System Audio Device", hexpand=True, halign=Gtk.Align.START)
+        sink_toggle_lbl.add_css_class("mix-header-subtitle")
+        sink_toggle_switch = Gtk.Switch(active=True)
+        sink_toggle_row.append(sink_toggle_lbl)
+        sink_toggle_row.append(sink_toggle_switch)
+        group_page_box.append(sink_toggle_row)
+
+        group_page_box.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
+
+        # Bundle Running Applications Checklist
+        bundle_lbl = Gtk.Label(label="Bundle Running Applications:")
+        bundle_lbl.add_css_class("mix-header-subtitle")
+        bundle_lbl.set_halign(Gtk.Align.START)
+        group_page_box.append(bundle_lbl)
+
+        group_scroll = Gtk.ScrolledWindow()
+        group_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        group_scroll.set_propagate_natural_height(True)
+        group_scroll.set_max_content_height(140)
+
+        group_apps_container = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        group_scroll.set_child(group_apps_container)
+        group_page_box.append(group_scroll)
+
+        group_selected_apps = set()
+
+        def show_group_page(b=None):
+            while group_apps_container.get_first_child():
+                group_apps_container.remove(group_apps_container.get_first_child())
+            group_selected_apps.clear()
+            group_name_entry.set_text("")
+            sink_toggle_switch.set_active(True)
+
+            running_apps = self.pipewire_mgr.get_detected_apps()
+            if not running_apps:
+                no_apps = Gtk.Label(label="No audio apps currently detected.")
+                no_apps.add_css_class("dim-label")
+                group_apps_container.append(no_apps)
+            else:
+                for app_info in running_apps:
+                    aname = app_info["name"]
+                    aicon = app_info.get("icon") or self.pipewire_mgr.resolve_icon_for_app(aname)
+                    chk = Gtk.CheckButton(label=aname)
+                    chk.set_active(False)
+
+                    def make_chk_handler(name):
+                        def _handler(button):
+                            if button.get_active():
+                                group_selected_apps.add(name)
+                            else:
+                                group_selected_apps.discard(name)
+                        return _handler
+
+                    chk.connect("toggled", make_chk_handler(aname))
+                    group_apps_container.append(chk)
+
+            stack.set_visible_child_name("group_page")
+
+        group_cat_btn.connect("clicked", show_group_page)
+
+        # Create Group Button
+        group_actions_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        group_actions_box.set_margin_top(6)
+
+        group_cancel_btn = Gtk.Button(label="Cancel")
+        group_cancel_btn.add_css_class("destructive-action")
+        group_cancel_btn.set_hexpand(True)
+        group_cancel_btn.connect("clicked", lambda b: popover.popdown())
+        group_actions_box.append(group_cancel_btn)
+
+        create_group_btn = Gtk.Button(label="Create Group")
+        create_group_btn.add_css_class("suggested-action")
+        create_group_btn.set_hexpand(True)
+
+        def on_create_group_clicked(b):
+            name = group_name_entry.get_text().strip() or "Group Channel"
+            exp_sink = sink_toggle_switch.get_active()
+            apps_list = list(group_selected_apps)
+            self.pipewire_mgr.add_channel(name, icon="folder-symbolic", ch_type="group", assigned_apps=apps_list, expose_sink=exp_sink)
+            popover.popdown()
+            GLib.idle_add(self._rebuild_grid)
+
+        create_group_btn.connect("clicked", on_create_group_clicked)
+        group_actions_box.append(create_group_btn)
+        group_page_box.append(group_actions_box)
+
+        stack.add_named(group_page_box, "group_page")
 
         def reset_create_channel_popover():
             stack.set_visible_child_name("cat_page")
@@ -1187,6 +1342,8 @@ class MixerMatrixView(Gtk.Box):
         self.matrix_cells.clear()
         self.mix_headers.clear()
         self._build_grid()
+        if self.peak_monitor and hasattr(self.peak_monitor, "trigger_refresh"):
+            self.peak_monitor.trigger_refresh()
 
     def _on_output_dropdown_changed(self, dropdown, *args):
         idx = dropdown.get_selected()

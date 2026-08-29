@@ -71,6 +71,16 @@ class ChannelCard(Gtk.Box):
         ch_id = str(channel_info.get("id", "")).lower()
         self.is_mic_channel = (self.is_wave_channel or channel_info.get("type") == "source" or any(k in ch_id for k in ("mic", "fefine", "fifine", "capture", "input")))
 
+        # Determine if this is a group channel (bundles multiple apps and/or exposes a system device)
+        self.is_group_channel = (
+            not self.is_mic_channel and (
+                channel_info.get("type") == "group" or
+                channel_info.get("icon") == "folder-symbolic" or
+                "group" in ch_id or
+                "group" in ch_name
+            )
+        )
+
         self.is_offline = self._is_channel_offline()
 
         if self.is_mic_channel:
@@ -309,7 +319,7 @@ class ChannelCard(Gtk.Box):
     def _setup_channel_popover(self):
         popover = Gtk.Popover()
         popover.set_autohide(True)
-        popover.set_cascade_popdown(False)
+        popover.set_cascade_popdown(True)
         popover.add_css_class("wave-popover")
 
         vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
@@ -353,6 +363,188 @@ class ChannelCard(Gtk.Box):
         sync_row.append(sync_switch)
         vbox.append(sync_row)
 
+        # Group Channels Exclusive Options: Virtual System Audio Device & Grouped Applications
+        if self.is_group_channel:
+            vbox.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
+
+            sink_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+            sink_title = Gtk.Label(label="Expose as System Audio Device", hexpand=True, halign=Gtk.Align.START)
+            sink_title.add_css_class("mix-header-subtitle")
+            sink_switch = Gtk.Switch(active=self.pipewire_mgr.is_channel_sink_exposed(self.channel_info["id"]))
+
+            def _on_sink_switch_toggled(sw, state):
+                self.pipewire_mgr.set_channel_sink_exposed(self.channel_info["id"], state)
+                self.refresh_apps()
+                return False
+
+            sink_switch.connect("state-set", _on_sink_switch_toggled)
+            sink_row.append(sink_title)
+            sink_row.append(sink_switch)
+            vbox.append(sink_row)
+
+            # Grouped Applications List
+            vbox.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
+            apps_head = Gtk.Label(label="Grouped Applications:")
+            apps_head.add_css_class("heading")
+            apps_head.set_halign(Gtk.Align.START)
+            vbox.append(apps_head)
+
+            assigned_scroll = Gtk.ScrolledWindow()
+            assigned_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+            assigned_scroll.set_propagate_natural_height(True)
+            assigned_scroll.set_max_content_height(140)
+
+            apps_container = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+            assigned_scroll.set_child(apps_container)
+            vbox.append(assigned_scroll)
+
+            # Available apps expander section
+            avail_section = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+            avail_section.set_visible(False)
+            avail_section.set_margin_top(4)
+
+            avail_head = Gtk.Label(label="Available Audio Applications:")
+            avail_head.add_css_class("dim-label")
+            avail_head.set_halign(Gtk.Align.START)
+            avail_section.append(avail_head)
+
+            avail_scroll = Gtk.ScrolledWindow()
+            avail_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+            avail_scroll.set_propagate_natural_height(True)
+            avail_scroll.set_max_content_height(180) # Capped at ~5 apps
+
+            avail_apps_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+            avail_scroll.set_child(avail_apps_box)
+            avail_section.append(avail_scroll)
+
+            # Toggle button for inline app selector
+            toggle_add_btn = Gtk.Button()
+            toggle_add_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+            toggle_add_icon = Gtk.Image.new_from_icon_name("list-add-symbolic")
+            toggle_add_icon.set_pixel_size(14)
+            toggle_add_box.append(toggle_add_icon)
+            toggle_add_lbl = Gtk.Label(label="Add Application to Group")
+            toggle_add_box.append(toggle_add_lbl)
+            toggle_add_arrow = Gtk.Image.new_from_icon_name("pan-down-symbolic")
+            toggle_add_arrow.set_pixel_size(12)
+            toggle_add_box.append(toggle_add_arrow)
+            toggle_add_btn.set_child(toggle_add_box)
+            toggle_add_btn.add_css_class("suggested-action")
+            toggle_add_btn.set_margin_top(4)
+
+            def refresh_available_apps():
+                while avail_apps_box.get_first_child():
+                    avail_apps_box.remove(avail_apps_box.get_first_child())
+
+                ch_id = self.channel_info["id"]
+                current_app_names = {a["name"].lower() for a in self.pipewire_mgr.get_channel_all_apps(ch_id)}
+                running_apps = self.pipewire_mgr.get_detected_apps()
+
+                avail = [a for a in running_apps if a["name"].lower() not in current_app_names]
+                if not avail:
+                    none_lbl = Gtk.Label(label="No other active audio apps found")
+                    none_lbl.add_css_class("dim-label")
+                    avail_apps_box.append(none_lbl)
+                else:
+                    for app_info in avail:
+                        aname = app_info["name"]
+                        ibtn = Gtk.Button()
+                        ibtn.add_css_class("flat")
+                        ibtn.add_css_class("wave-sidebar-row")
+
+                        irow = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+                        i_icon = app_info.get("icon") or self.pipewire_mgr.resolve_icon_for_app(aname)
+                        i_img = Gtk.Image.new_from_icon_name(i_icon)
+                        i_img.set_pixel_size(16)
+                        irow.append(i_img)
+
+                        ilbl = Gtk.Label(label=aname, hexpand=True, halign=Gtk.Align.START)
+                        irow.append(ilbl)
+
+                        plus_ic = Gtk.Image.new_from_icon_name("list-add-symbolic")
+                        plus_ic.set_pixel_size(12)
+                        irow.append(plus_ic)
+
+                        ibtn.set_child(irow)
+
+                        def make_assign(n):
+                            def _assign(b):
+                                self.pipewire_mgr.assign_app_to_channel(ch_id, n)
+                                rebuild_app_list()
+                                refresh_available_apps()
+                                self.refresh_apps()
+                            return _assign
+
+                        ibtn.connect("clicked", make_assign(aname))
+                        avail_apps_box.append(ibtn)
+
+            def rebuild_app_list():
+                while apps_container.get_first_child():
+                    apps_container.remove(apps_container.get_first_child())
+
+                ch_id = self.channel_info["id"]
+                current_apps = self.pipewire_mgr.get_channel_all_apps(ch_id)
+
+                if not current_apps:
+                    empty_lbl = Gtk.Label(label="No applications assigned yet")
+                    empty_lbl.add_css_class("dim-label")
+                    empty_lbl.set_halign(Gtk.Align.START)
+                    apps_container.append(empty_lbl)
+                else:
+                    for app_dict in current_apps:
+                        app_name = app_dict["name"]
+                        app_src = app_dict.get("source", "manual")
+
+                        row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+                        row.add_css_class("wave-app-row")
+
+                        icon_name = app_dict.get("icon") or self.pipewire_mgr.resolve_icon_for_app(app_name)
+                        ic = Gtk.Image.new_from_icon_name(icon_name)
+                        ic.set_pixel_size(16)
+                        row.append(ic)
+
+                        nlbl = Gtk.Label(label=app_name, hexpand=True, halign=Gtk.Align.START)
+                        nlbl.set_ellipsize(3)
+                        row.append(nlbl)
+
+                        if app_src == "sink":
+                            badge = Gtk.Label(label="In-App")
+                            badge.add_css_class("device-badge")
+                            badge.add_css_class("online")
+                            badge.set_tooltip_text("Connected via in-app output setting or KDE mixer")
+                            row.append(badge)
+
+                        del_btn = Gtk.Button.new_from_icon_name("window-close-symbolic")
+                        del_btn.add_css_class("flat")
+                        del_btn.add_css_class("wave-icon-btn")
+                        del_btn.set_tooltip_text(f"Remove '{app_name}' from this group")
+
+                        def make_unassign(aname):
+                            def _unassign(b):
+                                self.pipewire_mgr.unassign_app_from_channel(ch_id, aname)
+                                rebuild_app_list()
+                                refresh_available_apps()
+                                self.refresh_apps()
+                            return _unassign
+
+                        del_btn.connect("clicked", make_unassign(app_name))
+                        row.append(del_btn)
+
+                        apps_container.append(row)
+
+            def on_toggle_add_clicked(b):
+                is_vis = not avail_section.get_visible()
+                avail_section.set_visible(is_vis)
+                toggle_add_arrow.set_from_icon_name("pan-up-symbolic" if is_vis else "pan-down-symbolic")
+                if is_vis:
+                    refresh_available_apps()
+
+            toggle_add_btn.connect("clicked", on_toggle_add_clicked)
+
+            rebuild_app_list()
+            vbox.append(toggle_add_btn)
+            vbox.append(avail_section)
+
         # Hardware LED Controls for Elgato Wave device
         if self.is_wave_channel and self.hardware_mgr:
             vbox.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
@@ -375,6 +567,8 @@ class ChannelCard(Gtk.Box):
             mute_led_row.append(mute_led_lbl)
             mute_led_row.append(mute_led_btn)
             vbox.append(mute_led_row)
+
+        vbox.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
 
         # Delete Channel button (Available for all custom and device channels)
         remove_btn = Gtk.Button(label="Delete Channel")
@@ -525,6 +719,27 @@ class ChannelCard(Gtk.Box):
                 self.badge_lbl.remove_css_class("offline")
                 self.badge_lbl.add_css_class("online")
 
+    def refresh_apps(self):
+        if getattr(self, "is_mic_channel", False):
+            return
+        if not hasattr(self, "sub_lbl") or self.sub_lbl is None:
+            return
+
+        ch_id = self.channel_info["id"]
+        all_apps = self.pipewire_mgr.get_channel_all_apps(ch_id) if self.pipewire_mgr else []
+        if all_apps:
+            app_names = [a["name"] for a in all_apps]
+            if len(app_names) > 2:
+                sub_text = f"{', '.join(app_names[:2])} (+{len(app_names)-2})"
+            else:
+                sub_text = ", ".join(app_names)
+        elif self.pipewire_mgr and self.pipewire_mgr.is_channel_sink_exposed(ch_id):
+            sub_text = "System Audio Device"
+        else:
+            sub_text = "No apps assigned"
+
+        self.sub_lbl.set_label(sub_text)
+
     def refresh_name(self):
         display_name = self.channel_info.get("name", "Channel")
         if self.is_wave_channel and self.hardware_mgr and self.hardware_mgr.device_name:
@@ -532,6 +747,7 @@ class ChannelCard(Gtk.Box):
         self.title_lbl.set_text(display_name)
         self.icon_img.set_from_icon_name(self._resolve_icon())
         self.refresh_hardware_state()
+        self.refresh_apps()
 
     def update_peaks(self, peak_l: float, peak_r: float):
         if hasattr(self, "slider") and self.slider:

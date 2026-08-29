@@ -73,8 +73,19 @@ class PipeWireManager:
         self._bound_stream_nodes = set()
         self.on_external_change_callback = None
         self._is_sleeping = False
+        self.peak_monitor = None
 
         self._init_default_states()
+
+    def set_peak_monitor(self, peak_mon):
+        """Links the active MultiChannelPeakMonitor instance for real-time <25ms reactive metering."""
+        self.peak_monitor = peak_mon
+
+    def _notify_peak_monitor_refresh(self):
+        """Immediately signals the peak monitor to attach to newly assigned or modified streams (<25ms)."""
+        pm = getattr(self, "peak_monitor", None)
+        if pm and hasattr(pm, "trigger_refresh"):
+            pm.trigger_refresh()
 
     def _save_state_to_config(self, immediate: bool = False):
         """Persists current channels, mixes, assigned apps, and channel states."""
@@ -176,7 +187,13 @@ class PipeWireManager:
                 node_name = f"WaveController_{m_id}_Source"
                 needed_nodes[node_name] = (f"WaveController {m_name}", "Audio/Source/Virtual")
 
-        # Per-channel ingestion is handled directly by submix loopback faders (no intermediate Audio/Sink nodes)
+        # Provision dedicated virtual sinks for channels with expose_sink=True (Group Channels)
+        for ch in channels_copy:
+            ch_id = ch["id"]
+            ch_name = ch.get("name", ch_id)
+            if ch.get("expose_sink", False) and ch.get("type") != "source" and not any(k in ch_id.lower() for k in ("mic", "fefine", "fifine", "capture", "input")):
+                node_name = f"WaveController_Channel_{ch_id}"
+                needed_nodes[node_name] = (f"WaveController {ch_name} (Sink)", "Audio/Sink")
 
         existing_active_names = set()
         try:
@@ -584,6 +601,88 @@ class PipeWireManager:
         except Exception:
             pass
 
+    def _unbind_app_from_wireplumber_target(self, app_name: str, channel_id: str = None):
+        """Clears WirePlumber target.object and target.node metadata for an application stream."""
+        try:
+            out = subprocess.check_output(["pw-dump"], text=True, stderr=subprocess.DEVNULL)
+            data = json.loads(out)
+            tokens = self._get_match_tokens(app_name)
+            for obj in data:
+                if obj.get("type") == "PipeWire:Interface:Node":
+                    props = obj.get("info", {}).get("props", {})
+                    if props.get("media.class") == "Stream/Output/Audio":
+                        n_app = props.get("application.name", "").lower()
+                        n_bin = props.get("application.process.binary", "").lower()
+                        n_name = props.get("node.name", "").lower()
+                        n_id = props.get("application.id", "").lower()
+
+                        bin_file = n_bin.split("/")[-1].split("\\")[-1] if n_bin else ""
+                        match = False
+                        if bin_file:
+                            match = any(t in bin_file or bin_file == t or t in n_bin for t in tokens if len(t) >= 3)
+                        elif n_app and n_app not in ("chromium", "playback", "webrtc voiceengine"):
+                            match = any(t in n_app or n_app == t for t in tokens if len(t) >= 3)
+                        else:
+                            match = any(t in n_name or t in n_id for t in tokens if len(t) >= 3)
+
+                        if match:
+                            nid = obj["id"]
+                            self._bound_stream_nodes.discard(nid)
+                            subprocess.run(
+                                ["pw-metadata", "-n", "default", "-d", str(nid), "target.object"],
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+                            )
+                            subprocess.run(
+                                ["pw-metadata", "-n", "default", "-d", str(nid), "target.node"],
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+                            )
+        except Exception:
+            pass
+
+    def _get_system_default_sink_name(self) -> str:
+        """Returns the system default audio sink node name configured in PipeWire/WirePlumber."""
+        try:
+            out = subprocess.check_output(["pw-metadata", "-n", "default", "0", "default.audio.sink"], text=True, stderr=subprocess.DEVNULL)
+            for line in out.splitlines():
+                if "key:'default.audio.sink'" in line and "value:'" in line:
+                    val_str = line.split("value:'")[1].split("'")[0]
+                    parsed = json.loads(val_str)
+                    if isinstance(parsed, dict) and parsed.get("name"):
+                        return parsed["name"]
+        except Exception:
+            pass
+        return ""
+
+    def _get_default_sink_playback_ports(self) -> list:
+        """Finds input/playback ports of the active OS system default audio output sink."""
+        def_name = self._get_system_default_sink_name()
+        try:
+            in_ports_raw = subprocess.check_output(["pw-link", "-i"], text=True, stderr=subprocess.DEVNULL)
+            in_ports = [l.strip() for l in in_ports_raw.splitlines() if l.strip()]
+
+            if def_name:
+                matched = [p for p in in_ports if p.startswith(f"{def_name}:") and (":playback_" in p or ":input_" in p)]
+                if matched:
+                    return matched[:2]
+
+            # Fallback 1: WaveController Personal Mix Sink
+            wc_sink = [p for p in in_ports if p.startswith("WaveController_personal_mix_Sink:") and ":playback_" in p]
+            if wc_sink:
+                return wc_sink[:2]
+
+            # Fallback 2: Selected monitor physical device
+            target_device = self.selected_monitor_device or ""
+            clean_target = target_device.replace("alsa_card.", "").replace("alsa_output.", "").strip().lower()
+            if clean_target and clean_target != "none":
+                phys_matched = [p for p in in_ports if p.startswith("alsa_output.") and ":playback_" in p and clean_target in p.lower()]
+                if phys_matched:
+                    return phys_matched[:2]
+
+            # Fallback 3: Any physical ALSA playback sink
+            return [p for p in in_ports if p.startswith("alsa_output.") and ":playback_" in p][:2]
+        except Exception:
+            return []
+
     def _reconcile_app_streams_fast(self):
         """Ultra-fast reactive stream interceptor ensuring assigned apps
         are immediately attached to their active submix faders and severed from default mix leaks."""
@@ -859,20 +958,173 @@ class PipeWireManager:
 
         return apps
 
+    def get_detected_apps(self) -> list:
+        """Discovers running audio applications from active PipeWire streams and desktop processes."""
+        return self.get_active_application_streams()
+
     def assign_app_to_channel(self, channel_id: str, app_name: str):
         with self._lock:
             for ch, apps in self.assigned_apps.items():
                 if app_name in apps:
                     apps.remove(app_name)
             if channel_id in self.assigned_apps:
-                self.assigned_apps[channel_id].append(app_name)
+                if app_name not in self.assigned_apps[channel_id]:
+                    self.assigned_apps[channel_id].append(app_name)
+            else:
+                self.assigned_apps[channel_id] = [app_name]
                 
-            state = self.channel_states.get(channel_id, {}).get("personal", {"volume": 80, "muted": False})
-            self.set_channel_volume(channel_id, "personal", state["volume"])
             self._save_state_to_config(immediate=True)
             self._refresh_node_cache()
+            self._notify_peak_monitor_refresh()
+
+        def _bg():
             self._sync_channel_audio_routing(channel_id=channel_id)
             self._bind_app_to_wireplumber_target(app_name, channel_id)
+            self._notify_peak_monitor_refresh()
+
+        threading.Thread(target=_bg, daemon=True).start()
+
+    def unassign_app_from_channel(self, channel_id: str, app_name: str):
+        with self._lock:
+            if channel_id in self.assigned_apps:
+                if app_name in self.assigned_apps[channel_id]:
+                    self.assigned_apps[channel_id].remove(app_name)
+            self._save_state_to_config(immediate=True)
+            self._refresh_node_cache()
+            self._notify_peak_monitor_refresh()
+
+        def _bg():
+            # 1. Clear WirePlumber target binding for this application
+            self._unbind_app_from_wireplumber_target(app_name, channel_id)
+
+            # 2. Proactively sever all links from this app to channel submix loopbacks & virtual sinks
+            try:
+                tokens = self._get_match_tokens(app_name)
+                port_meta = self._get_active_port_metadata_map()
+                links_map = self._get_pw_links_map()
+                app_out_ports = []
+                for src_p, dests in links_map.items():
+                    if ":output_" in src_p and self._port_matches_tokens(src_p, tokens, port_meta):
+                        app_out_ports.append(src_p)
+                        for dest_p in dests:
+                            if f"input.WaveController_submix_{channel_id}_" in dest_p or dest_p.startswith(f"WaveController_Channel_{channel_id}:"):
+                                try:
+                                    subprocess.run(["pw-link", "-d", src_p, dest_p], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                                except Exception:
+                                    pass
+
+                # If app is completely unassigned from all channels, restore connection to Master Personal Mix sink (or physical default)
+                with self._lock:
+                    is_assigned_elsewhere = any(app_name in apps for apps in self.assigned_apps.values())
+
+                if not is_assigned_elsewhere and app_out_ports:
+                    try:
+                        fallback_in = self._get_default_sink_playback_ports()
+                        if fallback_in:
+                            self._link_stereo_ports(app_out_ports, fallback_in, unlink=False)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
+            # 3. Resync channel routing
+            self._sync_channel_audio_routing(channel_id=channel_id)
+            self._notify_peak_monitor_refresh()
+
+        threading.Thread(target=_bg, daemon=True).start()
+
+    def is_channel_sink_exposed(self, channel_id: str) -> bool:
+        with self._lock:
+            ch = next((c for c in self.channels if c["id"] == channel_id), None)
+            return bool(ch.get("expose_sink", False)) if ch else False
+
+    def set_channel_sink_exposed(self, channel_id: str, exposed: bool):
+        with self._lock:
+            ch = next((c for c in self.channels if c["id"] == channel_id), None)
+            if ch:
+                ch["expose_sink"] = bool(exposed)
+                self._save_state_to_config(immediate=True)
+                self._notify_peak_monitor_refresh()
+
+        def _bg():
+            self._ensure_virtual_mix_nodes()
+            self._refresh_node_cache()
+            self._sync_channel_audio_routing(channel_id=channel_id)
+            self._notify_peak_monitor_refresh()
+
+        threading.Thread(target=_bg, daemon=True).start()
+
+    def get_channel_connected_apps(self, channel_id: str) -> list:
+        """
+        Discovers applications currently playing into this channel's dedicated virtual sink
+        (e.g., Discord or browser streams assigned to this sink in KDE or in-app settings).
+        """
+        connected = []
+        sink_target = f"WaveController_Channel_{channel_id}:playback_"
+        try:
+            out = subprocess.check_output(["pw-link", "-l"], text=True, stderr=subprocess.DEVNULL)
+            lines = out.splitlines()
+            curr_src = ""
+            seen = set()
+            port_meta = self._get_active_port_metadata_map()
+            for line in lines:
+                l_str = line.strip()
+                if not line.startswith(" ") and ":" in l_str:
+                    curr_src = l_str
+                elif "|->" in l_str and curr_src:
+                    dest_p = l_str.replace("|->", "").strip()
+                    if dest_p.startswith(sink_target):
+                        meta = port_meta.get(curr_src, {})
+                        app_name = meta.get("name") or curr_src.split(":")[0]
+                        app_bin = meta.get("binary") or app_name.lower()
+                        app_icon = meta.get("icon") or self.resolve_icon_for_app(app_name)
+                        
+                        if app_name.startswith("output.WaveController_") or "WaveController" in app_name:
+                            continue
+                        
+                        if app_name not in seen:
+                            seen.add(app_name)
+                            connected.append({
+                                "name": app_name,
+                                "binary": app_bin,
+                                "icon": app_icon,
+                                "source": "sink"
+                            })
+        except Exception:
+            pass
+        return connected
+
+    def get_channel_all_apps(self, channel_id: str) -> list:
+        """
+        Returns all applications assigned to this channel (both manually assigned in UI and
+        dynamically connected via the system virtual sink).
+        """
+        all_apps = []
+        seen = set()
+
+        # 1. Manually assigned apps in WaveController
+        assigned = self.get_assigned_apps(channel_id)
+        for app in assigned:
+            app_clean = str(app).strip()
+            if app_clean and app_clean.lower() not in seen and not app_clean.startswith("usb-") and not app_clean.startswith("alsa_card."):
+                seen.add(app_clean.lower())
+                all_apps.append({
+                    "name": app_clean,
+                    "binary": app_clean.lower(),
+                    "icon": self.resolve_icon_for_app(app_clean),
+                    "source": "manual"
+                })
+
+        # 2. Dynamically connected apps through virtual sink (Way 2)
+        if self.is_channel_sink_exposed(channel_id):
+            connected = self.get_channel_connected_apps(channel_id)
+            for c in connected:
+                c_name_low = str(c["name"]).strip().lower()
+                if c_name_low not in seen:
+                    seen.add(c_name_low)
+                    all_apps.append(c)
+
+        return all_apps
 
     def get_assigned_apps(self, channel_id: str) -> list:
         with self._lock:
@@ -1325,7 +1577,7 @@ class PipeWireManager:
                 # Virtual playback sinks (WaveController_Channel_<ch>):
                 # - When linked: virtual ingestion sink remains at unity (1.00) while submix loopback faders scale in lockstep.
                 # - When unlinked: apply master channel volume directly to the virtual ingestion sink as pre-fader channel attenuation.
-                is_virtual_sink = any(c.get("id") == channel_id and c.get("type") == "sink" for c in self.channels)
+                is_virtual_sink = any(c.get("id") == channel_id and c.get("type") in ("sink", "group", "app") for c in self.channels)
                 target_node_ids = set()
                 ch_sink_name = f"wavecontroller_channel_{channel_id}".lower()
 
@@ -1535,6 +1787,14 @@ class PipeWireManager:
                         if ":output_" in p and self._port_matches_tokens(p, tokens, port_meta):
                             app_out_ports.append(p)
 
+                # Capture audio from dedicated channel virtual sink if exposed
+                if ch.get("expose_sink", False):
+                    sink_prefix = f"WaveController_Channel_{ch_id}:monitor_"
+                    for p in out_ports:
+                        if p.startswith(sink_prefix):
+                            if p not in app_out_ports:
+                                app_out_ports.append(p)
+
                 ch_out_ports = app_out_ports
 
             if not is_source_channel and app_out_ports:
@@ -1611,8 +1871,21 @@ class PipeWireManager:
                             except Exception:
                                 pass
 
-                    # Link Stage 1: Channel Output -> Loopback Input
-                    self._link_stereo_ports(ch_out_ports, lb_in_ports, unlink=False)
+                    # Ingestion Audit: Sever any incoming links to lb_in_ports that are NOT in ch_out_ports
+                    for dest_p in lb_in_ports:
+                        for src_p, dests in links_map.items():
+                            if dest_p in dests and src_p not in ch_out_ports:
+                                try:
+                                    subprocess.run(["pw-link", "-d", src_p, dest_p], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                                except Exception:
+                                    pass
+
+                    # Link Stage 1: Channel Output -> Loopback Input (only if ch_out_ports has items)
+                    if ch_out_ports:
+                        self._link_stereo_ports(ch_out_ports, lb_in_ports, unlink=False)
+                    else:
+                        self._link_stereo_ports(ch_out_ports, lb_in_ports, unlink=True)
+
                     # Link Stage 2: Loopback Output -> Mix Target Input
                     self._link_stereo_ports(lb_out_ports, target_in_ports, unlink=False)
                 else:
@@ -1622,21 +1895,36 @@ class PipeWireManager:
         # Synchronize physical output target devices for all Sink mixes
         self._sync_mix_physical_output_routing(mix_id, out_ports, in_ports)
 
-        # Strict Mix Ingestion Shield: Ensure no client application can ever connect directly to a mix sink or source.
-        # Only authorized submix loopbacks (output.WaveController_submix_*) are permitted to feed into mix devices.
+        # Strict Channel-to-Mix Isolation: Ensure that applications actively assigned to a channel strip
+        # do NOT bypass their channel's faders by linking directly to mix sinks.
+        # Unassigned desktop applications (using the system default device) are allowed to feed Personal Mix.
         try:
+            assigned_tokens = set()
+            with self._lock:
+                for apps in self.assigned_apps.values():
+                    for a in apps:
+                        assigned_tokens.update(self._get_match_tokens(a))
+
             fresh_links = self._get_pw_links_map()
+            port_meta = self._get_active_port_metadata_map()
             for m in mixes_copy:
                 m_id = m["id"]
                 target_prefixes = (f"WaveController_{m_id}_Sink:playback_", f"WaveController_{m_id}_Source:input_")
                 for src_p, dests in fresh_links.items():
                     if not src_p.startswith("output.WaveController_submix_"):
-                        for dest_p in dests:
-                            if any(dest_p.startswith(pref) for pref in target_prefixes):
-                                try:
-                                    subprocess.run(["pw-link", "-d", src_p, dest_p], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                                except Exception:
-                                    pass
+                        # If the source belongs to an actively assigned channel or channel sink, sever the direct bypass link
+                        is_assigned_src = (
+                            src_p.startswith("WaveController_Channel_") or
+                            src_p.startswith("output.WaveController_Channel_") or
+                            (assigned_tokens and self._port_matches_tokens(src_p, assigned_tokens, port_meta))
+                        )
+                        if is_assigned_src:
+                            for dest_p in dests:
+                                if any(dest_p.startswith(pref) for pref in target_prefixes):
+                                    try:
+                                        subprocess.run(["pw-link", "-d", src_p, dest_p], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                                    except Exception:
+                                        pass
         except Exception:
             pass
 
@@ -1797,7 +2085,7 @@ class PipeWireManager:
     def get_channel_volume(self, channel_id: str, mix_id: str) -> int:
         return self.get_channel_state(channel_id, mix_id).get("volume", 80)
 
-    def add_channel(self, name: str, icon: str = None, ch_type: str = "sink", assigned_apps: list = None, sync_meter: bool = False) -> dict:
+    def add_channel(self, name: str, icon: str = None, ch_type: str = "sink", assigned_apps: list = None, sync_meter: bool = False, expose_sink: bool = False) -> dict:
         with self._lock:
             ch_id = name.lower().replace(" ", "_").replace("/", "_").replace(".", "_")
             existing_ids = [c["id"] for c in self.channels]
@@ -1812,7 +2100,8 @@ class PipeWireManager:
                 "type": ch_type,
                 "icon": resolved_icon,
                 "default_vol": default_vol,
-                "sync_meter": sync_meter
+                "sync_meter": sync_meter,
+                "expose_sink": bool(expose_sink)
             }
             self.channels.append(new_ch)
             self.channel_master_states[ch_id] = {
@@ -1820,7 +2109,7 @@ class PipeWireManager:
                 "muted": False
             }
             self.channel_states[ch_id] = {}
-            self.assigned_apps[ch_id] = assigned_apps if assigned_apps is not None else ([name] if ch_type == "sink" else [])
+            self.assigned_apps[ch_id] = assigned_apps if assigned_apps is not None else ([name] if ch_type in ("sink", "app") else [])
             for mx in self.mixes:
                 self.channel_states[ch_id][mx["id"]] = {
                     "volume": default_vol,
@@ -1833,11 +2122,13 @@ class PipeWireManager:
             self._save_state_to_config(immediate=True)
             self._volume_queue[ch_id] = (default_vol, False)
             self._volume_event.set()
+            self._notify_peak_monitor_refresh()
 
         def _bg_provision():
             self._ensure_virtual_mix_nodes()
             self._refresh_node_cache()
             self._sync_channel_audio_routing(channel_id=ch_id)
+            self._notify_peak_monitor_refresh()
 
         threading.Thread(target=_bg_provision, daemon=True).start()
         return new_ch
@@ -1855,6 +2146,7 @@ class PipeWireManager:
                 self.channel_master_states.pop(channel_id, None)
             self.assigned_apps.pop(channel_id, None)
             self._save_state_to_config(immediate=True)
+            self._notify_peak_monitor_refresh()
 
         def _bg_teardown():
             with self._lock:
@@ -1893,21 +2185,13 @@ class PipeWireManager:
                 pass
 
             if assigned:
+                for app in assigned:
+                    self._unbind_app_from_wireplumber_target(app, channel_id)
+
                 try:
                     out_ports_raw = subprocess.check_output(["pw-link", "-o"], text=True, stderr=subprocess.DEVNULL)
-                    in_ports_raw = subprocess.check_output(["pw-link", "-i"], text=True, stderr=subprocess.DEVNULL)
                     out_ports = [l.strip() for l in out_ports_raw.splitlines() if l.strip()]
-                    in_ports = [l.strip() for l in in_ports_raw.splitlines() if l.strip()]
-
-                    default_phys_in = []
-                    target_device = self.selected_monitor_device or ""
-                    clean_target = target_device.replace("alsa_card.", "").replace("alsa_output.", "").strip().lower()
-                    if clean_target and clean_target != "none":
-                        for p in in_ports:
-                            if p.startswith("alsa_output.") and ":playback_" in p and clean_target in p.lower():
-                                default_phys_in.append(p)
-                    if not default_phys_in:
-                        default_phys_in = [p for p in in_ports if p.startswith("alsa_output.") and ":playback_" in p][:2]
+                    fallback_in = self._get_default_sink_playback_ports()
 
                     app_out_ports = []
                     for app in assigned:
@@ -1919,18 +2203,21 @@ class PipeWireManager:
                                 app_out_ports.append(p)
 
                     if app_out_ports:
+                        in_ports_raw = subprocess.check_output(["pw-link", "-i"], text=True, stderr=subprocess.DEVNULL)
+                        in_ports = [l.strip() for l in in_ports_raw.splitlines() if l.strip()]
                         for p in in_ports:
                             if p.startswith("WaveController_") and (":playback_" in p or ":input_" in p):
                                 self._link_stereo_ports(app_out_ports, [p], unlink=True)
 
-                    if default_phys_in and app_out_ports:
-                        self._link_stereo_ports(app_out_ports, default_phys_in, unlink=False)
+                    if fallback_in and app_out_ports:
+                        self._link_stereo_ports(app_out_ports, fallback_in, unlink=False)
                 except Exception:
                     pass
 
             self._refresh_node_cache()
             self._ensure_virtual_mix_nodes()
             self._sync_channel_audio_routing()
+            self._notify_peak_monitor_refresh()
 
         threading.Thread(target=_bg_teardown, daemon=True).start()
         return True

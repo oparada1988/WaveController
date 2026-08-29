@@ -64,7 +64,7 @@ def main():
     
     dev = elgato_manager.get_device()
     if not dev or not dev.is_connected():
-        if not elgato_manager.start():
+        if not elgato_manager.detect_device():
             print("[ERROR] Could not connect to Elgato Wave device!")
             return
         dev = elgato_manager.get_device()

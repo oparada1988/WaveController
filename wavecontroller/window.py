@@ -358,6 +358,8 @@ class WaveMainWindow(Adw.ApplicationWindow):
     def _show_device_context_menu(self, widget, device_key: str):
         pop = Gtk.Popover()
         pop.set_parent(widget)
+        pop.set_autohide(True)
+        pop.set_cascade_popdown(True)
         pop.add_css_class("wave-popover")
 
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
