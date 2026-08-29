@@ -218,6 +218,7 @@ class USBHardwareManager:
                 config_manager.set("hardware_settings", hw, immediate=False)
 
         if "hp_volume_pct" in changed:
+            log.info(f"[WaveController.Hardware] Hardware HP Volume changed to {changed['hp_volume_pct']}%")
             self.headphone_volume = int(round(changed["hp_volume_pct"]))
             hw = dict(config_manager.get("hardware_settings", {}))
             hw["headphone_volume"] = self.headphone_volume

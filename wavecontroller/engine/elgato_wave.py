@@ -573,6 +573,7 @@ class ElgatoWaveDevice:
                 self._apply_led_colors_to_config(cfg, active_mode="hp")
                 self.write_config(cfg)
                 self._last_raw_hw_mute = bool(cfg[self.profile.off_mute])
+            self._last_state["hp_volume_pct"] = pct
             self._last_state["hp_pct"] = pct
         except Exception as e:
             log.warning(f"Failed to set headphone volume: {e}")
@@ -610,6 +611,7 @@ class ElgatoWaveDevice:
                 self._apply_led_colors_to_config(cfg, active_mode="mix")
                 self.write_config(cfg)
                 self._last_raw_hw_mute = bool(cfg[self.profile.off_mute])
+            self._last_state["monitor_mix_pct"] = pct
             self._last_state["monitor_mix"] = pct
         except Exception as e:
             log.warning(f"Failed to set monitor mix: {e}")
@@ -837,6 +839,7 @@ class ElgatoWaveDevice:
             hp_db = (hp_pct / 100.0 * 60.0) - 60.0
             raw_hp = int(hp_db * p.hp_scale)
             struct.pack_into(p.hp_fmt, cfg, p.off_hp_vol, raw_hp)
+            self._last_state["hp_volume_pct"] = hp_pct
             self._last_state["hp_pct"] = hp_pct
 
             # 7. Monitor Mix Crossfade (0% Mic to 100% PC)
@@ -847,6 +850,7 @@ class ElgatoWaveDevice:
                 hw_pct = 100 - mix_pct
                 raw_mix = hw_pct << 8
                 struct.pack_into("<H", cfg, p.off_monitor_mix, raw_mix)
+                self._last_state["monitor_mix_pct"] = mix_pct
                 self._last_state["monitor_mix"] = mix_pct
 
             # 8. Dial Mode
@@ -974,9 +978,18 @@ class ElgatoWaveDevice:
             if self.profile.off_low_z is not None:
                 low_z = bool(cfg[self.profile.off_low_z])
 
-            phantom = self.get_phantom_power()
-            clipguard = self.get_clipguard()
-            low_cut = self.get_low_cut()
+            phantom = False
+            if self.profile.off_phantom is not None and len(cfg) > self.profile.off_phantom:
+                phantom = bool(cfg[self.profile.off_phantom])
+
+            clipguard = True
+            if self.profile.off_clipguard is not None and len(cfg) > self.profile.off_clipguard:
+                clipguard = bool(cfg[self.profile.off_clipguard])
+
+            low_cut = "80Hz"
+            if self.profile.off_low_cut is not None and len(cfg) > self.profile.off_low_cut:
+                val = cfg[self.profile.off_low_cut]
+                low_cut = "Off" if val == 0 else ("80Hz" if val == 1 else "120Hz")
 
             return {
                 "connected": True,
@@ -995,7 +1008,8 @@ class ElgatoWaveDevice:
                 "serial": self.dev_info.get("serial", ""),
                 "fw_version": self.dev_info.get("fw_version", ""),
             }
-        except Exception:
+        except Exception as e:
+            log.debug(f"[ElgatoWave] get_all_state failed: {e}")
             return {"connected": False}
 
 
@@ -1085,8 +1099,11 @@ class ElgatoManager:
                 else:
                     changed = {}
                     for k, v in curr.items():
-                        if k in self.last_state and self.last_state[k] != v:
-                            changed[k] = v
+                        if k in self.last_state:
+                            if self.last_state[k] != v:
+                                changed[k] = v
+                        else:
+                            self.last_state[k] = v
                     if changed:
                         self.last_state.update(changed)
                         timer = getattr(dev, "_revert_timer", None)
@@ -1142,8 +1159,8 @@ class ElgatoManager:
 
                             if self.on_state_changed:
                                 self.on_state_changed(curr, changed)
-            except Exception:
-                pass
+            except Exception as e:
+                log.warning(f"[ElgatoWave.Poll] Exception during poll loop: {e}")
 
 
 elgato_manager = ElgatoManager()

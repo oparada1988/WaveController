@@ -297,6 +297,11 @@ class IPCServer:
             res["monitor_mix_pct"] = self.hardware_mgr.get_monitor_mix()
             res["led_colors"] = getattr(self.hardware_mgr, "led_colors", {})
             res["elgato_info"] = self.hardware_mgr.get_elgato_device_info()
+            from .elgato_wave import elgato_manager
+            res["poll_thread_alive"] = bool(elgato_manager._poll_thread and elgato_manager._poll_thread.is_alive())
+            res["on_state_changed_set"] = bool(elgato_manager.on_state_changed is not None)
+            res["listeners_count"] = len(self.hardware_mgr._hardware_listeners)
+            res["last_state"] = dict(elgato_manager.last_state) if hasattr(elgato_manager, "last_state") else {}
         elif cmd in ["set_hardware_gain", "set_gain"]:
             gain_val = req.get("gain_db")
             if gain_val is not None:

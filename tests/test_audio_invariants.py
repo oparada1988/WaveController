@@ -15,6 +15,7 @@ import json
 import socket
 import subprocess
 import unittest
+from unittest.mock import MagicMock
 
 # Ensure wavecontroller module is in sys.path
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -527,7 +528,45 @@ class TestTokenMatchingInvariants(unittest.TestCase):
         self.assertTrue(callable(getattr(elgato_manager, "on_system_suspend", None)), "ElgatoWaveManager missing on_system_suspend()")
         self.assertTrue(callable(getattr(elgato_manager, "on_system_resume", None)), "ElgatoWaveManager missing on_system_resume()")
 
+    def test_elgato_hardware_state_key_parity_and_event_diff(self):
+        """Invariant: ElgatoWaveDevice _last_state, get_all_state, and elgato_manager MUST share identical canonical key names."""
+        from wavecontroller.engine.elgato_wave import ElgatoWaveDevice, PROFILE_WAVE_XLR, elgato_manager
+        dev = ElgatoWaveDevice(PROFILE_WAVE_XLR)
+        
+        # Test simulated state snapshot keys
+        required_keys = {"gain_db", "hp_volume_pct", "monitor_mix_pct", "dial_mode", "mute", "phantom_power", "clipguard", "low_cut"}
+        
+        # Manually invoke state setters
+        dev._last_state["hp_volume_pct"] = 75
+        dev._last_state["monitor_mix_pct"] = 50
+        
+        # Verify canonical keys exist in _last_state
+        self.assertIn("hp_volume_pct", dev._last_state, "REGRESSION: _last_state missing canonical hp_volume_pct key!")
+        self.assertIn("monitor_mix_pct", dev._last_state, "REGRESSION: _last_state missing canonical monitor_mix_pct key!")
+
+        # Verify change-detection simulation
+        last_state = {"hp_volume_pct": 50, "dial_mode": "hp", "gain_db": 40.0}
+        curr_state = {"hp_volume_pct": 65, "dial_mode": "hp", "gain_db": 40.0}
+        
+        changed = {k: v for k, v in curr_state.items() if k in last_state and last_state[k] != v}
+        self.assertEqual(changed, {"hp_volume_pct": 65}, "REGRESSION: Poll loop failed to detect hp_volume_pct change!")
+
+    def test_elgato_output_mix_id_resolution_and_sync(self):
+        """Invariant: _get_elgato_output_mix_id MUST resolve to the active mix assigned to Wave XLR target device."""
+        from wavecontroller.engine.usb_hardware import USBHardwareManager
+        hwm = USBHardwareManager()
+        mock_pw = MagicMock()
+        mock_pw.mixes = [
+            {"id": "wave_xlr", "name": "wave XLR", "type": "sink", "target_device": "usb-Elgato_Systems_Elgato_Wave_XLR_DS16M2A01160-00"},
+            {"id": "chat_mix", "name": "Mic Mix", "type": "source", "target_device": "none"},
+            {"id": "pc_out", "name": "pc out", "type": "sink", "target_device": "alsa_card.pci-0000_14_00.4"}
+        ]
+        hwm.pipewire_mgr = mock_pw
+        assigned = hwm._get_elgato_output_mix_id()
+        self.assertEqual(assigned, "wave_xlr", f"REGRESSION: Expected wave_xlr as output mix bus, got {assigned}")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
 

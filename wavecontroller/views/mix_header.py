@@ -189,6 +189,7 @@ class MixHeaderCard(Gtk.Box):
         else:
             self.scale.set_value(vol)
         self.vol_lbl.set_text(f"{vol}%")
+        self.scale.queue_draw()
 
     def update_ui_state(self):
         if not self.pipewire_mgr:

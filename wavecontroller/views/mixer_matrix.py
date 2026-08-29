@@ -6,6 +6,9 @@ from .channel_card import ChannelCard
 from .mix_header import MixHeaderCard
 from .matrix_cell import MatrixCell
 from .led_color_picker import LEDColorButton
+from wavecontroller.utils.logger import get_logger
+
+log = get_logger("MixerMatrixView")
 
 class MixerMatrixView(Gtk.Box):
     """
@@ -1071,8 +1074,8 @@ class MixerMatrixView(Gtk.Box):
                 if sink_id and self.hardware_mgr:
                     self._update_out_mute_btn(is_muted)
 
-        # 3. Update Preamp Gain ONLY when knob is in Gain Mode (Mode 1 / 1st LED on Wave hardware)
-        if "gain_db" in changed and dial_mode == "gain":
+        # 3. Update Preamp Gain whenever hardware reports a gain change
+        if "gain_db" in changed:
             val = float(changed["gain_db"])
             vol_pct = max(0, min(100, int(round((val / 75.0) * 100))))
             for ch_id, card in list(self.channel_cards.items()):
@@ -1085,9 +1088,10 @@ class MixerMatrixView(Gtk.Box):
                             if cell and hasattr(cell, "update_ui_state"):
                                 cell.update_ui_state()
 
-        # 4. Update Headphone Monitor Mix Header ONLY when knob is in Output / HP Mode (Mode 2 / 2nd LED on Wave hardware)
-        if "hp_volume_pct" in changed and dial_mode == "hp":
+        # 4. Update Headphone Monitor Mix Header whenever hardware reports a headphone volume change
+        if "hp_volume_pct" in changed:
             hp_vol = int(round(changed["hp_volume_pct"]))
+            log.info(f"[WaveController.Matrix] _on_hardware_sync received hp_volume_pct={hp_vol}")
             assigned_mix = "personal_mix"
             if self.hardware_mgr:
                 if hasattr(self.hardware_mgr, "_get_elgato_output_mix_id"):
@@ -1108,6 +1112,7 @@ class MixerMatrixView(Gtk.Box):
                 target_header = list(self.mix_headers.values())[0]
                 assigned_mix = list(self.mix_headers.keys())[0]
 
+            log.info(f"[WaveController.Matrix] hp_volume_pct target_header={target_header.mix_info.get('name') if target_header else None} (assigned_mix={assigned_mix})")
             if target_header:
                 self.pipewire_mgr.set_mix_master_volume(assigned_mix, hp_vol)
                 target_header.set_volume(hp_vol)
