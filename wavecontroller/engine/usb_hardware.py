@@ -524,6 +524,13 @@ class USBHardwareManager:
                     break
                 time.sleep(0.035)
 
+            try:
+                self.detect_connected_hardware()
+                if self.on_devices_changed_callback:
+                    self.on_devices_changed_callback()
+            except Exception:
+                pass
+
             time.sleep(0.1)
             self._restoring_hardware = False
 
@@ -663,7 +670,17 @@ class USBHardwareManager:
     def get_tracked_devices(self) -> list:
         """Returns the list of user-tracked devices hydrated with live state."""
         self.detect_connected_hardware()
-        tracked_keys = config_manager.get("tracked_devices", [])
+        tracked_keys = config_manager.get("tracked_devices", None)
+        if tracked_keys is None or not tracked_keys:
+            tracked_keys = []
+            for k, dev in self.discovered_devices.items():
+                if dev.get("is_elgato", False):
+                    tracked_keys.append(k)
+            if tracked_keys:
+                config_manager.set("tracked_devices", tracked_keys, immediate=True)
+        else:
+            tracked_keys = list(tracked_keys)
+
         aliases = config_manager.get("device_aliases", {})
         assigned_mixes = config_manager.get("device_assigned_mixes", {})
 

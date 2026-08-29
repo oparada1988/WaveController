@@ -27,6 +27,7 @@ class UnifiedDeviceSettingsView(Gtk.Box):
         self.on_device_removed = on_device_removed
 
         self.device_key = device_info.get("device_key", "")
+        self.device_type = device_info.get("type", "duplex")
         dev_name_low = str(device_info.get("name", "")).lower()
         self.is_elgato = device_info.get("is_elgato", False) or any(w in dev_name_low for w in ("elgato", "wave xlr", "wave:3", "wave:1", "wave neo")) or "0fd9" in self.device_key.lower()
         self._syncing_from_hw = False
@@ -753,6 +754,7 @@ class UnifiedDeviceSettingsView(Gtk.Box):
     def update_device_info(self, device_info: dict):
         """Updates connection state and live labels in-place without tearing down UI widgets."""
         self.device_info = device_info
+        self.device_type = device_info.get("type", "duplex")
         is_conn = device_info.get("connected", True)
         status_text = "🟢 Connected" if is_conn else "🟡 Disconnected / Offline"
         if hasattr(self, "sub_lbl"):

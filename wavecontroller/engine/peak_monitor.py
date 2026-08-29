@@ -1,4 +1,5 @@
 import os
+import re
 import math
 import subprocess
 import threading
@@ -261,6 +262,8 @@ class MultiChannelPeakMonitor:
             self._target_keys = {}
         if not hasattr(self, "_target_peaks"):
             self._target_peaks = {}
+        if not hasattr(self, "peaks") or self.peaks is None:
+            self.peaks = {}
 
         try:
             out = subprocess.check_output(['pw-link', '-o'], text=True, stderr=subprocess.DEVNULL)
@@ -274,8 +277,9 @@ class MultiChannelPeakMonitor:
         # Collect unique targets: target_node -> {"channels": int, "is_sink": bool, "keys": set()}
         target_map = {}
 
-        # 1. Playback Channels (Submix Loopbacks and Exposed Virtual Sinks)
+        # 1. Playback Channels (Permanent Direct Pre-Fader App Stream Monitoring or Exposed Virtual Sinks)
         if self.pipewire_mgr:
+            port_meta = self.pipewire_mgr._get_active_port_metadata_map() if hasattr(self.pipewire_mgr, "_get_active_port_metadata_map") else {}
             for ch in getattr(self.pipewire_mgr, "channels", []):
                 ch_id = ch.get("id", "")
                 if ch.get("type") == "source" or not ch_id:
@@ -283,29 +287,15 @@ class MultiChannelPeakMonitor:
 
                 assigned = self.pipewire_mgr.get_assigned_apps(ch_id) if hasattr(self.pipewire_mgr, "get_assigned_apps") else []
 
-                # 1A. Submix Loopbacks (For channels with active submix routing)
-                has_active_target = False
-                for p in all_ports:
-                    if p.startswith("input.WaveController_submix_") and ":monitor_" in p:
-                        node_part = p.split(":")[0]
-                        clean_name = node_part.replace("input.WaveController_submix_", "")
-                        if clean_name.startswith(f"{ch_id}_") or clean_name == ch_id:
-                            if node_part not in target_map:
-                                target_map[node_part] = {"channels": 2, "is_sink": True, "keys": set()}
-                            target_map[node_part]["keys"].add(ch_id)
-                            has_active_target = True
-
-                # 1B. Dedicated Pre-Fader Channel Virtual Ingestion Sinks (if expose_sink is enabled)
+                # 1A. Dedicated Pre-Fader Channel Virtual Ingestion Sinks (if expose_sink is enabled)
                 sink_node = f"WaveController_Channel_{ch_id}"
                 if any(p.startswith(f"{sink_node}:monitor_") for p in all_ports):
                     if sink_node not in target_map:
                         target_map[sink_node] = {"channels": 2, "is_sink": True, "keys": set()}
                     target_map[sink_node]["keys"].add(ch_id)
-                    has_active_target = True
 
-                # 1C. Direct Pre-Fader Application Stream Monitoring (When NO submixes or virtual sinks are active)
-                if not has_active_target and assigned:
-                    port_meta = self.pipewire_mgr._get_active_port_metadata_map() if hasattr(self.pipewire_mgr, "_get_active_port_metadata_map") else {}
+                # 1B. Permanent Direct Pre-Fader Application Stream Monitoring (Raw App Output Ports)
+                if assigned:
                     for app in assigned:
                         tokens = self.pipewire_mgr._get_match_tokens(app) if hasattr(self.pipewire_mgr, "_get_match_tokens") else set()
                         for p in all_ports:
@@ -417,7 +407,7 @@ class MultiChannelPeakMonitor:
             if is_running:
                 continue
 
-            clean_tag = target_node.replace("alsa_input.", "").replace("input.WaveController_submix_", "").replace(".", "_")
+            clean_tag = re.sub(r'[^a-zA-Z0-9_-]', '_', target_node.replace("alsa_input.", "").replace("input.WaveController_submix_", "")).strip('_')
             node_name = f"wave_meter_{clean_tag[:28]}"
             new_proc = self._open_pw_record(node_name, target=target_node, channels=info["channels"], is_sink=info["is_sink"])
             if new_proc:
@@ -440,7 +430,7 @@ class MultiChannelPeakMonitor:
             authorized_sources = {}
 
             for target_node, info in target_map.items():
-                clean_tag = target_node.replace("alsa_input.", "").replace("input.WaveController_submix_", "").replace(".", "_")
+                clean_tag = re.sub(r'[^a-zA-Z0-9_-]', '_', target_node.replace("alsa_input.", "").replace("input.WaveController_submix_", "")).strip('_')
                 node_name = f"wave_meter_{clean_tag[:28]}"
                 target_to_meter[target_node] = node_name
 

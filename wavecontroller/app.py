@@ -200,11 +200,14 @@ class WaveControllerApp(Adw.Application):
             if hasattr(self, "peak_monitor") and self.peak_monitor:
                 self.peak_monitor.on_system_resume()
 
-            # Refresh UI faders if window is visible
+            # Refresh UI faders and rebuild sidebar device views if window is active
             win = self.props.active_window
-            view = getattr(win, "mixer_view", None) or getattr(win, "matrix_view", None)
-            if view and hasattr(view, "refresh_all_faders"):
-                view.refresh_all_faders()
+            if win:
+                if hasattr(win, "_rebuild_device_views"):
+                    win._rebuild_device_views()
+                view = getattr(win, "mixer_view", None) or getattr(win, "matrix_view", None)
+                if view and hasattr(view, "refresh_all_faders"):
+                    view.refresh_all_faders()
         except Exception as e:
             log.error(f"[WaveController.Power] Error during system resume restoration: {e}")
         return False  # Run once in GLib main loop

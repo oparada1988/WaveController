@@ -544,18 +544,18 @@ class TestTokenMatchingInvariants(unittest.TestCase):
 
         # Test circuit breaker initialization
     def test_submix_loopback_monitor_sink_flag_enforced(self):
-        """Invariant: input.WaveController_submix_* nodes MUST be targeted with is_sink=True to capture monitor ports."""
+        """Invariant: Virtual channel sink nodes MUST be targeted with is_sink=True to capture monitor ports."""
         from wavecontroller.engine.peak_monitor import MultiChannelPeakMonitor
         from unittest.mock import patch, MagicMock
 
         with patch("subprocess.check_output") as mock_co, patch("subprocess.Popen") as mock_popen:
             mock_co.return_value = (
-                "input.WaveController_submix_discord_personal_mix:monitor_FL\n"
-                "input.WaveController_submix_discord_personal_mix:monitor_FR\n"
+                "WaveController_Channel_gaming:monitor_FL\n"
+                "WaveController_Channel_gaming:monitor_FR\n"
             )
             mock_pm = MultiChannelPeakMonitor.__new__(MultiChannelPeakMonitor)
             mock_pm.pipewire_mgr = MagicMock()
-            mock_pm.pipewire_mgr.channels = [{"id": "discord", "type": "sink"}]
+            mock_pm.pipewire_mgr.channels = [{"id": "gaming", "type": "sink", "expose_sink": True}]
             mock_pm._channel_procs = {}
             mock_pm._channel_proc_channels = {}
             mock_pm._channel_peaks = {}
@@ -569,8 +569,8 @@ class TestTokenMatchingInvariants(unittest.TestCase):
             self.assertTrue(len(pw_record_calls) >= 1, "Expected pw-record to be spawned")
             cmd_args = pw_record_calls[0][0][0]
             self.assertIn("stream.capture.sink=true", " ".join(cmd_args),
-                          "REGRESSION: Submix monitor must be recorded with stream.capture.sink=true")
-            self.assertIn("input.WaveController_submix_discord_personal_mix", cmd_args)
+                          "REGRESSION: Virtual channel sink monitor must be recorded with stream.capture.sink=true")
+            self.assertIn("WaveController_Channel_gaming", cmd_args)
 
     def test_no_mic_bleed_into_mixes(self):
         """Invariant: Microphone signals MUST NEVER bleed into mix peak meters (fefine_mix, mobo_device, chat_mix)."""
@@ -962,6 +962,93 @@ class TestTokenMatchingInvariants(unittest.TestCase):
             mock_co.side_effect = lambda cmd, **kw: "spotify:output_FL\nspotify:output_FR\n" if cmd == ['pw-link', '-o'] else ""
             pm._refresh_channel_monitors()
             self.assertIn("spotify", pm._target_keys.get("spotify", set()), "Direct app output stream was not mapped for pre-fader metering!")
+
+    def test_permanent_direct_app_stream_telemetry_isolation(self):
+        """Invariant: PeakMonitor MUST permanently target raw app output ports even when submix loopbacks are active (never switch to submix nodes)."""
+        from wavecontroller.engine.peak_monitor import MultiChannelPeakMonitor
+        from unittest.mock import patch, MagicMock
+
+        mock_pwm = MagicMock()
+        mock_pwm.channels = [{"id": "spotify", "name": "Spotify", "type": "app"}]
+        mock_pwm.get_assigned_apps.return_value = ["Spotify"]
+        mock_pwm._get_active_port_metadata_map.return_value = {}
+        mock_pwm._get_match_tokens.return_value = {"spotify"}
+        mock_pwm._port_matches_tokens.side_effect = lambda p, toks, meta: any(t in p.lower() for t in toks)
+
+        pm = MultiChannelPeakMonitor()
+        pm.pipewire_mgr = mock_pwm
+
+        with patch("subprocess.check_output") as mock_co, patch("subprocess.run"), patch.object(pm, "_open_pw_record", return_value=None), patch.object(pm, "_link_and_audit_channel_monitors"):
+            # Simulate both raw Spotify output AND active submix loopback ports in PipeWire
+            mock_co.side_effect = lambda cmd, **kw: (
+                "spotify:output_FL\nspotify:output_FR\n"
+                "input.WaveController_submix_spotify_personal_mix:monitor_FL\n"
+                "input.WaveController_submix_spotify_personal_mix:monitor_FR\n"
+                if cmd == ['pw-link', '-o'] else ""
+            )
+            pm._refresh_channel_monitors()
+            # Must map directly to 'spotify', NEVER 'input.WaveController_submix_spotify_personal_mix'
+            self.assertIn("spotify", pm._target_keys, "Raw app node 'spotify' was not targeted!")
+            self.assertNotIn("input.WaveController_submix_spotify_personal_mix", pm._target_keys,
+                             "REGRESSION: PeakMonitor targeted submix loopback instead of raw app stream!")
+
+
+    def test_unified_device_settings_view_initialization(self):
+        """Invariant: UnifiedDeviceSettingsView MUST initialize without AttributeError across duplex, input, and output device profiles."""
+        from wavecontroller.views.device_settings import UnifiedDeviceSettingsView
+        from unittest.mock import MagicMock
+        import gi
+        gi.require_version("Gtk", "4.0")
+        gi.require_version("Adw", "1")
+        from gi.repository import Gtk, Adw
+
+        mock_hw = MagicMock()
+        mock_hw.get_device_display_name.return_value = "Test Hardware Device"
+        mock_hw.get_device_icon.return_value = "audio-input-microphone-symbolic"
+        mock_hw.hardware_gain_db = 44
+        mock_hw.phantom_power_48v = False
+        mock_hw.clipguard_enabled = True
+        mock_hw.low_cut_filter = "Off"
+        mock_hw.low_impedance_mode = False
+        mock_hw.get_output_volume.return_value = 75
+        mock_hw.get_monitor_mix.return_value = 50
+        mock_hw.get_device_assigned_mix.return_value = "personal_mix"
+        mock_hw.get_exclusive_mic_lock.return_value = True
+        mock_hw.get_exclusive_output_lock.return_value = True
+        mock_hw.is_device_muted.return_value = False
+        mock_hw.get_device_diagnostics.return_value = {
+            "architecture": "USB Audio",
+            "chipset": "Elgato Wave",
+            "bus_path": "USB",
+            "vendor_info": "Elgato",
+            "driver_info": "snd-usb-audio"
+        }
+
+        mock_pm = MagicMock()
+        mock_pwm = MagicMock()
+        mock_pwm.mixes = [{"id": "personal_mix", "name": "Personal Mix"}]
+
+        # Test duplex, input-only, and output-only profiles
+        profiles = [
+            {"device_key": "test_duplex_key", "name": "Test Duplex", "type": "duplex", "is_elgato": True, "connected": True},
+            {"device_key": "test_input_key", "name": "Test Input Only", "type": "input", "is_elgato": False, "connected": True},
+            {"device_key": "test_output_key", "name": "Test Output Only", "type": "output", "is_elgato": False, "connected": True},
+        ]
+
+        for prof in profiles:
+            view = UnifiedDeviceSettingsView(
+                device_info=prof,
+                hardware_mgr=mock_hw,
+                peak_monitor=mock_pm,
+                pipewire_mgr=mock_pwm
+            )
+            self.assertEqual(view.device_type, prof["type"], f"REGRESSION: device_type not properly set for {prof['type']}!")
+            # Test in-place update_device_info
+            updated_prof = dict(prof)
+            updated_prof["connected"] = False
+            view.update_device_info(updated_prof)
+            self.assertEqual(view.device_type, prof["type"])
+            self.assertFalse(view.device_info["connected"])
 
 
 if __name__ == "__main__":
