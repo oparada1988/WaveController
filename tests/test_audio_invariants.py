@@ -140,6 +140,30 @@ class TestPipeWireTopologyInvariants(unittest.TestCase):
                     f"REGRESSION: Spotify is bypassing WaveController and linked directly to hardware: {d}"
                 )
 
+    def test_channel_meters_no_master_sink_leak(self):
+        """No wave_meter_* process may ever be linked to WaveController_personal_mix_Sink (strict zero master mix bleed)."""
+        if not self.links_out:
+            self.skipTest("PipeWire not running.")
+
+        current_node = None
+        for line in self.links_out.splitlines():
+            line_s = line.strip()
+            if not line.startswith(" ") and ":" in line_s:
+                current_node = line_s
+            elif "|<-" in line_s and current_node and current_node.startswith("wave_meter_"):
+                src = line_s.replace("|<-", "").strip()
+                self.assertFalse(
+                    "personal_mix_sink" in src.lower(),
+                    f"REGRESSION: Meter {current_node} is leaking audio from Master Personal Mix: {src}"
+                )
+
+    def test_meter_autoconnect_disabled(self):
+        """open_pw_record command flags must include node.autoconnect=false to prevent fallback links."""
+        from wavecontroller.engine.metering.capture_driver import open_pw_record
+        import inspect
+        src = inspect.getsource(open_pw_record)
+        self.assertIn("node.autoconnect=false", src, "REGRESSION: open_pw_record is missing node.autoconnect=false")
+
 
 class TestIPCLiveInvariants(unittest.TestCase):
     """Verifies live daemon socket contracts if the daemon is currently active."""
@@ -358,6 +382,78 @@ class TestTokenMatchingInvariants(unittest.TestCase):
 
             mock_run.assert_called_with(["pw-link", "-d", "spotify:output_FL", "WaveController_personal_mix_Sink:playback_FL"])
 
+    def test_reconcile_app_streams_no_thrashing(self):
+        """Invariant: _reconcile_app_streams_fast must NOT sever valid links to WaveController_Channel_{ch_id}."""
+        from unittest.mock import patch, MagicMock
+        with patch("subprocess.check_output") as mock_co, patch("subprocess.run") as mock_run:
+            mock_co.side_effect = lambda cmd, **kwargs: (
+                "spotify:output_FL\nspotify:output_FR\n" if "-o" in cmd
+                else "spotify:output_FL\n  |-> WaveController_Channel_spotify:playback_FL\n"
+                     "spotify:output_FR\n  |-> WaveController_Channel_spotify:playback_FR\n"
+            )
+            self.pwm.channels = [{"id": "spotify", "type": "app"}]
+            self.pwm.assigned_apps = {"spotify": ["Spotify"]}
+            self.pwm._sync_channel_audio_routing = MagicMock()
+
+            self.pwm._reconcile_app_streams_fast()
+
+            # Must NOT call pw-link -d on valid channel sink link
+            mock_run.assert_not_called()
+            # Must NOT trigger redundant routing sync
+            self.pwm._sync_channel_audio_routing.assert_not_called()
+
+    def test_no_blanket_pkill_in_node_sync(self):
+        """Invariant: _ensure_virtual_mix_nodes must NEVER execute blanket pkill during runtime."""
+        import inspect
+        src = inspect.getsource(self.pwm._ensure_virtual_mix_nodes)
+        self.assertNotIn("pkill", src, "REGRESSION: Blanket pkill found in _ensure_virtual_mix_nodes")
+
+    def test_granular_channel_lifecycle_isolation(self):
+        """Invariant: Deleting channel A must never terminate or unlink channel B's processes."""
+        from unittest.mock import MagicMock
+        proc_a = MagicMock()
+        proc_b = MagicMock()
+        self.pwm._submix_procs[("ch_a", "personal_mix")] = proc_a
+        self.pwm._submix_procs[("ch_b", "personal_mix")] = proc_b
+        self.pwm.channels = [{"id": "ch_a", "type": "app"}, {"id": "ch_b", "type": "app"}]
+        self.pwm.assigned_apps = {"ch_a": ["AppA"], "ch_b": ["AppB"]}
+
+        self.pwm.remove_channel("ch_a")
+
+        # proc_a must be terminated, but proc_b must be 100% untouched
+        proc_a.terminate.assert_called_once()
+        proc_b.terminate.assert_not_called()
+        self.assertIn(("ch_b", "personal_mix"), self.pwm._submix_procs)
+
+    def test_meter_linking_idempotency(self):
+        """Invariant: _link_and_audit_channel_monitors must NOT issue redundant pw-link calls on already linked meters."""
+        from wavecontroller.engine.peak_monitor import MultiChannelPeakMonitor
+        from unittest.mock import patch, MagicMock
+        with patch("subprocess.check_output") as mock_co, patch("subprocess.run") as mock_run:
+            mock_co.return_value = (
+                "wave_meter_WaveController_Channel_spoti:input_FL\n"
+                "  |<- WaveController_Channel_spotify:monitor_FL\n"
+                "wave_meter_WaveController_Channel_spoti:input_FR\n"
+                "  |<- WaveController_Channel_spotify:monitor_FR\n"
+            )
+            mock_pm = MultiChannelPeakMonitor.__new__(MultiChannelPeakMonitor)
+            target_map = {
+                "WaveController_Channel_spotify": {
+                    "channels": 2,
+                    "is_sink": True,
+                    "keys": {"spotify"}
+                }
+            }
+            all_ports = [
+                "WaveController_Channel_spotify:monitor_FL",
+                "WaveController_Channel_spotify:monitor_FR"
+            ]
+
+            mock_pm._link_and_audit_channel_monitors(target_map, all_ports)
+
+            # Must NOT call pw-link because ports are already linked
+            mock_run.assert_not_called()
+
     def test_high_speed_telemetry_fusion(self):
         """Invariant: get_peaks IPC command must include real-time volume states for 30 FPS fader tracking."""
         from wavecontroller.engine.ipc_server import IPCServer
@@ -450,9 +546,9 @@ class TestTokenMatchingInvariants(unittest.TestCase):
             mock_pm._refresh_channel_monitors()
             
             # Verify pw-record was called with stream.capture.sink=true
-            mock_popen.assert_called_once()
-            args, kwargs = mock_popen.call_args
-            cmd_args = args[0]
+            pw_record_calls = [c for c in mock_popen.call_args_list if c[0] and isinstance(c[0][0], list) and c[0][0][0] == "pw-record"]
+            self.assertTrue(len(pw_record_calls) >= 1, "Expected pw-record to be spawned")
+            cmd_args = pw_record_calls[0][0][0]
             self.assertIn("stream.capture.sink=true", " ".join(cmd_args),
                           "REGRESSION: Submix monitor must be recorded with stream.capture.sink=true")
             self.assertIn("input.WaveController_submix_discord_personal_mix", cmd_args)

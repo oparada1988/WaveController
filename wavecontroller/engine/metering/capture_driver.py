@@ -43,6 +43,7 @@ def open_pw_record(node_name: str, target: str = None, channels: int = 2, is_sin
         'pw-record',
         '-P', f'node.name={node_name}',
         '-P', f'node.description={node_name}',
+        '-P', 'node.autoconnect=false',
         '-P', 'application.id=org.PulseAudio.pavucontrol',
         '-P', 'application.name=pavucontrol',
         '-P', 'application.icon_name=pavucontrol',

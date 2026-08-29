@@ -145,6 +145,13 @@ class PipeWireManager:
         return None, None
 
     def start(self):
+        # Session startup: clean up any orphaned background pw-loopbacks from past crashed sessions
+        try:
+            subprocess.run(["pkill", "-f", "pw-loopback.*WaveController_submix_"], stderr=subprocess.DEVNULL)
+            time.sleep(0.05)
+        except Exception:
+            pass
+
         self.running = True
         self.refresh_devices()
         self._ensure_virtual_mix_nodes()
@@ -167,13 +174,6 @@ class PipeWireManager:
             mixes_copy = list(self.mixes)
             channels_copy = list(self.channels)
 
-        # Clean up any orphaned background pw-loopbacks from past crashed/killed sessions
-        try:
-            subprocess.run(["pkill", "-f", "pw-loopback.*WaveController_submix_"], stderr=subprocess.DEVNULL)
-            time.sleep(0.05)
-        except Exception:
-            pass
-
         needed_nodes = {}
         for m in mixes_copy:
             m_id = m["id"]
@@ -187,11 +187,11 @@ class PipeWireManager:
                 node_name = f"WaveController_{m_id}_Source"
                 needed_nodes[node_name] = (f"WaveController {m_name}", "Audio/Source/Virtual")
 
-        # Provision dedicated virtual sinks for channels with expose_sink=True (Group Channels)
+        # Provision dedicated pre-fader virtual ingestion sinks for all playback/app/group channels
         for ch in channels_copy:
             ch_id = ch["id"]
             ch_name = ch.get("name", ch_id)
-            if ch.get("expose_sink", False) and ch.get("type") != "source" and not any(k in ch_id.lower() for k in ("mic", "fefine", "fifine", "capture", "input")):
+            if ch.get("type") != "source" and not any(k in ch_id.lower() for k in ("mic", "fefine", "fifine", "capture", "input")):
                 node_name = f"WaveController_Channel_{ch_id}"
                 needed_nodes[node_name] = (f"WaveController {ch_name} (Sink)", "Audio/Sink")
 
@@ -727,19 +727,23 @@ class PipeWireManager:
                         continue
 
                     need_sync = False
+                    channel_sink_prefix = f"WaveController_Channel_{ch_id}:playback_"
                     submix_prefix = f"input.WaveController_submix_{ch_id}_"
                     for sp in matched_ports:
                         connected_dests = links_map.get(sp, set())
-                        # Immediately sever direct leaks to physical hardware or default sinks (bypass isolation)
+                        # 1. Immediately sever direct leaks to physical hardware or unauthorized mix sinks
                         for dp in connected_dests:
-                            if dp.startswith("alsa_output.") or (dp.startswith("WaveController_") and not dp.startswith("input.WaveController_submix_")):
+                            is_auth = dp.startswith(channel_sink_prefix) or dp.startswith(submix_prefix)
+                            if not is_auth:
                                 try:
                                     subprocess.run(["pw-link", "-d", sp, dp], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                                 except Exception:
                                     pass
                                 need_sync = True
-                        # Or if not connected to any submix faders
-                        if not any(dp.startswith(submix_prefix) for dp in connected_dests):
+
+                        # 2. Verify app is cleanly attached to its pre-fader channel ingestion sink or active submixes
+                        is_attached = any(dp.startswith(channel_sink_prefix) or dp.startswith(submix_prefix) for dp in connected_dests)
+                        if not is_attached:
                             need_sync = True
 
                     if need_sync:
@@ -1787,15 +1791,15 @@ class PipeWireManager:
                         if ":output_" in p and self._port_matches_tokens(p, tokens, port_meta):
                             app_out_ports.append(p)
 
-                # Capture audio from dedicated channel virtual sink if exposed
-                if ch.get("expose_sink", False):
-                    sink_prefix = f"WaveController_Channel_{ch_id}:monitor_"
-                    for p in out_ports:
-                        if p.startswith(sink_prefix):
-                            if p not in app_out_ports:
-                                app_out_ports.append(p)
+                sink_node = f"WaveController_Channel_{ch_id}"
+                sink_play_ports = [p for p in in_ports if p.startswith(f"{sink_node}:playback_")]
+                sink_mon_ports = [p for p in out_ports if p.startswith(f"{sink_node}:monitor_")]
 
-                ch_out_ports = app_out_ports
+                # Route assigned application outputs into the pre-fader channel ingestion sink
+                if app_out_ports and sink_play_ports:
+                    self._link_stereo_ports(app_out_ports, sink_play_ports, unlink=False)
+
+                ch_out_ports = sink_mon_ports if sink_mon_ports else app_out_ports
 
             if not is_source_channel and app_out_ports:
                 # Ensure assigned apps don't directly play out to physical hardware sinks or mix sinks (bypass isolation)
@@ -1808,7 +1812,7 @@ class PipeWireManager:
                             except Exception:
                                 pass
                         # Also sever direct links to mix sinks (prevent unattenuated bypass leaks)
-                        elif linked_dest.startswith("WaveController_") and not linked_dest.startswith("input.WaveController_submix_"):
+                        elif linked_dest.startswith("WaveController_") and not linked_dest.startswith("input.WaveController_submix_") and not linked_dest.startswith(f"WaveController_Channel_{ch_id}:"):
                             try:
                                 subprocess.run(["pw-link", "-d", src_p, linked_dest], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                             except Exception:
@@ -1856,8 +1860,8 @@ class PipeWireManager:
                     lb_out_ports = [p for p in out_ports if p.startswith(loopback_out_prefix)]
 
                     if not lb_in_ports or not lb_out_ports:
-                        for _ in range(8):
-                            time.sleep(0.03)
+                        for _ in range(4):
+                            time.sleep(0.005)
                             try:
                                 o_raw = subprocess.check_output(["pw-link", "-o"], text=True, stderr=subprocess.DEVNULL)
                                 i_raw = subprocess.check_output(["pw-link", "-i"], text=True, stderr=subprocess.DEVNULL)
@@ -2118,11 +2122,9 @@ class PipeWireManager:
                     "enabled": False
                 }
 
-            self._refresh_node_cache()
             self._save_state_to_config(immediate=True)
             self._volume_queue[ch_id] = (default_vol, False)
             self._volume_event.set()
-            self._notify_peak_monitor_refresh()
 
         def _bg_provision():
             self._ensure_virtual_mix_nodes()
@@ -2145,25 +2147,29 @@ class PipeWireManager:
             if hasattr(self, "channel_master_states") and isinstance(self.channel_master_states, dict):
                 self.channel_master_states.pop(channel_id, None)
             self.assigned_apps.pop(channel_id, None)
+
+            procs_to_terminate = []
+            keys_to_remove = [k for k in list(self._submix_procs.keys()) if k[0] == channel_id]
+            for k in keys_to_remove:
+                proc = self._submix_procs.pop(k, None)
+                if proc:
+                    procs_to_terminate.append(proc)
+                self._submix_node_ids.pop(k, None)
+                self._submix_volume_queue.pop(k, None)
+
             self._save_state_to_config(immediate=True)
             self._notify_peak_monitor_refresh()
 
         def _bg_teardown():
-            with self._lock:
-                keys_to_remove = [k for k in list(self._submix_procs.keys()) if k[0] == channel_id]
-                for k in keys_to_remove:
-                    proc = self._submix_procs.pop(k, None)
-                    if proc:
-                        try:
-                            proc.terminate()
-                            proc.wait(timeout=0.1)
-                        except Exception:
-                            try:
-                                proc.kill()
-                            except Exception:
-                                pass
-                    self._submix_node_ids.pop(k, None)
-                    self._submix_volume_queue.pop(k, None)
+            for proc in procs_to_terminate:
+                try:
+                    proc.terminate()
+                    proc.wait(timeout=0.1)
+                except Exception:
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
 
             try:
                 subprocess.run(["pkill", "-f", f"WaveController_submix_{channel_id}_"], stderr=subprocess.DEVNULL)
@@ -2173,13 +2179,18 @@ class PipeWireManager:
             try:
                 out = subprocess.check_output(["pw-link", "-l"], text=True, stderr=subprocess.DEVNULL)
                 curr_src = None
+                ch_prefixes = (
+                    f"WaveController_Channel_{channel_id}:",
+                    f"input.WaveController_submix_{channel_id}_",
+                    f"output.WaveController_submix_{channel_id}_"
+                )
                 for line in out.splitlines():
                     l_str = line.strip()
                     if not line.startswith(" ") and ":" in l_str:
                         curr_src = l_str
                     elif "|->" in l_str and curr_src:
                         dest_p = l_str.replace("|->", "").strip()
-                        if channel_id in curr_src or channel_id in dest_p:
+                        if any(curr_src.startswith(pref) or dest_p.startswith(pref) for pref in ch_prefixes):
                             subprocess.run(["pw-link", "-d", curr_src, dest_p], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             except Exception:
                 pass
@@ -2418,24 +2429,28 @@ class PipeWireManager:
             if hasattr(self, "mix_states"):
                 self.mix_states.pop(mix_id, None)
                 self.mix_states.pop(canon_mix, None)
+
+            procs_to_terminate = []
+            keys_to_remove = [k for k in list(self._submix_procs.keys()) if k[1] == mix_id or k[1] == canon_mix]
+            for k in keys_to_remove:
+                proc = self._submix_procs.pop(k, None)
+                if proc:
+                    procs_to_terminate.append(proc)
+                self._submix_node_ids.pop(k, None)
+                self._submix_volume_queue.pop(k, None)
+
             self._save_state_to_config(immediate=True)
 
         def _bg_mix_teardown():
-            with self._lock:
-                keys_to_remove = [k for k in list(self._submix_procs.keys()) if k[1] == mix_id or k[1] == canon_mix]
-                for k in keys_to_remove:
-                    proc = self._submix_procs.pop(k, None)
-                    if proc:
-                        try:
-                            proc.terminate()
-                            proc.wait(timeout=0.1)
-                        except Exception:
-                            try:
-                                proc.kill()
-                            except Exception:
-                                pass
-                    self._submix_node_ids.pop(k, None)
-                    self._submix_volume_queue.pop(k, None)
+            for proc in procs_to_terminate:
+                try:
+                    proc.terminate()
+                    proc.wait(timeout=0.1)
+                except Exception:
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
 
             try:
                 subprocess.run(["pkill", "-f", f"WaveController_submix_.*_{mix_id}"], stderr=subprocess.DEVNULL)
@@ -2480,7 +2495,12 @@ class PipeWireManager:
 
     @staticmethod
     def resolve_icon_for_app(app_name: str) -> str:
-        app_low = app_name.lower()
+        if not app_name:
+            return "audio-x-generic-symbolic"
+
+        app_low = app_name.lower().strip()
+
+        # 1. Exact / Substring known mappings
         if "spotify" in app_low:
             return "spotify"
         elif "discord" in app_low:
@@ -2489,12 +2509,48 @@ class PipeWireManager:
             return "steam"
         elif "firefox" in app_low:
             return "firefox"
-        elif "chrome" in app_low or "chromium" in app_low:
+        elif "google-chrome" in app_low or "google chrome" in app_low or app_low == "chrome":
+            return "google-chrome"
+        elif "chromium" in app_low:
             return "chromium"
+        elif "brave" in app_low:
+            return "brave-browser"
+        elif "edge" in app_low or "msedge" in app_low:
+            return "microsoft-edge"
         elif "vlc" in app_low:
             return "vlc"
+        elif "obs" in app_low:
+            return "com.obsproject.Studio"
+        elif "slack" in app_low:
+            return "slack"
+        elif "teams" in app_low:
+            return "teams"
         elif "stream" in app_low:
             return "view-grid-symbolic"
-        elif "mic" in app_low:
+        elif "elgato" in app_low or "wave" in app_low or "xlr" in app_low:
+            return "elgato-wave-xlr-symbolic"
+        elif "mic" in app_low or "input" in app_low:
             return "audio-input-microphone-symbolic"
+
+        # 2. Dynamic GTK Icon Theme Lookup
+        try:
+            import gi
+            gi.require_version("Gtk", "4.0")
+            from gi.repository import Gtk, Gdk
+            display = Gdk.Display.get_default()
+            if display:
+                theme = Gtk.IconTheme.get_for_display(display)
+                candidates = [
+                    app_low,
+                    app_low.replace(" ", "-"),
+                    app_low.replace(" ", "_"),
+                    f"com.google.{app_name}",
+                    f"org.gnome.{app_name}"
+                ]
+                for cand in candidates:
+                    if theme.has_icon(cand):
+                        return cand
+        except Exception:
+            pass
+
         return "audio-x-generic-symbolic"

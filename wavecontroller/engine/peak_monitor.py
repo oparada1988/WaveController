@@ -246,55 +246,31 @@ class MultiChannelPeakMonitor:
         # Collect unique targets: target_node -> {"channels": int, "is_sink": bool, "keys": set()}
         target_map = {}
 
-        # 1. Playback Channels (Direct App Streams, Submix Loopbacks, and Exposed Virtual Sinks)
+        # 1. Playback Channels (Submix Loopbacks and Exposed Virtual Sinks)
         if self.pipewire_mgr:
-            port_meta = self.pipewire_mgr._get_active_port_metadata_map() if hasattr(self.pipewire_mgr, "_get_active_port_metadata_map") else None
             for ch in getattr(self.pipewire_mgr, "channels", []):
                 ch_id = ch.get("id", "")
                 if ch.get("type") == "source" or not ch_id:
                     continue
 
                 assigned = self.pipewire_mgr.get_assigned_apps(ch_id) if hasattr(self.pipewire_mgr, "get_assigned_apps") else []
-                has_active_app = False
 
-                # 1A. Direct Running Application Streams
-                for app_name in assigned:
-                    tokens = self.pipewire_mgr._get_match_tokens(app_name) if hasattr(self.pipewire_mgr, "_get_match_tokens") else set()
-                    for p in all_ports:
-                        if ":output_" in p and not p.startswith("WaveController_") and not p.startswith("output.WaveController_"):
-                            if hasattr(self.pipewire_mgr, "_port_matches_tokens") and self.pipewire_mgr._port_matches_tokens(p, tokens, port_meta):
-                                app_node = p.split(":")[0]
-                                if app_node not in target_map:
-                                    target_map[app_node] = {"channels": 2, "is_sink": False, "keys": set()}
-                                target_map[app_node]["keys"].add(ch_id)
-                                has_active_app = True
+                # 1A. Submix Loopbacks (For channels with assigned apps or active submix routing)
+                for p in all_ports:
+                    if p.startswith("input.WaveController_submix_") and ":monitor_" in p:
+                        node_part = p.split(":")[0]
+                        clean_name = node_part.replace("input.WaveController_submix_", "")
+                        if clean_name.startswith(f"{ch_id}_") or clean_name == ch_id:
+                            if node_part not in target_map:
+                                target_map[node_part] = {"channels": 2, "is_sink": True, "keys": set()}
+                            target_map[node_part]["keys"].add(ch_id)
 
-                # 1B. Submix Loopbacks (Only if channel has assigned apps)
-                if assigned or has_active_app:
-                    for p in all_ports:
-                        if p.startswith("input.WaveController_submix_") and ":monitor_" in p:
-                            node_part = p.split(":")[0]
-                            clean_name = node_part.replace("input.WaveController_submix_", "")
-                            if clean_name.startswith(f"{ch_id}_") or clean_name == ch_id:
-                                if node_part not in target_map:
-                                    target_map[node_part] = {"channels": 2, "is_sink": True, "keys": set()}
-                                target_map[node_part]["keys"].add(ch_id)
-
-                # 1C. Dedicated Exposed Channel Virtual Sinks (Only if active external client stream is connected)
-                if ch.get("expose_sink", False):
-                    sink_node = f"WaveController_Channel_{ch_id}"
-                    sink_has_inputs = False
-                    if hasattr(self.pipewire_mgr, "_get_pw_links_map"):
-                        links_map = self.pipewire_mgr._get_pw_links_map()
-                        for src_p, dests in links_map.items():
-                            if not src_p.startswith("WaveController_") and not src_p.startswith("output.WaveController_"):
-                                if any(d.startswith(f"{sink_node}:playback_") for d in dests):
-                                    sink_has_inputs = True
-                                    break
-                    if sink_has_inputs and any(p.startswith(f"{sink_node}:monitor_") for p in all_ports):
-                        if sink_node not in target_map:
-                            target_map[sink_node] = {"channels": 2, "is_sink": True, "keys": set()}
-                        target_map[sink_node]["keys"].add(ch_id)
+                # 1B. Dedicated Pre-Fader Channel Virtual Ingestion Sinks
+                sink_node = f"WaveController_Channel_{ch_id}"
+                if any(p.startswith(f"{sink_node}:monitor_") for p in all_ports):
+                    if sink_node not in target_map:
+                        target_map[sink_node] = {"channels": 2, "is_sink": True, "keys": set()}
+                    target_map[sink_node]["keys"].add(ch_id)
 
         # 2. Source Channels
         if self.pipewire_mgr:
@@ -396,6 +372,94 @@ class MultiChannelPeakMonitor:
                 self._channel_proc_channels[target_node] = info["channels"]
                 if target_node not in self._target_peaks:
                     self._target_peaks[target_node] = {"left": 0.0, "right": 0.0}
+
+        # Explicit 1:1 Patch Linking & Ingestion Audit (Sever WirePlumber fallbacks & rogue links)
+        self._link_and_audit_channel_monitors(target_map, all_ports)
+
+    def _link_and_audit_channel_monitors(self, target_map: dict, all_ports: list):
+        """
+        Explicitly links per-channel meters directly to their designated submix or source monitor ports,
+        and severs any rogue or WirePlumber fallback links (e.g. from WaveController_personal_mix_Sink).
+        """
+        try:
+            target_to_meter = {}
+            authorized_sources = {}
+
+            for target_node, info in target_map.items():
+                clean_tag = target_node.replace("alsa_input.", "").replace("input.WaveController_submix_", "").replace(".", "_")
+                node_name = f"wave_meter_{clean_tag[:28]}"
+                target_to_meter[target_node] = node_name
+
+                src_ports = set()
+                if info.get("is_sink", False):
+                    for p in all_ports:
+                        if p.startswith(f"{target_node}:") and ":monitor_" in p:
+                            src_ports.add(p)
+                else:
+                    for p in all_ports:
+                        if p.startswith(f"{target_node}:") and (":capture_" in p or ":output_" in p):
+                            src_ports.add(p)
+
+                authorized_sources[node_name] = src_ports
+
+            # 1. Ingestion Audit: Check existing links and sever rogue ones
+            existing_meter_links = {}
+            try:
+                links_out = subprocess.check_output(['pw-link', '-l'], text=True, stderr=subprocess.DEVNULL)
+                current_meter = None
+                for line in links_out.splitlines():
+                    line_str = line.strip()
+                    if not line.startswith(' ') and ':' in line_str:
+                        current_meter = line_str
+                        if current_meter.startswith("wave_meter_"):
+                            existing_meter_links[current_meter] = set()
+                    elif '|<-' in line_str and current_meter and current_meter.startswith("wave_meter_"):
+                        dest_node = current_meter.split(':')[0]
+                        src_port = line_str.replace('|<-', '').strip()
+                        valid_srcs = authorized_sources.get(dest_node, set())
+                        if src_port not in valid_srcs:
+                            subprocess.run(['pw-link', '-d', src_port, current_meter], stderr=subprocess.DEVNULL)
+                        else:
+                            existing_meter_links.setdefault(current_meter, set()).add(src_port)
+            except Exception:
+                pass
+
+            # 2. Establish explicit 1:1 patch links ONLY if not already established
+            for target_node, info in target_map.items():
+                node_name = target_to_meter.get(target_node)
+                src_ports = authorized_sources.get(node_name, set())
+                if not src_ports:
+                    continue
+
+                if info.get("channels", 2) == 1:
+                    mono_src = next((p for p in src_ports if "mono" in p.lower()), list(src_ports)[0])
+                    dest_mono = f"{node_name}:input_MONO"
+                    if mono_src not in existing_meter_links.get(dest_mono, set()):
+                        subprocess.run(['pw-link', mono_src, dest_mono], stderr=subprocess.DEVNULL)
+                        subprocess.run(['pw-link', mono_src, f"{node_name}:input_FL"], stderr=subprocess.DEVNULL)
+                        subprocess.run(['pw-link', mono_src, f"{node_name}:input_FR"], stderr=subprocess.DEVNULL)
+                else:
+                    fl_src = next((p for p in src_ports if p.lower().endswith("fl") or p.endswith("1") or "_l" in p.lower()), None)
+                    fr_src = next((p for p in src_ports if p.lower().endswith("fr") or p.endswith("2") or "_r" in p.lower()), None)
+
+                    if fl_src:
+                        dest_fl = f"{node_name}:input_FL"
+                        if fl_src not in existing_meter_links.get(dest_fl, set()):
+                            subprocess.run(['pw-link', fl_src, dest_fl], stderr=subprocess.DEVNULL)
+                    if fr_src:
+                        dest_fr = f"{node_name}:input_FR"
+                        if fr_src not in existing_meter_links.get(dest_fr, set()):
+                            subprocess.run(['pw-link', fr_src, dest_fr], stderr=subprocess.DEVNULL)
+                    if not fl_src and not fr_src and src_ports:
+                        for sp in src_ports:
+                            dest_fl = f"{node_name}:input_FL"
+                            dest_fr = f"{node_name}:input_FR"
+                            if sp not in existing_meter_links.get(dest_fl, set()):
+                                subprocess.run(['pw-link', sp, dest_fl], stderr=subprocess.DEVNULL)
+                            if sp not in existing_meter_links.get(dest_fr, set()):
+                                subprocess.run(['pw-link', sp, dest_fr], stderr=subprocess.DEVNULL)
+        except Exception:
+            pass
 
     def _run_capture_loop(self):
         # 1. Open mic capture directly targeted to physical microphone node
