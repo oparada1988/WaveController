@@ -1238,6 +1238,10 @@ class MixerMatrixView(Gtk.Box):
                 card.refresh_name()
 
     def _on_ui_tick(self) -> bool:
+        # Visibility Guard: Drop background render cycles when hidden / minimized / in other tabs
+        if not self.get_mapped():
+            return True
+
         # 1. Periodically verify physical hardware connectivity and mute state (~1s interval)
         self._hw_tick_counter = getattr(self, "_hw_tick_counter", 0) + 1
         if self._hw_tick_counter % 30 == 0:

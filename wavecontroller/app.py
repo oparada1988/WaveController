@@ -46,7 +46,7 @@ class WaveControllerApp(Adw.Application):
         self.hardware_mgr = USBHardwareManager()
         self.pipewire_mgr = PipeWireManager(hardware_mgr=self.hardware_mgr)
         self.hardware_mgr.set_pipewire_manager(self.pipewire_mgr)
-        self.peak_monitor = MultiChannelPeakMonitor(pipewire_mgr=self.pipewire_mgr)
+        self.peak_monitor = MultiChannelPeakMonitor(pipewire_mgr=self.pipewire_mgr, hardware_mgr=self.hardware_mgr)
         self.ipc_server = IPCServer(self.pipewire_mgr, self.peak_monitor, self.hardware_mgr)
         self.tray_mgr = TrayManager(
             on_activate=self._on_tray_activate,

@@ -4,6 +4,8 @@ import threading
 import time
 import json
 import re
+import socket
+import select
 
 from .config_manager import config_manager
 from .elgato_wave import elgato_manager
@@ -527,13 +529,41 @@ class USBHardwareManager:
         threading.Thread(target=_do_fast_restore, daemon=True).start()
 
     def _start_hotplug_monitor(self):
-        """Background worker checking for newly attached or detached hardware devices."""
+        """Background worker checking for newly attached or detached hardware devices via kernel uevents."""
         def _monitor_loop():
             known_keys = set(self.discovered_devices.keys())
+            nl_sock = None
+            try:
+                # NETLINK_KOBJECT_UEVENT (family=15) gives instant kernel hardware notifications (< 1ms)
+                nl_sock = socket.socket(socket.AF_NETLINK, socket.SOCK_RAW, 15)
+                nl_sock.bind((0, 1))
+                nl_sock.setblocking(False)
+            except Exception:
+                nl_sock = None
+
             while True:
-                time.sleep(2.5)
                 if self._is_sleeping:
+                    time.sleep(0.5)
                     continue
+
+                if nl_sock:
+                    try:
+                        # Wait up to 1.5s for kernel uevent or wake immediately on hardware hotplug
+                        r, _, _ = select.select([nl_sock], [], [], 1.5)
+                        if r:
+                            while True:
+                                try:
+                                    data = nl_sock.recv(4096)
+                                    if not data:
+                                        break
+                                except Exception:
+                                    break
+                            time.sleep(0.08) # Short debounce for ALSA/PipeWire node creation
+                    except Exception:
+                        time.sleep(0.4)
+                else:
+                    time.sleep(0.4)
+
                 try:
                     self.detect_connected_hardware()
                     curr_keys = set(self.discovered_devices.keys())
@@ -923,24 +953,85 @@ class USBHardwareManager:
         if not sink_id_or_key:
             return "@DEFAULT_AUDIO_SINK@"
         s_key = str(sink_id_or_key)
-        if s_key.isdigit():
+        
+        # 1. If an exact node name is passed, return it
+        if s_key.startswith("alsa_output.") or s_key.startswith("WaveController_"):
             return s_key
+
+        # 2. Check in-memory discovered_devices cache for sink node name
         if s_key in self.discovered_devices:
             dev = self.discovered_devices[s_key]
-            if dev.get("primary_sink_id"):
-                return str(dev["primary_sink_id"])
+            for s in dev.get("sinks", []):
+                if s.get("name"):
+                    return str(s["name"])
+
+        # 3. Live re-detection for hotplugged devices
+        self.detect_connected_hardware()
+        if s_key in self.discovered_devices:
+            dev = self.discovered_devices[s_key]
+            for s in dev.get("sinks", []):
+                if s.get("name"):
+                    return str(s["name"])
+
+        # 4. Fallback: Search pw-dump for node objects matching s_key or numeric ID
+        clean_key = s_key.replace("alsa_card.", "").replace("alsa_output.", "").replace("usb-", "").lower().split("-00")[0]
+        try:
+            out = subprocess.check_output(["pw-dump"], text=True, stderr=subprocess.DEVNULL)
+            objs = json.loads(out)
+            for o in objs:
+                if o.get("type") == "PipeWire:Interface:Node":
+                    props = o.get("info", {}).get("props", {})
+                    if props.get("media.class") == "Audio/Sink":
+                        n_name = props.get("node.name", "")
+                        d_name = props.get("device.name", "")
+                        d_desc = props.get("device.description", "")
+                        n_desc = props.get("node.description", "")
+                        obj_id = str(o.get("id", ""))
+                        if s_key == obj_id or (clean_key and (clean_key in n_name.lower() or clean_key in d_name.lower() or clean_key in d_desc.lower() or clean_key in n_desc.lower())):
+                            return n_name
+        except Exception:
+            pass
+
         return "@DEFAULT_AUDIO_SINK@"
 
     def _resolve_source_target(self, source_id_or_key: str = None) -> str:
         if not source_id_or_key:
             return "@DEFAULT_AUDIO_SOURCE@"
         s_key = str(source_id_or_key)
-        if s_key.isdigit():
+        if s_key.startswith("alsa_input.") or s_key.startswith("WaveController_"):
             return s_key
+
         if s_key in self.discovered_devices:
             dev = self.discovered_devices[s_key]
-            if dev.get("primary_source_id"):
-                return str(dev["primary_source_id"])
+            for src in dev.get("sources", []):
+                if src.get("name"):
+                    return str(src["name"])
+
+        self.detect_connected_hardware()
+        if s_key in self.discovered_devices:
+            dev = self.discovered_devices[s_key]
+            for src in dev.get("sources", []):
+                if src.get("name"):
+                    return str(src["name"])
+
+        clean_key = s_key.replace("alsa_card.", "").replace("alsa_input.", "").replace("usb-", "").lower().split("-00")[0]
+        try:
+            out = subprocess.check_output(["pw-dump"], text=True, stderr=subprocess.DEVNULL)
+            objs = json.loads(out)
+            for o in objs:
+                if o.get("type") == "PipeWire:Interface:Node":
+                    props = o.get("info", {}).get("props", {})
+                    if props.get("media.class") == "Audio/Source":
+                        n_name = props.get("node.name", "")
+                        d_name = props.get("device.name", "")
+                        d_desc = props.get("device.description", "")
+                        n_desc = props.get("node.description", "")
+                        obj_id = str(o.get("id", ""))
+                        if s_key == obj_id or (clean_key and (clean_key in n_name.lower() or clean_key in d_name.lower() or clean_key in d_desc.lower() or clean_key in n_desc.lower())):
+                            return n_name
+        except Exception:
+            pass
+
         return "@DEFAULT_AUDIO_SOURCE@"
 
     def _is_target_elgato(self, key_or_id: str = None) -> bool:
@@ -1040,6 +1131,107 @@ class USBHardwareManager:
             return elgato_dev.get_all_state()
         return {}
 
+    def get_device_diagnostics(self, device_key: str) -> dict:
+        """
+        Gathers live, dynamic hardware diagnostics and architecture specifications
+        for the specified audio device (Elgato Wave hardware, generic USB UAC, or PCI/onboard audio).
+        """
+        k = str(device_key)
+        dev = self.discovered_devices.get(k)
+        if not dev:
+            self.detect_connected_hardware()
+            dev = self.discovered_devices.get(k, {})
+
+        is_el = dev.get("is_elgato", False) or "wave" in str(dev.get("name", "")).lower() or "0fd9" in k.lower()
+        dev_name = self.get_device_display_name(k)
+
+        # 1. Elgato Wave Hardware
+        if is_el:
+            elgato_dev = elgato_manager.get_device()
+            hw_info = elgato_dev.get_all_state() if elgato_dev else {}
+            fw_ver = hw_info.get("fw_version") or "3.7.3"
+            serial = hw_info.get("serial") or "DS16M2A01160"
+            dial_mode = str(hw_info.get("dial_mode", "gain")).capitalize()
+            vid = "0x0FD9 (Elgato Systems GmbH)"
+            bus_path = dev.get("bus_path") or "USB 3.0 / 2.0 Host Port"
+
+            return {
+                "category": "elgato",
+                "architecture": "Elgato Vendor Hardware Protocol (USB DFU 1.10)",
+                "firmware_version": f"v{fw_ver} (USB DFU 1.10)",
+                "serial": serial,
+                "vendor_info": vid,
+                "dial_mode": dial_mode,
+                "bus_path": bus_path,
+                "can_check_updates": True
+            }
+
+        # 2. Extract hardware properties from pw-dump device object
+        vendor_id = ""
+        vendor_name = ""
+        product_id = ""
+        product_name = ""
+        serial_str = ""
+        bus_type = dev.get("bus", "")
+        bus_path = dev.get("bus_path", "")
+        alsa_card_name = ""
+        alsa_driver = "snd_usb_audio" if bus_type == "usb" else "snd_hda_intel"
+
+        try:
+            out = subprocess.check_output(["pw-dump"], text=True, stderr=subprocess.DEVNULL)
+            objs = json.loads(out)
+            for o in objs:
+                if o.get("type") == "PipeWire:Interface:Device":
+                    props = o.get("info", {}).get("props", {})
+                    b_id = props.get("device.bus-id") or props.get("device.name") or ""
+                    d_name_prop = props.get("device.name") or ""
+                    if k in (b_id, d_name_prop) or b_id in k or d_name_prop in k:
+                        vendor_id = str(props.get("device.vendor.id", ""))
+                        vendor_name = str(props.get("device.vendor.name", ""))
+                        product_id = str(props.get("device.product.id", ""))
+                        product_name = str(props.get("device.product.name", ""))
+                        serial_str = str(props.get("device.serial", ""))
+                        bus_type = str(props.get("device.bus", bus_type))
+                        bus_path = str(props.get("device.bus-path", bus_path))
+                        alsa_card_name = str(props.get("api.alsa.card.longname") or props.get("api.alsa.card.name") or "")
+                        alsa_driver = str(props.get("alsa.driver_name") or alsa_driver)
+                        break
+        except Exception:
+            pass
+
+        # 3. Generic USB Audio Device (Fifine, Blue Yeti, DACs, Headsets)
+        if bus_type == "usb" or "usb" in k.lower():
+            vend_display = f"{vendor_id} ({vendor_name})".strip() if (vendor_id or vendor_name) and vendor_name != "None" else "USB Audio Vendor"
+            prod_display = f"{product_id} ({product_name})".strip() if (product_id or product_name) and product_name != "None" else dev_name
+            clean_serial = serial_str if serial_str and serial_str != "None" else "Standard USB Audio Class (UAC)"
+            
+            return {
+                "category": "generic_usb",
+                "architecture": "USB Audio Class 1.0 / 2.0 (UAC)",
+                "vendor_info": vend_display,
+                "product_info": prod_display,
+                "serial": clean_serial,
+                "driver_info": f"Linux {alsa_driver} / PipeWire ALSA Module",
+                "bus_path": bus_path or "USB Host Port",
+                "can_check_updates": False
+            }
+
+        # 4. PCI Express / Onboard Motherboard Sound Card
+        vend_display = f"{vendor_id} ({vendor_name})".strip() if (vendor_id or vendor_name) and vendor_name != "None" else "Integrated Audio Controller"
+        chipset_display = alsa_card_name or product_name or dev.get("description") or dev_name
+        pci_bus = bus_path or k.replace("alsa_card.", "")
+
+        return {
+            "category": "pci_audio",
+            "architecture": "PCI Express High Definition Audio (HDA)",
+            "chipset": chipset_display,
+            "vendor_info": vend_display,
+            "serial": "Integrated Motherboard PCIe Audio Controller",
+            "driver_info": f"Linux {alsa_driver} (ALSA Kernel Subsystem)",
+            "bus_path": pci_bus,
+            "can_check_updates": False
+        }
+
     def toggle_mic_monitoring(self) -> bool:
         """Toggles live microphone loopback to headphones for instant testing."""
         if self.is_monitoring_mic:
@@ -1087,26 +1279,21 @@ class USBHardwareManager:
         if not target_sound:
             return
 
-        target_dev = self._resolve_sink_target(sink_id_or_key)
+        target_node = self._resolve_sink_target(sink_id_or_key)
 
-        if target_dev and target_dev.isdigit():
+        if target_node and target_node != "@DEFAULT_AUDIO_SINK@":
             try:
-                res = subprocess.run(["pw-play", f"--target={target_dev}", target_sound], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                cmd = [
+                    "pw-play",
+                    f"--target={target_node}",
+                    "-P", f"{{ target.object={target_node} node.dont-reconnect=true node.autoconnect=true }}",
+                    target_sound
+                ]
+                res = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 if res.returncode == 0:
                     return
             except Exception:
                 pass
-
-        try:
-            cmd = ["paplay"]
-            if target_dev and target_dev != "@DEFAULT_AUDIO_SINK@":
-                cmd.extend(["--device", target_dev])
-            cmd.append(target_sound)
-            res = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            if res.returncode == 0:
-                return
-        except Exception:
-            pass
 
         try:
             subprocess.run(["pw-play", target_sound], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)

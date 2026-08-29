@@ -13,7 +13,7 @@ class MultiChannelPeakMonitor:
     with isolated node port names for physical microphones and playback audio.
     Per-channel ingestion sinks get dedicated monitor taps for isolated VU metering.
     """
-    def __init__(self, pipewire_mgr=None):
+    def __init__(self, pipewire_mgr=None, hardware_mgr=None):
         self.peaks = {} # {channel_id: {"left": float, "right": float}}
         self.running = False
         self.mic_proc = None
@@ -21,6 +21,7 @@ class MultiChannelPeakMonitor:
         self.thread = None
         self._lock = threading.Lock()
         self.pipewire_mgr = pipewire_mgr
+        self.hardware_mgr = hardware_mgr
         # Per-channel isolated monitor processes and smoothed peak state
         self._channel_procs = {}  # {channel_id: subprocess.Popen}
         self._channel_proc_channels = {}  # {channel_id: int}
@@ -28,6 +29,9 @@ class MultiChannelPeakMonitor:
 
     def set_pipewire_manager(self, pw_mgr):
         self.pipewire_mgr = pw_mgr
+
+    def set_hardware_manager(self, hw_mgr):
+        self.hardware_mgr = hw_mgr
 
     def start(self):
         self.running = True
@@ -234,19 +238,24 @@ class MultiChannelPeakMonitor:
         # Map channel_id -> (target_node_name, channel_count, is_sink)
         active_channels = {}
 
-        # 1. Active Playback Channels: Target the submix input loopback monitor
+        # Collect unique targets: target_node -> {"channels": int, "is_sink": bool, "keys": set()}
+        target_map = {}
+
+        # 1. Playback Channels
         for p in all_ports:
             if p.startswith("input.WaveController_submix_") and ":monitor_" in p:
-                node_part = p.split(":")[0]  # e.g. "input.WaveController_submix_spotify_personal_mix"
+                node_part = p.split(":")[0]
                 clean_name = node_part.replace("input.WaveController_submix_", "")
                 if self.pipewire_mgr:
                     for ch in getattr(self.pipewire_mgr, "channels", []):
                         ch_id = ch.get("id", "")
-                        if (clean_name.startswith(f"{ch_id}_") or clean_name == ch_id) and ch_id not in active_channels:
-                            active_channels[ch_id] = (node_part, 2, True)
+                        if clean_name.startswith(f"{ch_id}_") or clean_name == ch_id:
+                            if node_part not in target_map:
+                                target_map[node_part] = {"channels": 2, "is_sink": True, "keys": set()}
+                            target_map[node_part]["keys"].add(ch_id)
                             break
 
-        # 2. Active Input / Microphone Channels (Physical ALSA Capture nodes)
+        # 2. Source Channels
         if self.pipewire_mgr:
             for ch in getattr(self.pipewire_mgr, "channels", []):
                 if ch.get("type") == "source":
@@ -280,32 +289,56 @@ class MultiChannelPeakMonitor:
                                 break
 
                     if matched_node:
-                        active_channels[ch_id] = (matched_node, 1 if is_mono else 2, False)
+                        if matched_node not in target_map:
+                            target_map[matched_node] = {"channels": 1 if is_mono else 2, "is_sink": False, "keys": set()}
+                        target_map[matched_node]["keys"].add(ch_id)
 
-        # Prune processes for channels that no longer exist
-        for ch_id in list(self._channel_procs.keys()):
-            if ch_id not in active_channels:
-                proc = self._channel_procs.pop(ch_id, None)
+        # 3. Direct Physical Hardware Input Device Capture
+        if hasattr(self, "hardware_mgr") and self.hardware_mgr:
+            for dev_k, dev in getattr(self.hardware_mgr, "discovered_devices", {}).items():
+                if dev.get("connected", True):
+                    for src in dev.get("sources", []):
+                        src_name = src.get("name")
+                        if src_name:
+                            is_mono = "mono" in src_name.lower()
+                            ch_cnt = 1 if is_mono else 2
+                            if src_name not in target_map:
+                                target_map[src_name] = {"channels": ch_cnt, "is_sink": False, "keys": set()}
+                            target_map[src_name]["keys"].add(dev_k)
+                            clean_k = dev_k.replace("alsa_card.", "").replace("usb-", "")
+                            target_map[src_name]["keys"].add(clean_k)
+
+        # Prune processes for targets no longer active
+        for target_node in list(self._channel_procs.keys()):
+            if target_node not in target_map:
+                proc = self._channel_procs.pop(target_node, None)
                 if proc:
                     try:
                         proc.kill()
                     except Exception:
                         pass
-                self._channel_proc_channels.pop(ch_id, None)
-                self._channel_peaks.pop(ch_id, None)
+                self._channel_proc_channels.pop(target_node, None)
 
-        # Spawn processes for new channels
-        for ch_id, (target, channels, is_sink) in active_channels.items():
-            proc = self._channel_procs.get(ch_id)
+        if not hasattr(self, "_target_keys"):
+            self._target_keys = {}
+        if not hasattr(self, "_target_peaks"):
+            self._target_peaks = {}
+
+        self._target_keys = {t: info["keys"] for t, info in target_map.items()}
+
+        # Spawn processes for new unique target nodes
+        for target_node, info in target_map.items():
+            proc = self._channel_procs.get(target_node)
             if proc and proc.poll() is None:
                 continue  # Already running
-            node_name = f"wave_meter_{ch_id}"
-            new_proc = self._open_pw_record(node_name, target=target, channels=channels, is_sink=is_sink)
+            clean_tag = target_node.replace("alsa_input.", "").replace("input.WaveController_submix_", "").replace(".", "_")
+            node_name = f"wave_meter_{clean_tag[:28]}"
+            new_proc = self._open_pw_record(node_name, target=target_node, channels=info["channels"], is_sink=info["is_sink"])
             if new_proc:
-                self._channel_procs[ch_id] = new_proc
-                self._channel_proc_channels[ch_id] = channels
-                if ch_id not in self._channel_peaks:
-                    self._channel_peaks[ch_id] = {"left": 0.0, "right": 0.0}
+                self._channel_procs[target_node] = new_proc
+                self._channel_proc_channels[target_node] = info["channels"]
+                if target_node not in self._target_peaks:
+                    self._target_peaks[target_node] = {"left": 0.0, "right": 0.0}
 
     def _run_capture_loop(self):
         # 1. Open mic capture directly targeted to physical microphone node
@@ -340,11 +373,11 @@ class MultiChannelPeakMonitor:
                 with self._lock:
                     ch_items = list(self._channel_procs.items())
 
-                for ch_id, proc in ch_items:
+                for target_node, proc in ch_items:
                     if proc and proc.poll() is None:
-                        proc_ch = self._channel_proc_channels.get(ch_id, 2)
+                        proc_ch = self._channel_proc_channels.get(target_node, 2)
                         raw_cl, raw_cr = self._drain_and_calc_peaks(proc, channels=proc_ch)
-                        cur = self._channel_peaks.get(ch_id, {"left": 0.0, "right": 0.0})
+                        cur = getattr(self, "_target_peaks", {}).get(target_node, {"left": 0.0, "right": 0.0})
                         cl = cur.get("left", 0.0)
                         cr = cur.get("right", 0.0)
 
@@ -360,7 +393,16 @@ class MultiChannelPeakMonitor:
 
                         val_l = 0.0 if cl < 0.002 else cl
                         val_r = 0.0 if cr < 0.002 else cr
-                        self._channel_peaks[ch_id] = {"left": val_l, "right": val_r, "peak": max(val_l, val_r)}
+                        peak_data = {"left": val_l, "right": val_r, "peak": max(val_l, val_r)}
+                        if not hasattr(self, "_target_peaks"):
+                            self._target_peaks = {}
+                        self._target_peaks[target_node] = peak_data
+
+                        # Broadcast to all associated channel IDs and device keys
+                        assoc_keys = getattr(self, "_target_keys", {}).get(target_node, set())
+                        for k in assoc_keys:
+                            self._channel_peaks[k] = peak_data
+                        self._channel_peaks[target_node] = peak_data
 
                 tick_counter += 1
                 if tick_counter % 80 == 0: # Check and refresh links periodically (~2 seconds)

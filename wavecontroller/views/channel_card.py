@@ -356,16 +356,25 @@ class ChannelCard(Gtk.Box):
         # Hardware LED Controls for Elgato Wave device
         if self.is_wave_channel and self.hardware_mgr:
             vbox.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
-            
-            # Static Gain Color
-            led_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-            led_lbl = Gtk.Label(label="Hardware LED (Mic Gain):", hexpand=True, halign=Gtk.Align.START)
-            led_lbl.add_css_class("mix-header-subtitle")
             from .led_color_picker import LEDColorButton
-            led_btn = LEDColorButton(self.hardware_mgr, "gain", title="Mic Gain LED", parent_popover=popover)
-            led_row.append(led_lbl)
-            led_row.append(led_btn)
-            vbox.append(led_row)
+            
+            # 1. Mic Gain Mode LED Ring Color
+            gain_led_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+            gain_led_lbl = Gtk.Label(label="Mic Gain Mode Ring Color:", hexpand=True, halign=Gtk.Align.START)
+            gain_led_lbl.add_css_class("mix-header-subtitle")
+            gain_led_btn = LEDColorButton(self.hardware_mgr, "gain", title="Mic Gain LED", parent_popover=popover)
+            gain_led_row.append(gain_led_lbl)
+            gain_led_row.append(gain_led_btn)
+            vbox.append(gain_led_row)
+
+            # 2. Mute State LED Ring Color
+            mute_led_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+            mute_led_lbl = Gtk.Label(label="Hardware Mute Ring Color:", hexpand=True, halign=Gtk.Align.START)
+            mute_led_lbl.add_css_class("mix-header-subtitle")
+            mute_led_btn = LEDColorButton(self.hardware_mgr, "mute", title="Hardware Mute LED", parent_popover=popover)
+            mute_led_row.append(mute_led_lbl)
+            mute_led_row.append(mute_led_btn)
+            vbox.append(mute_led_row)
 
         # Delete Channel button (Available for all custom and device channels)
         remove_btn = Gtk.Button(label="Delete Channel")

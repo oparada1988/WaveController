@@ -277,40 +277,6 @@ class UnifiedDeviceSettingsView(Gtk.Box):
 
             pref_page.add(grp_out)
 
-        # Group 4: Hardware RGB LED Ring Customization (Wave XLR devices with RGB diodes)
-        if is_wave_xlr:
-            grp_led = Adw.PreferencesGroup(title="Hardware RGB LED Ring Customization")
-
-            # Mic Gain Mode Color
-            gain_led_row = Adw.ActionRow(title="Mic Gain Mode Ring Color", subtitle="Color when knob adjusts microphone preamp gain")
-            gain_led_btn = LEDColorButton(self.hardware_mgr, "gain", title="Mic Gain Mode Color")
-            gain_led_btn.set_valign(Gtk.Align.CENTER)
-            gain_led_row.add_suffix(gain_led_btn)
-            grp_led.add(gain_led_row)
-
-            # Headphone Mode Color
-            hp_led_row = Adw.ActionRow(title="Headphone Mode Ring Color", subtitle="Color when knob adjusts headphone output volume")
-            hp_led_btn = LEDColorButton(self.hardware_mgr, "hp", title="Headphone Mode Color")
-            hp_led_btn.set_valign(Gtk.Align.CENTER)
-            hp_led_row.add_suffix(hp_led_btn)
-            grp_led.add(hp_led_row)
-
-            # Balance Mode Color
-            mix_led_row = Adw.ActionRow(title="Balance Mode Ring Color", subtitle="Color when knob adjusts Mic/PC crossfade balance")
-            mix_led_btn = LEDColorButton(self.hardware_mgr, "mix", title="Balance Mode Color")
-            mix_led_btn.set_valign(Gtk.Align.CENTER)
-            mix_led_row.add_suffix(mix_led_btn)
-            grp_led.add(mix_led_row)
-
-            # Mute State Color
-            mute_led_row = Adw.ActionRow(title="Mute State Ring Color", subtitle="Color when microphone is muted via capacitive sensor")
-            mute_led_btn = LEDColorButton(self.hardware_mgr, "mute", title="Mute State Color")
-            mute_led_btn.set_valign(Gtk.Align.CENTER)
-            mute_led_row.add_suffix(mute_led_btn)
-            grp_led.add(mute_led_row)
-
-            pref_page.add(grp_led)
-
         # Group 5: Exclusive Volume Guard & Protection (Strictly for Elgato Wave Devices)
         if self.is_elgato:
             grp_guard = Adw.PreferencesGroup(title="Exclusive Volume Guard &amp; Protection")
@@ -335,27 +301,66 @@ class UnifiedDeviceSettingsView(Gtk.Box):
 
             pref_page.add(grp_guard)
 
-        # Group 6: Hardware Diagnostics & Firmware (USB DFU 1.10)
-        grp_diag = Adw.PreferencesGroup(title="Hardware Diagnostics &amp; Firmware")
+        # Group 6: Dynamic Hardware Diagnostics & Specifications
+        grp_diag = Adw.PreferencesGroup(title="Hardware Diagnostics &amp; Specifications")
         
-        info = self.hardware_mgr.get_elgato_device_info()
-        fw_version = info.get("fw_version") or "1.3.1"
-        serial = info.get("serial") or "ES21L1A00000"
-        dial_mode = info.get("dial_mode", "gain").capitalize()
+        diag = self.hardware_mgr.get_device_diagnostics(self.device_key) if hasattr(self.hardware_mgr, "get_device_diagnostics") else {}
+        cat = diag.get("category", "generic_usb")
 
-        fw_row = Adw.ActionRow(title="Firmware Version", subtitle=f"Installed: v{fw_version} (USB DFU 1.10)")
-        update_btn = Gtk.Button(label="Check for Updates")
-        update_btn.set_icon_name("software-update-available-symbolic")
-        update_btn.set_valign(Gtk.Align.CENTER)
-        update_btn.connect("clicked", self._on_check_firmware_updates)
-        fw_row.add_suffix(update_btn)
-        grp_diag.add(fw_row)
+        if cat == "elgato":
+            fw_version = diag.get("firmware_version", "v3.7.3 (USB DFU 1.10)")
+            serial = diag.get("serial", "DS16M2A01160")
+            dial_mode = diag.get("dial_mode", "Gain")
+            vendor = diag.get("vendor_info", "0x0FD9 (Elgato Systems GmbH)")
 
-        serial_row = Adw.ActionRow(title="Hardware Serial Number", subtitle=serial)
-        grp_diag.add(serial_row)
+            fw_row = Adw.ActionRow(title="Firmware Version", subtitle=f"Installed: {fw_version}")
+            update_btn = Gtk.Button(label="Check for Updates")
+            update_btn.set_icon_name("software-update-available-symbolic")
+            update_btn.set_valign(Gtk.Align.CENTER)
+            update_btn.connect("clicked", self._on_check_firmware_updates)
+            fw_row.add_suffix(update_btn)
+            grp_diag.add(fw_row)
 
-        self.dial_mode_row = Adw.ActionRow(title="Rotary Knob Dial Target", subtitle=f"Active Mode: {dial_mode}")
-        grp_diag.add(self.dial_mode_row)
+            serial_row = Adw.ActionRow(title="Hardware Serial Number", subtitle=serial)
+            grp_diag.add(serial_row)
+
+            self.dial_mode_row = Adw.ActionRow(title="Rotary Knob Dial Target", subtitle=f"Active Mode: {dial_mode}")
+            grp_diag.add(self.dial_mode_row)
+
+            usb_row = Adw.ActionRow(title="USB Interface &amp; Protocol", subtitle=f"{vendor} • {diag.get('bus_path', 'USB')}")
+            grp_diag.add(usb_row)
+
+        elif cat == "generic_usb":
+            arch_row = Adw.ActionRow(title="Hardware Architecture", subtitle=diag.get("architecture", "USB Audio Class (UAC)"))
+            grp_diag.add(arch_row)
+
+            id_row = Adw.ActionRow(title="USB Hardware Identification", subtitle=f"Vendor: {diag.get('vendor_info')} • Product: {diag.get('product_info')}")
+            grp_diag.add(id_row)
+
+            serial_row = Adw.ActionRow(title="Hardware Serial Number", subtitle=diag.get("serial", "Standard USB Audio Class (UAC)"))
+            grp_diag.add(serial_row)
+
+            bus_row = Adw.ActionRow(title="USB Bus Path &amp; Port", subtitle=diag.get("bus_path", "USB Audio Bus"))
+            grp_diag.add(bus_row)
+
+            drv_row = Adw.ActionRow(title="Audio Subsystem &amp; Driver", subtitle=diag.get("driver_info", "Linux snd_usb_audio / PipeWire Module"))
+            grp_diag.add(drv_row)
+
+        else: # pci_audio
+            arch_row = Adw.ActionRow(title="Hardware Architecture", subtitle=diag.get("architecture", "PCI Express High Definition Audio (HDA)"))
+            grp_diag.add(arch_row)
+
+            chipset_row = Adw.ActionRow(title="Audio Chipset &amp; Controller", subtitle=diag.get("chipset", "HD-Audio Generic"))
+            grp_diag.add(chipset_row)
+
+            pci_row = Adw.ActionRow(title="PCI Express Bus Location", subtitle=diag.get("bus_path", "PCI Bus Address"))
+            grp_diag.add(pci_row)
+
+            vend_row = Adw.ActionRow(title="Controller Vendor", subtitle=diag.get("vendor_info", "Integrated Motherboard Audio"))
+            grp_diag.add(vend_row)
+
+            drv_row = Adw.ActionRow(title="Audio Subsystem &amp; Driver", subtitle=diag.get("driver_info", "Linux snd_hda_intel"))
+            grp_diag.add(drv_row)
 
         pref_page.add(grp_diag)
 
@@ -615,11 +620,34 @@ class UnifiedDeviceSettingsView(Gtk.Box):
     def _on_meter_tick(self) -> bool:
         if not self.get_mapped():
             return True
-        peak = self.peak_monitor.get_channel_peak("mic")
+
+        # 1. If device is disconnected or offline, strictly zero!
+        if not self.device_info.get("connected", True):
+            self.meter_bar.set_fraction(0.0)
+            self.db_label.set_text("-∞ dB")
+            return True
+
+        # 2. Query direct physical microphone capture for this specific device
+        peak = self.peak_monitor.get_channel_peak(self.device_key)
+
+        # Fallback to checking any assigned channel for this device
+        if peak <= 0.0 and self.pipewire_mgr:
+            for ch in getattr(self.pipewire_mgr, "channels", []):
+                assigned = self.pipewire_mgr.get_assigned_apps(ch["id"]) if hasattr(self.pipewire_mgr, "get_assigned_apps") else []
+                if self.device_key in assigned or self.device_info.get("name", "") in assigned or ch["id"] in self.device_key.lower():
+                    p = self.peak_monitor.get_channel_peak(ch["id"])
+                    if p > 0.0:
+                        peak = p
+                        break
+
+        # Fallback to 'mic' for Elgato devices if device_key peak is unpopulated
+        if self.is_elgato and peak <= 0.0:
+            peak = self.peak_monitor.get_channel_peak("mic")
+
+        # 3. Live Physical VU Display
         self.meter_bar.set_fraction(peak)
-        
-        if peak > 0.01:
-            db = 20 * math.log10(peak)
+        if peak > 0.002:
+            db = -54.0 + (peak * 54.0)
             self.db_label.set_text(f"{db:.1f} dB")
         else:
             self.db_label.set_text("-∞ dB")
@@ -719,6 +747,18 @@ class UnifiedDeviceSettingsView(Gtk.Box):
             self.header_icon_img.set_from_icon_name(curr_icon)
         if hasattr(self, "icon_btn"):
             self.icon_btn.set_icon_name(curr_icon)
+
+    def update_device_info(self, device_info: dict):
+        """Updates connection state and live labels in-place without tearing down UI widgets."""
+        self.device_info = device_info
+        is_conn = device_info.get("connected", True)
+        status_text = "🟢 Connected" if is_conn else "🟡 Disconnected / Offline"
+        if hasattr(self, "sub_lbl"):
+            self.sub_lbl.set_text(status_text)
+
+        display_name = self.hardware_mgr.get_device_display_name(self.device_key)
+        if hasattr(self, "title_lbl"):
+            self.title_lbl.set_text(display_name)
 
 
 class AddDeviceDialog(Adw.Window):

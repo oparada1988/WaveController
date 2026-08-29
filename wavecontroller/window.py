@@ -239,6 +239,15 @@ class WaveMainWindow(Adw.ApplicationWindow):
 
     def _rebuild_device_views(self, select_device_key: str = None):
         """Rebuilds the sidebar device buttons and views stack for all tracked devices."""
+        # 1. Capture the currently active view name BEFORE tearing down views
+        target_view = None
+        if select_device_key:
+            target_view = f"device_{select_device_key}"
+        else:
+            curr_visible = self.stack.get_visible_child_name()
+            if curr_visible:
+                target_view = curr_visible
+
         # Clear previous dynamic buttons
         while True:
             child = self.device_list_box.get_first_child()
@@ -248,28 +257,30 @@ class WaveMainWindow(Adw.ApplicationWindow):
 
         self.device_buttons.clear()
 
-        # Remove old device views from stack
-        for view_name in list(self.device_views.keys()):
-            view = self.device_views.pop(view_name)
-            if self.stack.get_child_by_name(view_name):
-                self.stack.remove(view)
-
         tracked_devices = self.hardware_mgr.get_tracked_devices()
+        tracked_view_names = set()
 
         for dev in tracked_devices:
             key = dev["device_key"]
             view_name = f"device_{key}"
+            tracked_view_names.add(view_name)
 
-            view = UnifiedDeviceSettingsView(
-                device_info=dev,
-                hardware_mgr=self.hardware_mgr,
-                peak_monitor=self.peak_monitor,
-                pipewire_mgr=self.pipewire_mgr,
-                on_device_renamed=self._refresh_sidebar_device_names,
-                on_device_removed=self._on_device_removed
-            )
-            self.device_views[view_name] = view
-            self.stack.add_named(view, view_name)
+            # In-place view reuse: update existing view without tearing it down from stack
+            if view_name in self.device_views:
+                view = self.device_views[view_name]
+                if hasattr(view, "update_device_info"):
+                    view.update_device_info(dev)
+            else:
+                view = UnifiedDeviceSettingsView(
+                    device_info=dev,
+                    hardware_mgr=self.hardware_mgr,
+                    peak_monitor=self.peak_monitor,
+                    pipewire_mgr=self.pipewire_mgr,
+                    on_device_renamed=self._refresh_sidebar_device_names,
+                    on_device_removed=self._on_device_removed
+                )
+                self.device_views[view_name] = view
+                self.stack.add_named(view, view_name)
 
             # Create Sidebar Row Button
             btn = Gtk.Button()
@@ -325,15 +336,21 @@ class WaveMainWindow(Adw.ApplicationWindow):
             self.device_list_box.append(btn)
             self.device_buttons[view_name] = btn
 
-        # Handle View Selection
-        if select_device_key:
-            target_view_name = f"device_{select_device_key}"
-            if target_view_name in self.device_buttons:
-                self._switch_view(target_view_name, self.device_buttons[target_view_name])
+        # Remove only deleted device views from stack
+        for old_view_name in list(self.device_views.keys()):
+            if old_view_name not in tracked_view_names:
+                old_view = self.device_views.pop(old_view_name)
+                if self.stack.get_child_by_name(old_view_name):
+                    self.stack.remove(old_view)
+
+        # Handle View Selection & Persistence
+        if target_view and target_view in self.device_buttons:
+            self._switch_view(target_view, self.device_buttons[target_view])
+        elif target_view in ("mixes", "settings", "effects"):
+            btn = self.mixes_btn if target_view == "mixes" else (self.fx_btn if target_view == "effects" else self.settings_btn)
+            self._switch_view(target_view, btn)
         else:
-            curr_visible = self.stack.get_visible_child_name()
-            if curr_visible and curr_visible.startswith("device_") and curr_visible not in self.device_buttons:
-                self._switch_view("mixes", self.mixes_btn)
+            self._switch_view("mixes", self.mixes_btn)
 
         if hasattr(self, "mixer_view") and self.mixer_view:
             self.mixer_view.refresh_device_names()

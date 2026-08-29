@@ -1827,37 +1827,53 @@ class PipeWireManager:
 
             self._refresh_node_cache()
             self._save_state_to_config(immediate=True)
-            self._ensure_virtual_mix_nodes()
             self._volume_queue[ch_id] = (default_vol, False)
             self._volume_event.set()
+
+        def _bg_provision():
+            self._ensure_virtual_mix_nodes()
+            self._refresh_node_cache()
             self._sync_channel_audio_routing(channel_id=ch_id)
-            return new_ch
+
+        threading.Thread(target=_bg_provision, daemon=True).start()
+        return new_ch
 
     def remove_channel(self, channel_id: str) -> bool:
         with self._lock:
-            # 1. Cleanly terminate and teardown all submix loopback processes for this channel
-            keys_to_remove = [k for k in list(self._submix_procs.keys()) if k[0] == channel_id]
-            for k in keys_to_remove:
-                proc = self._submix_procs.pop(k, None)
-                if proc:
-                    try:
-                        proc.terminate()
-                        proc.wait(timeout=0.2)
-                    except Exception:
-                        try:
-                            proc.kill()
-                        except Exception:
-                            pass
-                self._submix_node_ids.pop(k, None)
-                self._submix_volume_queue.pop(k, None)
+            ch_exists = any(c["id"] == channel_id for c in self.channels)
+            if not ch_exists:
+                return False
 
-            # 2. Terminate any orphan loopbacks matching this channel
+            assigned = list(self.assigned_apps.get(channel_id, []))
+            self.channels = [c for c in self.channels if c["id"] != channel_id]
+            self.channel_states.pop(channel_id, None)
+            if hasattr(self, "channel_master_states") and isinstance(self.channel_master_states, dict):
+                self.channel_master_states.pop(channel_id, None)
+            self.assigned_apps.pop(channel_id, None)
+            self._save_state_to_config(immediate=True)
+
+        def _bg_teardown():
+            with self._lock:
+                keys_to_remove = [k for k in list(self._submix_procs.keys()) if k[0] == channel_id]
+                for k in keys_to_remove:
+                    proc = self._submix_procs.pop(k, None)
+                    if proc:
+                        try:
+                            proc.terminate()
+                            proc.wait(timeout=0.1)
+                        except Exception:
+                            try:
+                                proc.kill()
+                            except Exception:
+                                pass
+                    self._submix_node_ids.pop(k, None)
+                    self._submix_volume_queue.pop(k, None)
+
             try:
                 subprocess.run(["pkill", "-f", f"WaveController_submix_{channel_id}_"], stderr=subprocess.DEVNULL)
             except Exception:
                 pass
 
-            # 3. Sever all PipeWire links associated with this channel
             try:
                 out = subprocess.check_output(["pw-link", "-l"], text=True, stderr=subprocess.DEVNULL)
                 curr_src = None
@@ -1872,8 +1888,6 @@ class PipeWireManager:
             except Exception:
                 pass
 
-            # 4. Fallback assigned applications to physical hardware output so they never attach to virtual mixes
-            assigned = list(self.assigned_apps.get(channel_id, []))
             if assigned:
                 try:
                     out_ports_raw = subprocess.check_output(["pw-link", "-o"], text=True, stderr=subprocess.DEVNULL)
@@ -1881,7 +1895,6 @@ class PipeWireManager:
                     out_ports = [l.strip() for l in out_ports_raw.splitlines() if l.strip()]
                     in_ports = [l.strip() for l in in_ports_raw.splitlines() if l.strip()]
 
-                    # Find physical hardware playback ports
                     default_phys_in = []
                     target_device = self.selected_monitor_device or ""
                     clean_target = target_device.replace("alsa_card.", "").replace("alsa_output.", "").strip().lower()
@@ -1892,7 +1905,6 @@ class PipeWireManager:
                     if not default_phys_in:
                         default_phys_in = [p for p in in_ports if p.startswith("alsa_output.") and ":playback_" in p][:2]
 
-                    # Find the app's output ports and reconnect to physical audio
                     app_out_ports = []
                     for app in assigned:
                         tokens = self._get_match_tokens(app)
@@ -1902,7 +1914,6 @@ class PipeWireManager:
                             if ":output_" in p and self._port_matches_tokens(p, tokens):
                                 app_out_ports.append(p)
 
-                    # Explicitly unroute the deleted channel's applications from any WaveController mix sink/source
                     if app_out_ports:
                         for p in in_ports:
                             if p.startswith("WaveController_") and (":playback_" in p or ":input_" in p):
@@ -1913,19 +1924,12 @@ class PipeWireManager:
                 except Exception:
                     pass
 
-            self.channels = [c for c in self.channels if c["id"] != channel_id]
-            if channel_id in self.channel_states:
-                del self.channel_states[channel_id]
-            if channel_id in self.assigned_apps:
-                del self.assigned_apps[channel_id]
-            if hasattr(self, "channel_master_states") and channel_id in self.channel_master_states:
-                del self.channel_master_states[channel_id]
-
             self._refresh_node_cache()
-            self._save_state_to_config(immediate=True)
             self._ensure_virtual_mix_nodes()
             self._sync_channel_audio_routing()
-            return True
+
+        threading.Thread(target=_bg_teardown, daemon=True).start()
+        return True
 
     def rename_channel(self, channel_id: str, new_name: str) -> bool:
         with self._lock:
@@ -2075,12 +2079,16 @@ class PipeWireManager:
                     "enabled": False
                 }
             self._save_state_to_config(immediate=True)
-            self._ensure_virtual_mix_nodes()
-            self._refresh_node_cache()
             self._mix_volume_queue[mix_id] = (100, False)
             self._volume_event.set()
+
+        def _bg_mix_provision():
+            self._ensure_virtual_mix_nodes()
+            self._refresh_node_cache()
             self._sync_channel_audio_routing(mix_id=mix_id)
-            return new_mix
+
+        threading.Thread(target=_bg_mix_provision, daemon=True).start()
+        return new_mix
 
     def update_mix(self, mix_id: str, name: str = None, subtitle: str = None, color: str = None, icon: str = None, target_device: str = None) -> bool:
         """Updates metadata (name, subtitle, color, icon, target_device) of a configured mix and syncs PipeWire node descriptions."""
@@ -2098,9 +2106,13 @@ class PipeWireManager:
                     if target_device is not None:
                         m["target_device"] = target_device
                     self._save_state_to_config(immediate=True)
-                    self._ensure_virtual_mix_nodes()
-                    self._refresh_node_cache()
-                    self._sync_channel_audio_routing(mix_id=mix_id)
+
+                    def _bg_mix_update():
+                        self._ensure_virtual_mix_nodes()
+                        self._refresh_node_cache()
+                        self._sync_channel_audio_routing(mix_id=mix_id)
+
+                    threading.Thread(target=_bg_mix_update, daemon=True).start()
                     return True
         return False
 
@@ -2108,23 +2120,32 @@ class PipeWireManager:
         """Removes a mix and tears down its PipeWire virtual audio device and all associated submix loopbacks."""
         canon_mix = self._match_mix_id(mix_id)
         with self._lock:
-            # 1. Cleanly terminate and teardown all submix loopback processes for this mix
-            keys_to_remove = [k for k in list(self._submix_procs.keys()) if k[1] == mix_id or k[1] == canon_mix]
-            for k in keys_to_remove:
-                proc = self._submix_procs.pop(k, None)
-                if proc:
-                    try:
-                        proc.terminate()
-                        proc.wait(timeout=0.2)
-                    except Exception:
-                        try:
-                            proc.kill()
-                        except Exception:
-                            pass
-                self._submix_node_ids.pop(k, None)
-                self._submix_volume_queue.pop(k, None)
+            self.mixes = [m for m in self.mixes if m["id"] != mix_id and m["id"] != canon_mix]
+            for ch_id in self.channel_states:
+                self.channel_states[ch_id].pop(mix_id, None)
+                self.channel_states[ch_id].pop(canon_mix, None)
+            if hasattr(self, "mix_states"):
+                self.mix_states.pop(mix_id, None)
+                self.mix_states.pop(canon_mix, None)
+            self._save_state_to_config(immediate=True)
 
-            # 2. Terminate any orphan loopbacks matching this mix
+        def _bg_mix_teardown():
+            with self._lock:
+                keys_to_remove = [k for k in list(self._submix_procs.keys()) if k[1] == mix_id or k[1] == canon_mix]
+                for k in keys_to_remove:
+                    proc = self._submix_procs.pop(k, None)
+                    if proc:
+                        try:
+                            proc.terminate()
+                            proc.wait(timeout=0.1)
+                        except Exception:
+                            try:
+                                proc.kill()
+                            except Exception:
+                                pass
+                    self._submix_node_ids.pop(k, None)
+                    self._submix_volume_queue.pop(k, None)
+
             try:
                 subprocess.run(["pkill", "-f", f"WaveController_submix_.*_{mix_id}"], stderr=subprocess.DEVNULL)
                 if canon_mix != mix_id:
@@ -2132,7 +2153,6 @@ class PipeWireManager:
             except Exception:
                 pass
 
-            # 3. Sever all PipeWire links associated with this mix
             try:
                 out = subprocess.check_output(["pw-link", "-l"], text=True, stderr=subprocess.DEVNULL)
                 curr_src = None
@@ -2149,18 +2169,23 @@ class PipeWireManager:
             except Exception:
                 pass
 
-            self.mixes = [m for m in self.mixes if m["id"] != mix_id and m["id"] != canon_mix]
-            for ch_id in self.channel_states:
-                self.channel_states[ch_id].pop(mix_id, None)
-                self.channel_states[ch_id].pop(canon_mix, None)
-            if hasattr(self, "mix_states"):
-                self.mix_states.pop(mix_id, None)
-                self.mix_states.pop(canon_mix, None)
+            try:
+                out = subprocess.check_output(["pw-dump"], text=True, stderr=subprocess.DEVNULL)
+                data = json.loads(out)
+                for obj in data:
+                    props = obj.get("info", {}).get("props", {})
+                    n_name = props.get("node.name", "")
+                    if n_name in (f"WaveController_{mix_id}_Sink", f"WaveController_{mix_id}_Source",
+                                f"WaveController_{canon_mix}_Sink", f"WaveController_{canon_mix}_Source"):
+                        obj_id = obj.get("id")
+                        if obj_id:
+                            subprocess.run(["pw-cli", "destroy", str(obj_id)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            except Exception:
+                pass
 
-            self._save_state_to_config(immediate=True)
-            self._ensure_virtual_mix_nodes()
             self._refresh_node_cache()
-            self._sync_channel_audio_routing()
+
+        threading.Thread(target=_bg_mix_teardown, daemon=True).start()
 
     @staticmethod
     def resolve_icon_for_app(app_name: str) -> str:
