@@ -475,6 +475,8 @@ class WaveMainWindow(Adw.ApplicationWindow):
         self._refresh_sidebar_device_names()
 
     def _check_initial_untracked_devices(self) -> bool:
+        if not config_manager.get("first_run_completed", False):
+            return False
         untracked = self.hardware_mgr.get_available_untracked_devices()
         for dev in untracked:
             if dev.get("is_elgato"):
@@ -483,7 +485,7 @@ class WaveMainWindow(Adw.ApplicationWindow):
         return False
 
     def _on_new_device_detected(self, dev_info: dict):
-        if not self.get_visible():
+        if not self.get_visible() or not config_manager.get("first_run_completed", False):
             return
         self.show_device_detected_dialog(dev_info)
 

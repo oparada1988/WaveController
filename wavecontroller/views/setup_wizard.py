@@ -234,40 +234,69 @@ class SetupWizardDialog(Gtk.Window):
         desc.set_halign(Gtk.Align.CENTER)
         box.append(desc)
 
-        # 3. Hardware Device Card Preview
+        # 3. Hardware Device Card Preview with Live Devices
+        detected_devices = []
+        seen_keys = set()
+        if self.hardware_mgr:
+            get_inputs_fn = getattr(self.hardware_mgr, "get_all_available_input_devices", None) or self.hardware_mgr.get_tracked_input_devices
+            get_outputs_fn = getattr(self.hardware_mgr, "get_all_available_output_devices", None) or self.hardware_mgr.get_tracked_output_devices
+
+            for dev in get_inputs_fn() + get_outputs_fn():
+                k = dev.get("device_key", dev.get("name", ""))
+                if k and k not in seen_keys:
+                    seen_keys.add(k)
+                    detected_devices.append(dev)
+
+        if not detected_devices:
+            detected_devices = [
+                {"display_name": "Elgato Wave XLR", "description": "USB Audio Interface", "icon": "elgato-wave-xlr-symbolic"},
+                {"display_name": "Built-in Audio", "description": "Analog Stereo Controller", "icon": "audio-card-symbolic"}
+            ]
+
         hw_card_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
-        hw_card_box.set_size_request(460, 100)
+        hw_card_box.set_size_request(490, -1)
         hw_card_box.add_css_class("oobe-hw-preview-container")
 
-        row_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
-        row_box.add_css_class("oobe-hw-preview-row")
-        row_box.set_margin_top(4)
-        row_box.set_margin_bottom(4)
+        scrolled = Gtk.ScrolledWindow()
+        scrolled.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        scrolled.set_min_content_height(100)
+        scrolled.set_max_content_height(140)
+        scrolled.set_propagate_natural_height(True)
 
-        dev_icon = Gtk.Image.new_from_icon_name("audio-card-symbolic")
-        dev_icon.set_pixel_size(24)
-        dev_icon.add_css_class("oobe-icon-white")
-        row_box.append(dev_icon)
+        list_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
 
-        lbl_vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
-        lbl_vbox.set_hexpand(True)
-        title_lbl = Gtk.Label(label="Device Name")
-        title_lbl.set_halign(Gtk.Align.START)
-        title_lbl.add_css_class("heading")
+        for dev in detected_devices:
+            row_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+            row_box.add_css_class("oobe-hw-preview-row")
 
-        sub_lbl = Gtk.Label(label="Device name Description")
-        sub_lbl.set_halign(Gtk.Align.START)
-        sub_lbl.add_css_class("dimmed")
-        lbl_vbox.append(title_lbl)
-        lbl_vbox.append(sub_lbl)
-        row_box.append(lbl_vbox)
+            icon_name = dev.get("icon") or dev.get("icon_name") or "audio-card-symbolic"
+            dev_icon = Gtk.Image.new_from_icon_name(icon_name)
+            dev_icon.set_pixel_size(24)
+            dev_icon.add_css_class("oobe-icon-white")
+            row_box.append(dev_icon)
 
-        add_btn = Gtk.Button.new_from_icon_name("list-add-symbolic")
-        add_btn.add_css_class("flat")
-        add_btn.add_css_class("circular")
-        row_box.append(add_btn)
+            lbl_vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+            lbl_vbox.set_hexpand(True)
+            title_lbl = Gtk.Label(label=dev.get("display_name", dev.get("name", "Audio Device")))
+            title_lbl.set_halign(Gtk.Align.START)
+            title_lbl.add_css_class("heading")
 
-        hw_card_box.append(row_box)
+            sub_lbl = Gtk.Label(label=dev.get("description", dev.get("display_name", "Hardware Audio Device")))
+            sub_lbl.set_halign(Gtk.Align.START)
+            sub_lbl.add_css_class("dimmed")
+            lbl_vbox.append(title_lbl)
+            lbl_vbox.append(sub_lbl)
+            row_box.append(lbl_vbox)
+
+            add_btn = Gtk.Button.new_from_icon_name("list-add-symbolic")
+            add_btn.add_css_class("flat")
+            add_btn.add_css_class("circular")
+            row_box.append(add_btn)
+
+            list_box.append(row_box)
+
+        scrolled.set_child(list_box)
+        hw_card_box.append(scrolled)
         box.append(hw_card_box)
 
         # Action Button
@@ -305,6 +334,7 @@ class SetupWizardDialog(Gtk.Window):
 
         # Preference Rows Group
         pref_group = Adw.PreferencesGroup()
+        pref_group.add_css_class("oobe-pref-group")
         pref_group.set_margin_top(4)
         pref_group.set_margin_bottom(4)
 
@@ -359,7 +389,7 @@ class SetupWizardDialog(Gtk.Window):
         pref_group.add(self.output_combo)
 
         pref_box = Gtk.Box()
-        pref_box.set_size_request(475, -1)
+        pref_box.set_size_request(510, -1)
         pref_box.set_halign(Gtk.Align.CENTER)
         pref_box.append(pref_group)
         box.append(pref_box)
@@ -487,19 +517,48 @@ class SetupWizardDialog(Gtk.Window):
             self.pipewire_mgr.selected_monitor_device = sel_out_key
             self.pipewire_mgr.default_input_device = sel_mic_key
 
-            # Update initial mic channel name to match hardware device
             with self.pipewire_mgr._lock:
-                if self.pipewire_mgr.channels:
+                # 1. Provision Personal Mix if empty, else update target_device
+                if not self.pipewire_mgr.mixes:
+                    self.pipewire_mgr.mixes = [
+                        {
+                            "id": "personal",
+                            "name": "Personal Mix",
+                            "subtitle": "1 output",
+                            "icon": "audio-headphones-symbolic",
+                            "color": "#3db356",
+                            "target_device": sel_out_key
+                        }
+                    ]
+                    self.pipewire_mgr.mix_states["personal"] = {"volume": 100, "muted": False}
+                else:
+                    for m in self.pipewire_mgr.mixes:
+                        if m.get("id") in ("personal", "personal_mix") or m.get("type") == "sink":
+                            m["target_device"] = sel_out_key
+                            break
+
+                # 2. Provision Primary Microphone Channel if empty, else update name/app
+                if not self.pipewire_mgr.channels:
+                    self.pipewire_mgr.channels = [
+                        {
+                            "id": "mic",
+                            "name": mic_name,
+                            "type": "source",
+                            "icon": "audio-input-microphone-symbolic",
+                            "default_vol": 80,
+                            "sync_meter": False
+                        }
+                    ]
+                    self.pipewire_mgr.assigned_apps["mic"] = [mic_name, sel_mic_key]
+                    self.pipewire_mgr.channel_master_states["mic"] = {"volume": 80, "muted": False}
+                    self.pipewire_mgr.channel_states["mic"] = {
+                        "personal": {"volume": 80, "muted": False, "linked": True}
+                    }
+                else:
                     first_ch = self.pipewire_mgr.channels[0]
                     if first_ch.get("type") == "source" or first_ch.get("id") in ("mic", "elgato_wave_xlr"):
                         first_ch["name"] = mic_name
                         self.pipewire_mgr.assigned_apps[first_ch["id"]] = [mic_name, sel_mic_key]
-
-                # Update Personal Mix target_device
-                for m in self.pipewire_mgr.mixes:
-                    if m.get("id") in ("personal", "personal_mix") or m.get("type") == "sink":
-                        m["target_device"] = sel_out_key
-                        break
 
             self.pipewire_mgr._save_state_to_config(immediate=True)
             self.pipewire_mgr._ensure_virtual_mix_nodes()

@@ -15,21 +15,15 @@ class ConfigManager:
     
     DEFAULT_CONFIG = {
         "version": 1,
-        "channels": [
-            {"id": "mic", "name": "Microphone", "type": "source", "icon": "audio-input-microphone-symbolic", "default_vol": 80, "sync_meter": False}
-        ],
-        "mixes": [
-            {"id": "personal", "name": "Personal Mix", "subtitle": "1 output", "icon": "audio-headphones-symbolic", "color": "#3db356"}
-        ],
-        "assigned_apps": {
-            "mic": ["System capture"]
-        },
-        "channel_states": {
-            "mic": {
-                "personal": {"volume": 80, "muted": False, "linked": True}
-            }
-        },
+        "first_run_completed": False,
+        "channels": [],
+        "mixes": [],
+        "assigned_apps": {},
+        "channel_states": {},
+        "channel_master_states": {},
+        "mix_states": {},
         "device_aliases": {},
+        "tracked_devices": [],
         "hardware_settings": {
             "selected_input_id": None,
             "selected_output_id": None,

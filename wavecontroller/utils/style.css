@@ -658,6 +658,14 @@ window.oobe-window decoration {
     border: 1px solid alpha(@window_fg_color, 0.08);
 }
 
+.oobe-pref-group row dropdown {
+    min-width: 250px;
+}
+
+.oobe-pref-group row dropdown button {
+    min-width: 250px;
+}
+
 .oobe-icon-white {
     color: #ffffff;
 }
