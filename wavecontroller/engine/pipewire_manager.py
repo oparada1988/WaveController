@@ -478,7 +478,7 @@ class PipeWireManager:
                 # 2. Periodic real-time stream, guard & mix reconciliation
                 sync_tick = getattr(self, "_sync_loop_tick", 0) + 1
                 self._sync_loop_tick = sync_tick
-                if sync_tick % 10 == 0:
+                if sync_tick % 2 == 0:
                     self._reconcile_app_streams_fast()
                 if sync_tick % 50 == 0:
                     self._enforce_exclusive_volume_guard()
@@ -825,6 +825,7 @@ class PipeWireManager:
             links_map = self._get_pw_links_map()
             port_meta = self._get_active_port_metadata_map()
 
+            reconciled_any = False
             for ch in channels_copy:
                 if ch.get("type") == "source":
                     continue
@@ -863,6 +864,11 @@ class PipeWireManager:
 
                     if need_sync:
                         self._sync_channel_audio_routing(channel_id=ch_id)
+                        self._bind_app_to_wireplumber_target(app, ch_id)
+                        reconciled_any = True
+
+            if reconciled_any:
+                self._notify_peak_monitor_refresh()
 
             # Reconcile unassigned application streams to WaveController_Fallback_Sink
             self._sync_unassigned_app_streams(out_ports=out_ports, links_map=links_map, port_meta=port_meta)
@@ -2119,6 +2125,7 @@ class PipeWireManager:
                                         pass
 
             self._sync_unassigned_app_streams(out_ports=out_ports, in_ports=in_ports, links_map=fresh_links, port_meta=port_meta)
+            self._notify_peak_monitor_refresh()
         except Exception:
             pass
 
