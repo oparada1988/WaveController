@@ -23,8 +23,8 @@ class SetupWizardDialog(Gtk.Window):
             transient_for=top_parent,
             modal=True,
             title="Welcome to WaveController",
-            default_width=580,
-            default_height=520,
+            default_width=560,
+            default_height=500,
             resizable=False
         )
         self.hardware_mgr = hardware_mgr

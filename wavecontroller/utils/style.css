@@ -582,8 +582,10 @@ popover.wave-popover entry:focus {
    First-Time Setup Wizard (OOBE) Styling
    ========================================================================= */
 
-window.oobe-window {
+window.oobe-window,
+window.oobe-window decoration {
     background-color: transparent;
+    box-shadow: none;
 }
 
 .oobe-main-container {
@@ -591,8 +593,7 @@ window.oobe-window {
     color: @window_fg_color;
     border-radius: 24px;
     border: 1px solid alpha(@window_fg_color, 0.12);
-    box-shadow: 0 16px 44px rgba(0, 0, 0, 0.65);
-    margin: 14px;
+    box-shadow: none;
 }
 
 .oobe-page {
