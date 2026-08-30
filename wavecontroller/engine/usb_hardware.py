@@ -145,16 +145,12 @@ class USBHardwareManager:
         return "gain"
 
     def _ensure_default_tracked_devices(self):
-        """Initializes tracked devices list strictly on first install if config key is None."""
+        """Initializes tracked devices list strictly after first-time setup."""
+        if not config_manager.get("first_run_completed", False):
+            return
         tracked = config_manager.get("tracked_devices", None)
         if tracked is None:
-            new_tracked = []
-            # Prioritize Elgato Wave XLR or primary input/duplex device
-            for k, dev in self.discovered_devices.items():
-                if dev.get("is_elgato") or dev.get("type") in ["duplex", "input"]:
-                    new_tracked.append(k)
-                    break
-            config_manager.set("tracked_devices", new_tracked, immediate=True)
+            config_manager.set("tracked_devices", [], immediate=True)
 
     def _on_elgato_hardware_sync(self, curr: dict, changed: dict):
         """Dispatched when physical dial, 2-sec 48V hold, or capacitive mute sensor changes on Elgato hardware."""
@@ -671,16 +667,7 @@ class USBHardwareManager:
     def get_tracked_devices(self) -> list:
         """Returns the list of user-tracked devices hydrated with live state."""
         self.detect_connected_hardware()
-        tracked_keys = config_manager.get("tracked_devices", None)
-        if tracked_keys is None or not tracked_keys:
-            tracked_keys = []
-            for k, dev in self.discovered_devices.items():
-                if dev.get("is_elgato", False):
-                    tracked_keys.append(k)
-            if tracked_keys:
-                config_manager.set("tracked_devices", tracked_keys, immediate=True)
-        else:
-            tracked_keys = list(tracked_keys)
+        tracked_keys = config_manager.get("tracked_devices", []) or []
 
         aliases = config_manager.get("device_aliases", {})
         assigned_mixes = config_manager.get("device_assigned_mixes", {})

@@ -38,19 +38,28 @@ class PipeWireManager:
 
     def __init__(self, hardware_mgr=None):
         self.hardware_mgr = hardware_mgr
-        saved_channels = config_manager.get("channels")
-        saved_mixes = config_manager.get("mixes")
-        saved_apps = config_manager.get("assigned_apps")
-        saved_states = config_manager.get("channel_states")
-        saved_masters = config_manager.get("channel_master_states")
-        saved_mix_states = config_manager.get("mix_states")
+        saved_channels = config_manager.get("channels", None)
+        saved_mixes = config_manager.get("mixes", None)
+        saved_apps = config_manager.get("assigned_apps", None)
+        saved_states = config_manager.get("channel_states", None)
+        saved_masters = config_manager.get("channel_master_states", None)
+        saved_mix_states = config_manager.get("mix_states", None)
+        first_run_done = config_manager.get("first_run_completed", False)
 
-        self.channels = list(saved_channels) if saved_channels else list(self.DEFAULT_CHANNELS)
-        self.mixes = list(saved_mixes) if saved_mixes else list(self.DEFAULT_MIXES)
-        self.assigned_apps = dict(saved_apps) if saved_apps else dict(self.DEFAULT_APP_MAPPINGS)
-        self.channel_states = dict(saved_states) if saved_states else {}
-        self.channel_master_states = dict(saved_masters) if saved_masters else {}
-        self.mix_states = dict(saved_mix_states) if saved_mix_states else {}
+        if not first_run_done:
+            self.channels = []
+            self.mixes = []
+            self.assigned_apps = {}
+            self.channel_states = {}
+            self.channel_master_states = {}
+            self.mix_states = {}
+        else:
+            self.channels = list(saved_channels) if saved_channels is not None else list(self.DEFAULT_CHANNELS)
+            self.mixes = list(saved_mixes) if saved_mixes is not None else list(self.DEFAULT_MIXES)
+            self.assigned_apps = dict(saved_apps) if saved_apps is not None else dict(self.DEFAULT_APP_MAPPINGS)
+            self.channel_states = dict(saved_states) if saved_states is not None else {}
+            self.channel_master_states = dict(saved_masters) if saved_masters is not None else {}
+            self.mix_states = dict(saved_mix_states) if saved_mix_states is not None else {}
         self.output_devices = []
         self.selected_monitor_device = None
         self.running = False
