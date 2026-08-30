@@ -741,6 +741,36 @@ class USBHardwareManager:
                 inputs.append(dev)
         return inputs
 
+    def get_all_available_input_devices(self) -> list:
+        """Returns all connected/discovered and tracked input devices."""
+        self.detect_connected_hardware()
+        tracked = self.get_tracked_input_devices()
+        seen_keys = {d.get("device_key") for d in tracked if d.get("device_key")}
+        results = list(tracked)
+        for k, dev in self.discovered_devices.items():
+            if k not in seen_keys:
+                if dev.get("type") in ["duplex", "input"] or dev.get("sources") or dev.get("primary_source_id"):
+                    d = dict(dev)
+                    d["display_name"] = self.get_device_display_name(k)
+                    results.append(d)
+                    seen_keys.add(k)
+        return results
+
+    def get_all_available_output_devices(self) -> list:
+        """Returns all connected/discovered and tracked output devices."""
+        self.detect_connected_hardware()
+        tracked = self.get_tracked_output_devices()
+        seen_keys = {d.get("device_key") for d in tracked if d.get("device_key")}
+        results = list(tracked)
+        for k, dev in self.discovered_devices.items():
+            if k not in seen_keys:
+                if dev.get("type") in ["duplex", "output"] or dev.get("sinks") or dev.get("primary_sink_id"):
+                    d = dict(dev)
+                    d["display_name"] = self.get_device_display_name(k)
+                    results.append(d)
+                    seen_keys.add(k)
+        return results
+
     def get_available_untracked_devices(self) -> list:
         self.detect_connected_hardware()
         tracked_keys = set(config_manager.get("tracked_devices", []))

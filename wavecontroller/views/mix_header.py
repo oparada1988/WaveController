@@ -391,9 +391,10 @@ class MixHeaderCard(Gtk.Box):
         box.append(color_box)
 
         # Physical Output Target Routing (For Sink / Speaker mixes only)
+        is_personal_mix = self.mix_info.get("id") in ("personal", "personal_mix")
         target_dev_combo = None
         target_dev_keys = []
-        if m_type == "sink" or self.mix_info.get("id") == "personal":
+        if m_type == "sink" and not is_personal_mix:
             target_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
             target_lbl = Gtk.Label(label="Target:")
             target_lbl.add_css_class("mix-header-subtitle")
@@ -420,7 +421,7 @@ class MixHeaderCard(Gtk.Box):
                 target_dev_labels = [opt[1] for opt in target_options]
                 target_dev_combo.set_model(Gtk.StringList.new(target_dev_labels))
 
-                curr_target = self.mix_info.get("target_device", "none" if self.mix_info.get("id") != "personal" else "default")
+                curr_target = self.mix_info.get("target_device", "none")
                 sel_target_idx = 0
                 for i, k in enumerate(target_dev_keys):
                     if k == curr_target:
@@ -550,11 +551,12 @@ class MixHeaderCard(Gtk.Box):
             new_sub = sub_entry.get_text().strip() or "Custom Mix"
             new_color = getattr(self, "selected_color", "#9146ff")
             new_icon = self.selected_icon
-            new_target = "none"
             if target_dev_combo and target_dev_keys:
                 idx = target_dev_combo.get_selected()
                 if idx < len(target_dev_keys):
                     new_target = target_dev_keys[idx]
+            else:
+                new_target = self.mix_info.get("target_device", "default" if is_personal_mix else "none")
 
             if new_name:
                 self.mix_info["icon"] = new_icon

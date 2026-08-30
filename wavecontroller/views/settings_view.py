@@ -13,9 +13,10 @@ class SettingsView(Gtk.Box):
     """
     Application & Audio Engine Preferences.
     """
-    def __init__(self, hardware_mgr, on_theme_changed=None):
+    def __init__(self, hardware_mgr, pipewire_mgr=None, on_theme_changed=None):
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=16)
         self.hardware_mgr = hardware_mgr
+        self.pipewire_mgr = pipewire_mgr
         self.on_theme_changed = on_theme_changed
 
         self.set_margin_top(20)
@@ -31,6 +32,123 @@ class SettingsView(Gtk.Box):
         self.append(title_box)
 
         pref_page = Adw.PreferencesPage()
+
+        # Group 0: Default Hardware Devices
+        grp_hw = Adw.PreferencesGroup(title="Default Hardware Devices")
+
+        hw_refresh_btn = Gtk.Button(label="Refresh Devices")
+        hw_refresh_btn.set_icon_name("view-refresh-symbolic")
+        hw_refresh_btn.add_css_class("flat")
+        hw_refresh_btn.set_valign(Gtk.Align.CENTER)
+        grp_hw.set_header_suffix(hw_refresh_btn)
+
+        self.mic_combo = Adw.ComboRow(
+            title="Primary Microphone",
+            subtitle="Default hardware capture device for main microphone channel and telemetry"
+        )
+        self.output_combo = Adw.ComboRow(
+            title="Primary Monitor Output",
+            subtitle="Default hardware DAC / headphones for Personal Mix and fallback audio"
+        )
+
+        self._input_dev_keys = []
+        self._output_dev_keys = []
+        self._refreshing_combos = False
+
+        def _refresh_hw_combos():
+            self._refreshing_combos = True
+            try:
+                if self.hardware_mgr and hasattr(self.hardware_mgr, "detect_connected_hardware"):
+                    self.hardware_mgr.detect_connected_hardware()
+
+                # Populate inputs (strictly added/tracked devices in WaveController)
+                input_opts = []
+                if self.hardware_mgr:
+                    for dev in self.hardware_mgr.get_tracked_input_devices():
+                        k = dev.get("device_key", dev.get("name", ""))
+                        name = dev.get("display_name", dev.get("name", "Microphone"))
+                        input_opts.append((k, name))
+                if not input_opts:
+                    input_opts = [("default", "Default Microphone (System)")]
+
+                self._input_dev_keys = [opt[0] for opt in input_opts]
+                self.mic_combo.set_model(Gtk.StringList.new([opt[1] for opt in input_opts]))
+
+                saved_in = config_manager.get("default_input_device", "default")
+                sel_in_idx = 0
+                for idx, k in enumerate(self._input_dev_keys):
+                    if k == saved_in or (saved_in in k):
+                        sel_in_idx = idx
+                        break
+                self.mic_combo.set_selected(sel_in_idx)
+
+                # Populate outputs (strictly added/tracked devices in WaveController)
+                output_opts = []
+                if self.hardware_mgr:
+                    for dev in self.hardware_mgr.get_tracked_output_devices():
+                        k = dev.get("device_key", dev.get("name", ""))
+                        name = dev.get("display_name", dev.get("name", "Audio Device"))
+                        output_opts.append((k, name))
+                if not output_opts:
+                    output_opts = [("default", "Default Output (System)")]
+
+                self._output_dev_keys = [opt[0] for opt in output_opts]
+                self.output_combo.set_model(Gtk.StringList.new([opt[1] for opt in output_opts]))
+
+                saved_out = config_manager.get("default_output_device", "default")
+                sel_out_idx = 0
+                for idx, k in enumerate(self._output_dev_keys):
+                    if k == saved_out or (saved_out in k):
+                        sel_out_idx = idx
+                        break
+                self.output_combo.set_selected(sel_out_idx)
+            finally:
+                self._refreshing_combos = False
+
+        self.refresh_device_list = _refresh_hw_combos
+        _refresh_hw_combos()
+
+        def _on_manual_refresh_clicked(btn):
+            _refresh_hw_combos()
+            btn.set_label("Refreshed!")
+            GLib.timeout_add(1500, lambda: (btn.set_label("Refresh Devices"), False))
+
+        hw_refresh_btn.connect("clicked", _on_manual_refresh_clicked)
+
+        def _on_mic_changed(row, param):
+            if self._refreshing_combos:
+                return
+            idx = row.get_selected()
+            if 0 <= idx < len(self._input_dev_keys):
+                new_k = self._input_dev_keys[idx]
+                config_manager.set("default_input_device", new_k, immediate=True)
+                if self.pipewire_mgr:
+                    self.pipewire_mgr.default_input_device = new_k
+                    self.pipewire_mgr._sync_channel_audio_routing()
+
+        def _on_output_changed(row, param):
+            if self._refreshing_combos:
+                return
+            idx = row.get_selected()
+            if 0 <= idx < len(self._output_dev_keys):
+                new_k = self._output_dev_keys[idx]
+                config_manager.set("default_output_device", new_k, immediate=True)
+                if self.pipewire_mgr:
+                    self.pipewire_mgr.selected_monitor_device = new_k
+                    # Update Personal Mix target_device
+                    for m in self.pipewire_mgr.mixes:
+                        if m.get("id") in ("personal", "personal_mix") or m.get("type") == "sink":
+                            m["target_device"] = new_k
+                            break
+                    self.pipewire_mgr._save_state_to_config(immediate=True)
+                    self.pipewire_mgr._sync_channel_audio_routing()
+
+        self.mic_combo.connect("notify::selected", _on_mic_changed)
+        self.output_combo.connect("notify::selected", _on_output_changed)
+
+        grp_hw.add(self.mic_combo)
+        grp_hw.add(self.output_combo)
+        pref_page.add(grp_hw)
 
         # Group 1: Appearance & Theme
         grp_theme = Adw.PreferencesGroup(title="Appearance &amp; Theme")

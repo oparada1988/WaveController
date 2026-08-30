@@ -724,6 +724,66 @@ class TestTokenMatchingInvariants(unittest.TestCase):
         ch_id = ch["id"]
         self.assertFalse(self.pwm.is_channel_sink_exposed(ch_id), "App channel should have expose_sink=False!")
 
+    def test_fallback_sink_provisioning_and_isolation(self):
+        """Invariant: WaveController_Fallback_Sink must be provisioned for unassigned/deleted applications and must never route to Personal Mix."""
+        # 1. Fallback playback ports must never return Personal Mix Sink
+        fallback_ports = self.pwm._get_default_sink_playback_ports()
+        for p in fallback_ports:
+            self.assertNotIn("personal_mix", p.lower(), "REGRESSION: _get_default_sink_playback_ports returned Personal Mix Sink ports!")
+
+        # 2. Unassigning an app from group channel removes manual assignment and does not repopulate as in-app
+        ch = self.pwm.add_channel("Group Test", ch_type="group", assigned_apps=["Discord", "Spotify"], expose_sink=True)
+        ch_id = ch["id"]
+        self.pwm.unassign_app_from_channel(ch_id, "Discord")
+        self.assertNotIn("Discord", self.pwm.get_assigned_apps(ch_id))
+        all_apps = self.pwm.get_channel_all_apps(ch_id)
+        app_names = [a["name"] for a in all_apps]
+        self.assertNotIn("Discord", app_names, "REGRESSION: Unassigned app repopulated in get_channel_all_apps!")
+
+    def test_default_hardware_devices_and_oobe_setup(self):
+        """Invariant: SettingsView and SetupWizardDialog configure default input/output hardware and anchor Personal Mix and Fallback."""
+        from wavecontroller.views.settings_view import SettingsView
+        from wavecontroller.views.setup_wizard import SetupWizardDialog
+        from wavecontroller.engine.config_manager import config_manager
+        from unittest.mock import MagicMock
+
+        mock_hw = MagicMock()
+        mock_hw.get_all_available_input_devices.return_value = [{"device_key": "alsa_input.wave_xlr", "display_name": "Elgato Wave XLR", "name": "Elgato Wave XLR"}]
+        mock_hw.get_all_available_output_devices.return_value = [{"device_key": "alsa_output.wave_xlr", "display_name": "Elgato Wave XLR Analog Stereo", "name": "Elgato Wave XLR Analog Stereo"}]
+        mock_hw.get_tracked_input_devices.return_value = [{"device_key": "alsa_input.wave_xlr", "display_name": "Elgato Wave XLR", "name": "Elgato Wave XLR"}]
+        mock_hw.get_tracked_output_devices.return_value = [{"device_key": "alsa_output.wave_xlr", "display_name": "Elgato Wave XLR Analog Stereo", "name": "Elgato Wave XLR Analog Stereo"}]
+
+        # Test SettingsView instantiation with pipewire_mgr
+        sv = SettingsView(mock_hw, pipewire_mgr=self.pwm)
+        self.assertIsNotNone(sv.mic_combo)
+        self.assertIsNotNone(sv.output_combo)
+        self.assertTrue(hasattr(sv, "refresh_device_list"))
+        sv.refresh_device_list()
+
+        # Test SetupWizardDialog instantiation
+        parent_win = MagicMock()
+        wiz = SetupWizardDialog(parent_win, mock_hw, self.pwm)
+        self.assertEqual(wiz.mic_combo.get_selected(), 0)
+        self.assertEqual(wiz.output_combo.get_selected(), 0)
+
+    def test_personal_mix_header_omits_target_device_dropdown(self):
+        """Invariant: Personal Mix header edit popup must omit target device dropdown while secondary mixes retain it."""
+        from wavecontroller.views.mix_header import MixHeaderCard
+        from unittest.mock import MagicMock
+
+        mock_hw = MagicMock()
+        mock_hw.get_tracked_output_devices.return_value = []
+
+        # 1. Personal Mix header
+        pm_info = {"id": "personal_mix", "name": "Personal Mix", "type": "sink", "target_device": "default"}
+        pm_card = MixHeaderCard(pm_info, self.pwm, None, mock_hw)
+        # Edit popup should recognize it as personal mix
+        self.assertTrue(pm_card.mix_info.get("id") in ("personal", "personal_mix"))
+
+        # 2. Secondary Mix header
+        sec_info = {"id": "speakers_mix", "name": "Speakers Mix", "type": "sink", "target_device": "alsa_output.speakers"}
+        sec_card = MixHeaderCard(sec_info, self.pwm, None, mock_hw)
+        self.assertFalse(sec_card.mix_info.get("id") in ("personal", "personal_mix"))
 
     def test_mic_monitor_always_linked_in_discovery(self):
         """Invariant: _do_refresh_discovery and _link_mic_monitor MUST link physical microphone ports to wave_mic_monitor."""

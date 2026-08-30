@@ -131,6 +131,20 @@ def get_active_port_metadata_map() -> dict:
         pass
     return port_map
 
+def _word_match(token: str, text: str) -> bool:
+    if not token or not text:
+        return False
+    t_clean = token.strip().lower()
+    text_clean = text.strip().lower()
+    if t_clean == text_clean:
+        return True
+    words = text_clean.replace("-", " ").replace("_", " ").replace(".", " ").split()
+    if t_clean in words:
+        return True
+    if " " in t_clean and t_clean in text_clean:
+        return True
+    return False
+
 def port_matches_tokens(port_name: str, tokens: set, port_meta: dict = None) -> bool:
     """Checks if a PipeWire port belongs to an application or device matching any token."""
     if not port_name or not tokens:
@@ -142,7 +156,6 @@ def port_matches_tokens(port_name: str, tokens: set, port_meta: dict = None) -> 
 
     p_low = port_name.lower()
     node_part = p_low.split(":")[0]
-    node_clean = node_part.replace("-", " ").replace("_", " ")
 
     # 1. Primary Priority: Authoritative process binary metadata (prevents Electron / Chromium collisions)
     if port_meta:
@@ -151,7 +164,7 @@ def port_matches_tokens(port_name: str, tokens: set, port_meta: dict = None) -> 
             bin_raw = str(meta.get("binary", "")).strip()
             if bin_raw:
                 bin_file = bin_raw.lower().split("/")[-1].split("\\")[-1]
-                matches_binary = any(t in bin_file or bin_file == t or t in bin_raw.lower() for t in tokens if len(t) >= 3)
+                matches_binary = any(_word_match(t, bin_file) or _word_match(t, bin_raw) for t in tokens if len(t) >= 3)
                 if matches_binary:
                     return True
                 else:
@@ -159,22 +172,17 @@ def port_matches_tokens(port_name: str, tokens: set, port_meta: dict = None) -> 
 
             app_raw = str(meta.get("app_name", "")).strip().lower()
             if app_raw and app_raw not in ("chromium", "playback", "webrtc voiceengine"):
-                matches_app = any(t in app_raw or app_raw == t for t in tokens if len(t) >= 3)
+                matches_app = any(_word_match(t, app_raw) for t in tokens if len(t) >= 3)
                 if matches_app:
                     return True
                 else:
                     return False
 
     # 2. Fallback Priority: Generic node string matching
-    if node_part in tokens or node_clean in tokens:
-        return True
-
     for t in tokens:
         if len(t) < 3:
             continue
-        if t == node_part or t == node_clean:
-            return True
-        if t in node_part or t in node_clean or node_part.startswith(t):
+        if _word_match(t, node_part):
             return True
 
     return False

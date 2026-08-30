@@ -8,6 +8,7 @@ from .views.mixer_matrix import MixerMatrixView
 from .views.device_settings import UnifiedDeviceSettingsView, AddDeviceDialog
 from .views.effects_view import EffectsView
 from .views.settings_view import SettingsView
+from .views.setup_wizard import SetupWizardDialog
 from .engine.config_manager import config_manager
 
 class WaveMainWindow(Adw.ApplicationWindow):
@@ -86,7 +87,7 @@ class WaveMainWindow(Adw.ApplicationWindow):
         self.effects_view = EffectsView()
         self.stack.add_named(self.effects_view, "effects")
 
-        self.settings_view = SettingsView(self.hardware_mgr, on_theme_changed=self._apply_theme)
+        self.settings_view = SettingsView(self.hardware_mgr, pipewire_mgr=self.pipewire_mgr, on_theme_changed=self._apply_theme)
         self.stack.add_named(self.settings_view, "settings")
 
         main_box.append(self.stack)
@@ -100,6 +101,9 @@ class WaveMainWindow(Adw.ApplicationWindow):
         self.hardware_mgr.on_device_renamed_callback = lambda *a: GLib.idle_add(self._on_device_renamed)
         self.hardware_mgr.on_devices_changed_callback = lambda *a: GLib.idle_add(self._on_devices_changed)
         self.hardware_mgr.on_new_device_detected_callback = lambda dev_info: GLib.idle_add(self._on_new_device_detected, dev_info)
+
+        # Check for first-time OOBE setup
+        GLib.timeout_add(300, self._check_first_run_setup)
 
         # Check for untracked connected devices (such as Wave XLR) on launch
         GLib.timeout_add(800, self._check_initial_untracked_devices)
@@ -395,9 +399,33 @@ class WaveMainWindow(Adw.ApplicationWindow):
 
     def _on_device_added(self, device_key: str):
         self._rebuild_device_views(select_device_key=device_key)
+        if hasattr(self, "settings_view") and hasattr(self.settings_view, "refresh_device_list"):
+            self.settings_view.refresh_device_list()
 
     def _on_device_removed(self, device_key: str):
+        # If the removed device was default input or output, fallback cleanly
+        saved_in = config_manager.get("default_input_device", "default")
+        if saved_in == device_key:
+            in_devs = self.hardware_mgr.get_tracked_input_devices()
+            new_in = in_devs[0].get("device_key", "default") if in_devs else "default"
+            config_manager.set("default_input_device", new_in, immediate=True)
+            if self.pipewire_mgr:
+                self.pipewire_mgr.default_input_device = new_in
+
+        saved_out = config_manager.get("default_output_device", "default")
+        if saved_out == device_key:
+            out_devs = self.hardware_mgr.get_tracked_output_devices()
+            new_out = out_devs[0].get("device_key", "default") if out_devs else "default"
+            config_manager.set("default_output_device", new_out, immediate=True)
+            if self.pipewire_mgr:
+                self.pipewire_mgr.selected_monitor_device = new_out
+
+        if self.pipewire_mgr:
+            self.pipewire_mgr._sync_channel_audio_routing()
+
         self._rebuild_device_views()
+        if hasattr(self, "settings_view") and hasattr(self.settings_view, "refresh_device_list"):
+            self.settings_view.refresh_device_list()
         self._switch_view("mixes", self.mixes_btn)
 
     def _switch_view(self, name: str, active_btn=None):
@@ -421,6 +449,8 @@ class WaveMainWindow(Adw.ApplicationWindow):
             self.fx_btn.add_css_class("selected")
         elif name == "settings":
             self.settings_btn.add_css_class("selected")
+            if hasattr(self, "settings_view") and hasattr(self.settings_view, "refresh_device_list"):
+                self.settings_view.refresh_device_list()
 
     def _refresh_sidebar_device_names(self):
         for view in self.device_views.values():
@@ -433,6 +463,8 @@ class WaveMainWindow(Adw.ApplicationWindow):
         self._rebuild_device_views()
         if hasattr(self, "mixer_view") and self.mixer_view:
             self.mixer_view.refresh_device_names()
+        if hasattr(self, "settings_view") and hasattr(self.settings_view, "refresh_device_list"):
+            self.settings_view.refresh_device_list()
 
     def _on_device_renamed(self, *a):
         self._refresh_sidebar_device_names()
@@ -482,5 +514,22 @@ class WaveMainWindow(Adw.ApplicationWindow):
 
         dialog.connect("response", _on_response)
         dialog.present()
+
+    def _check_first_run_setup(self):
+        first_run_done = config_manager.get("first_run_completed", False)
+        if not first_run_done:
+            wizard = SetupWizardDialog(
+                parent_window=self,
+                hardware_mgr=self.hardware_mgr,
+                pipewire_mgr=self.pipewire_mgr,
+                on_complete_callback=self._on_setup_wizard_completed
+            )
+            wizard.present()
+        return False
+
+    def _on_setup_wizard_completed(self):
+        self._rebuild_device_views()
+        if hasattr(self, "mixer_view"):
+            self.mixer_view.rebuild_matrix()
 
 
