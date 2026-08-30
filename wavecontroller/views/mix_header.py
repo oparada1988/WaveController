@@ -2,6 +2,7 @@ import gi
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import Gtk, Gdk, GObject, Adw
+from wavecontroller.engine.config_manager import config_manager
 
 class MixHeaderCard(Gtk.Box):
     """
@@ -50,8 +51,13 @@ class MixHeaderCard(Gtk.Box):
         self.title_lbl.set_ellipsize(3)
         title_box.append(self.title_lbl)
 
-        self.subtitle_lbl = Gtk.Label(label=mix_info.get("subtitle", "1 output"))
-        self.subtitle_lbl.add_css_class("mix-header-subtitle")
+        is_personal_mix = mix_info.get("id") in ("personal", "personal_mix")
+        sub_text = self._resolve_subtitle()
+        self.subtitle_lbl = Gtk.Label(label=sub_text)
+        if is_personal_mix:
+            self.subtitle_lbl.add_css_class("mix-header-bold-subtitle")
+        else:
+            self.subtitle_lbl.add_css_class("mix-header-subtitle")
         self.subtitle_lbl.set_halign(Gtk.Align.START)
         self.subtitle_lbl.set_ellipsize(3)
         title_box.append(self.subtitle_lbl)
@@ -278,8 +284,8 @@ class MixHeaderCard(Gtk.Box):
 
     def _setup_edit_popover(self, menu_btn: Gtk.MenuButton):
         popover = Gtk.Popover()
-        popover.set_autohide(True)
-        popover.set_cascade_popdown(True)
+        popover.set_autohide(False)
+        popover.set_cascade_popdown(False)
         popover.add_css_class("wave-popover")
 
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
@@ -309,10 +315,13 @@ class MixHeaderCard(Gtk.Box):
         name_entry.set_placeholder_text("Mix Name")
         box.append(name_entry)
 
-        # Subtitle
-        sub_entry = Gtk.Entry(text=self.mix_info.get("subtitle", ""))
-        sub_entry.set_placeholder_text("Subtitle (e.g. Broadcast / Headphones)")
-        box.append(sub_entry)
+        # Subtitle (Omitted for Personal Mix since it dynamically mirrors default monitor device)
+        sub_entry = None
+        is_personal_mix = self.mix_info.get("id") in ("personal", "personal_mix")
+        if not is_personal_mix:
+            sub_entry = Gtk.Entry(text=self.mix_info.get("subtitle", ""))
+            sub_entry.set_placeholder_text("Subtitle (e.g. Broadcast / Headphones)")
+            box.append(sub_entry)
 
         # Accent Color
         # Accent Color Palette (Visual Swatches)
@@ -368,12 +377,16 @@ class MixHeaderCard(Gtk.Box):
             color_buttons[hex_code] = c_btn
             color_swatch_box.append(c_btn)
 
-        # Optional Custom Color Picker
-        custom_cd = Gtk.ColorDialog.new()
-        custom_cd.set_with_alpha(False)
-        custom_cd.set_title("Choose Mix Accent Color")
-        self.mix_color_dialog_btn = Gtk.ColorDialogButton.new(custom_cd)
-        self.mix_color_dialog_btn.set_tooltip_text("Pick Custom Accent Color")
+        # Custom Color Picker Button
+        self.mix_color_dialog_btn = Gtk.ColorDialogButton()
+        color_dialog = Gtk.ColorDialog.new()
+        color_dialog.set_title(f"Custom Color for {self.mix_info.get('name')}")
+        color_dialog.set_with_alpha(False)
+        self.mix_color_dialog_btn.set_dialog(color_dialog)
+        self.mix_color_dialog_btn.add_css_class("flat")
+        self.mix_color_dialog_btn.add_css_class("color-palette-btn")
+        self.mix_color_dialog_btn.set_size_request(26, 26)
+        self.mix_color_dialog_btn.set_tooltip_text("Custom Color...")
         init_rgba = Gdk.RGBA()
         init_rgba.parse(self.selected_color)
         self.mix_color_dialog_btn.set_rgba(init_rgba)
@@ -391,7 +404,6 @@ class MixHeaderCard(Gtk.Box):
         box.append(color_box)
 
         # Physical Output Target Routing (For Sink / Speaker mixes only)
-        is_personal_mix = self.mix_info.get("id") in ("personal", "personal_mix")
         target_dev_combo = None
         target_dev_keys = []
         if m_type == "sink" and not is_personal_mix:
@@ -433,19 +445,7 @@ class MixHeaderCard(Gtk.Box):
             popover.connect("notify::visible", lambda p, *args: refresh_header_targets() if p.get_visible() else None)
             self._refresh_header_targets = refresh_header_targets
 
-            # Hardware LED Controls (Headphone Volume Mode & VU Meter)
-            if self.hardware_mgr:
-                # Static Headphone Volume Color
-                led_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-                led_lbl = Gtk.Label(label="Hardware LED (Headphone):", hexpand=True, halign=Gtk.Align.START)
-                led_lbl.add_css_class("mix-header-subtitle")
-                from .led_color_picker import LEDColorButton
-                led_btn = LEDColorButton(self.hardware_mgr, "hp", title="Headphone LED", parent_popover=popover)
-                led_row.append(led_lbl)
-                led_row.append(led_btn)
-                box.append(led_row)
-
-                # Minimal Symbolic Icon Palette (Pure Vector Icons, No Text Labels, Zero Emojis)
+        # Minimal Symbolic Icon Palette (Pure Vector Icons, No Text Labels, Zero Emojis)
         AVAILABLE_MIX_ICONS = [
             "personal-symbolic",               # Personal Mix (User silhouette)
             "user-available-symbolic",         # Chat / Discord
@@ -510,9 +510,10 @@ class MixHeaderCard(Gtk.Box):
         icon_box.append(palette_grid)
         box.append(icon_box)
 
-        # Reorder Mix Position (Move Left / Move Right)
-        box.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
+        # Reorder Mix Position Controls (Left/Right Arrows)
         reorder_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        reorder_row.set_margin_top(4)
+
         reorder_lbl = Gtk.Label(label="Reorder Mix:", hexpand=True, halign=Gtk.Align.START)
         reorder_lbl.add_css_class("mix-header-subtitle")
         reorder_row.append(reorder_lbl)
@@ -548,7 +549,13 @@ class MixHeaderCard(Gtk.Box):
         
         def on_save(b):
             new_name = name_entry.get_text().strip()
-            new_sub = sub_entry.get_text().strip() or "Custom Mix"
+            if is_personal_mix:
+                new_sub = self._resolve_subtitle()
+            else:
+                new_sub = sub_entry.get_text().strip() if sub_entry else "Custom Mix"
+                if not new_sub:
+                    new_sub = "Custom Mix"
+
             new_color = getattr(self, "selected_color", "#9146ff")
             new_icon = self.selected_icon
             if target_dev_combo and target_dev_keys:
@@ -573,12 +580,44 @@ class MixHeaderCard(Gtk.Box):
                 if self.on_edit_callback:
                     self.on_edit_callback(self.mix_info["id"])
 
+        actions_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        actions_box.set_margin_top(4)
+
+        cancel_btn = Gtk.Button(label="Cancel")
+        cancel_btn.add_css_class("destructive-action")
+        cancel_btn.set_hexpand(True)
+        cancel_btn.connect("clicked", lambda b: popover.popdown())
+        actions_box.append(cancel_btn)
+
+        save_btn.set_hexpand(True)
         save_btn.connect("clicked", on_save)
-        box.append(save_btn)
+        actions_box.append(save_btn)
+
+        box.append(actions_box)
 
         popover.set_child(box)
         menu_btn.set_popover(popover)
 
+    def _resolve_subtitle(self) -> str:
+        if self.mix_info.get("id") in ("personal", "personal_mix"):
+            dev_key = config_manager.get("default_output_device", "default")
+            if self.hardware_mgr:
+                tracked = self.hardware_mgr.get_tracked_output_devices()
+                for d in tracked:
+                    k = d.get("device_key", d.get("name", ""))
+                    if k == dev_key or (dev_key != "default" and dev_key in k):
+                        return d.get("display_name", d.get("name", "Audio Device"))
+                if dev_key == "default" and tracked:
+                    return tracked[0].get("display_name", tracked[0].get("name", "Default Output"))
+            return "Default Output"
+        return self.mix_info.get("subtitle", "Custom Mix")
+
     def refresh_device_targets(self):
+        if self.mix_info.get("id") in ("personal", "personal_mix"):
+            self.subtitle_lbl.set_text(self._resolve_subtitle())
         if hasattr(self, "_refresh_header_targets"):
             self._refresh_header_targets()
+
+    def update_ui_state(self):
+        if self.mix_info.get("id") in ("personal", "personal_mix"):
+            self.subtitle_lbl.set_text(self._resolve_subtitle())

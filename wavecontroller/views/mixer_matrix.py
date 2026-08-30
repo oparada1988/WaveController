@@ -358,8 +358,8 @@ class MixerMatrixView(Gtk.Box):
 
     def _setup_create_mix_popover(self, menu_btn: Gtk.MenuButton):
         popover = Gtk.Popover()
-        popover.set_autohide(True)
-        popover.set_cascade_popdown(True)
+        popover.set_autohide(False)
+        popover.set_cascade_popdown(False)
         popover.add_css_class("wave-popover")
 
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
@@ -405,68 +405,12 @@ class MixerMatrixView(Gtk.Box):
         target_lbl.set_halign(Gtk.Align.START)
         target_row.append(target_lbl)
 
-        target_dev_keys = ["unselected"]
+        target_dev_keys = ["default", "none"]
         target_combo = Gtk.DropDown()
         target_combo.set_hexpand(True)
         target_row.append(target_combo)
         target_row.set_visible(False)
         box.append(target_row)
-
-        add_btn = Gtk.Button(label="Create Mix")
-        add_btn.add_css_class("suggested-action")
-        add_btn.set_sensitive(False) # Initial state disabled until name and valid target are selected
-
-        def update_add_btn_state(*args):
-            name_valid = bool(name_entry.get_text().strip())
-            is_sink = (type_combo.get_selected() == 1)
-            if not name_valid:
-                add_btn.set_sensitive(False)
-                return
-
-            if is_sink:
-                t_idx = target_combo.get_selected()
-                sel_key = target_dev_keys[t_idx] if t_idx < len(target_dev_keys) else "unselected"
-                add_btn.set_sensitive(sel_key != "unselected")
-            else:
-                add_btn.set_sensitive(True)
-
-        def refresh_create_mix_targets():
-            nonlocal target_dev_keys
-            target_options = [("unselected", "Select Output Device...")]
-            if self.hardware_mgr:
-                for dev in self.hardware_mgr.get_tracked_output_devices():
-                    key = dev.get("device_key", dev.get("name", ""))
-                    name = dev.get("display_name", dev.get("name", "Audio Device"))
-                    target_options.append((key, name))
-
-            target_dev_keys = [opt[0] for opt in target_options]
-            target_dev_labels = [opt[1] for opt in target_options]
-            target_combo.set_model(Gtk.StringList.new(target_dev_labels))
-            target_combo.set_selected(0)
-            update_add_btn_state()
-
-        def reset_create_mix_form():
-            name_entry.set_text("")
-            sub_entry.set_text("")
-            type_combo.set_selected(0)
-            target_row.set_visible(False)
-            target_combo.set_selected(0)
-            select_icon("user-available-symbolic")
-            select_create_color("#9146ff")
-            update_add_btn_state()
-
-        refresh_create_mix_targets()
-        popover.connect("notify::visible", lambda p, *args: refresh_create_mix_targets() if p.get_visible() else None)
-        popover.connect("closed", lambda p: reset_create_mix_form())
-        self._refresh_create_mix_targets = refresh_create_mix_targets
-
-        def on_type_changed(combo, *args):
-            is_sink = (combo.get_selected() == 1)
-            target_row.set_visible(is_sink)
-            update_add_btn_state()
-
-        type_combo.connect("notify::selected", on_type_changed)
-        target_combo.connect("notify::selected", update_add_btn_state)
 
         # Minimal Symbolic Icon Palette (Pure Vector Icons, No Text Labels, Zero Emojis)
         AVAILABLE_MIX_ICONS = [
@@ -530,17 +474,6 @@ class MixerMatrixView(Gtk.Box):
         icon_box.append(palette_grid)
         box.append(icon_box)
 
-        def on_name_changed(entry):
-            txt = entry.get_text().strip()
-            if txt:
-                m_type = "source" if type_combo.get_selected() == 0 else "sink"
-                suggested_icon = self.pipewire_mgr.resolve_smart_mix_icon(txt, m_type)
-                if suggested_icon in icon_buttons:
-                    select_icon(suggested_icon)
-            update_add_btn_state()
-
-        name_entry.connect("changed", on_name_changed)
-
         # Accent Color Palette (Visual Swatches)
         color_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
         color_lbl = Gtk.Label(label="Accent Color:")
@@ -595,23 +528,78 @@ class MixerMatrixView(Gtk.Box):
 
         color_box.append(color_swatch_box)
         box.append(color_box)
+
+        add_btn = Gtk.Button(label="Create Mix")
+        add_btn.add_css_class("suggested-action")
+        add_btn.set_sensitive(False)
+
+        def update_add_btn_state(*args):
+            name_valid = bool(name_entry.get_text().strip())
+            add_btn.set_sensitive(name_valid)
+
+        def refresh_create_mix_targets():
+            nonlocal target_dev_keys
+            target_options = [("default", "Default Output"), ("none", "None (Virtual Only)")]
+            if self.hardware_mgr:
+                for dev in self.hardware_mgr.get_tracked_output_devices():
+                    key = dev.get("device_key", dev.get("name", ""))
+                    name = dev.get("display_name", dev.get("name", "Audio Device"))
+                    target_options.append((key, name))
+
+            target_dev_keys = [opt[0] for opt in target_options]
+            target_dev_labels = [opt[1] for opt in target_options]
+            target_combo.set_model(Gtk.StringList.new(target_dev_labels))
+            target_combo.set_selected(0)
+            update_add_btn_state()
+
+        def reset_create_mix_form():
+            name_entry.set_text("")
+            sub_entry.set_text("")
+            type_combo.set_selected(0)
+            target_row.set_visible(False)
+            target_combo.set_selected(0)
+            select_icon("user-available-symbolic")
+            select_create_color("#9146ff")
+            update_add_btn_state()
+
+        refresh_create_mix_targets()
+        popover.connect("notify::visible", lambda p, *args: refresh_create_mix_targets() if p.get_visible() else None)
+        self._refresh_create_mix_targets = refresh_create_mix_targets
+
+        def on_type_changed(combo, *args):
+            is_sink = (combo.get_selected() == 1)
+            target_row.set_visible(is_sink)
+            update_add_btn_state()
+
+        type_combo.connect("notify::selected", on_type_changed)
+        target_combo.connect("notify::selected", update_add_btn_state)
+
+        def on_name_changed(entry):
+            txt = entry.get_text().strip()
+            if txt:
+                m_type = "source" if type_combo.get_selected() == 0 else "sink"
+                suggested_icon = self.pipewire_mgr.resolve_smart_mix_icon(txt, m_type)
+                if suggested_icon in icon_buttons:
+                    select_icon(suggested_icon)
+            update_add_btn_state()
+
+        name_entry.connect("changed", on_name_changed)
         
         def on_add(b):
             name = name_entry.get_text().strip()
             sub = sub_entry.get_text().strip() or "Custom Mix"
             if name:
                 c = selected_color_holder["color"]
-                
                 selected_icon = selected_icon_holder["icon"]
                 mix_type = "source" if type_combo.get_selected() == 0 else "sink"
                 
                 selected_target = "none"
                 if mix_type == "sink":
                     t_idx = target_combo.get_selected()
-                    if t_idx < len(target_dev_keys):
+                    if 0 <= t_idx < len(target_dev_keys):
                         selected_target = target_dev_keys[t_idx]
-                        if selected_target == "unselected":
-                            return
+                    else:
+                        selected_target = "default"
 
                 self.pipewire_mgr.add_mix(name, subtitle=sub, mix_type=mix_type, color=c, icon=selected_icon, target_device=selected_target)
                 reset_create_mix_form()

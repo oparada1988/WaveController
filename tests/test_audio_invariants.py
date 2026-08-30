@@ -779,11 +779,13 @@ class TestTokenMatchingInvariants(unittest.TestCase):
         pm_card = MixHeaderCard(pm_info, self.pwm, None, mock_hw)
         # Edit popup should recognize it as personal mix
         self.assertTrue(pm_card.mix_info.get("id") in ("personal", "personal_mix"))
+        self.assertIn("mix-header-bold-subtitle", pm_card.subtitle_lbl.get_css_classes())
 
         # 2. Secondary Mix header
         sec_info = {"id": "speakers_mix", "name": "Speakers Mix", "type": "sink", "target_device": "alsa_output.speakers"}
         sec_card = MixHeaderCard(sec_info, self.pwm, None, mock_hw)
         self.assertFalse(sec_card.mix_info.get("id") in ("personal", "personal_mix"))
+        self.assertIn("mix-header-subtitle", sec_card.subtitle_lbl.get_css_classes())
 
     def test_mic_monitor_always_linked_in_discovery(self):
         """Invariant: _do_refresh_discovery and _link_mic_monitor MUST link physical microphone ports to wave_mic_monitor."""

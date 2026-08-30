@@ -13,11 +13,12 @@ class SettingsView(Gtk.Box):
     """
     Application & Audio Engine Preferences.
     """
-    def __init__(self, hardware_mgr, pipewire_mgr=None, on_theme_changed=None):
+    def __init__(self, hardware_mgr, pipewire_mgr=None, on_theme_changed=None, on_hw_defaults_changed=None):
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=16)
         self.hardware_mgr = hardware_mgr
         self.pipewire_mgr = pipewire_mgr
         self.on_theme_changed = on_theme_changed
+        self.on_hw_defaults_changed = on_hw_defaults_changed
 
         self.set_margin_top(20)
         self.set_margin_bottom(20)
@@ -125,6 +126,8 @@ class SettingsView(Gtk.Box):
                 if self.pipewire_mgr:
                     self.pipewire_mgr.default_input_device = new_k
                     self.pipewire_mgr._sync_channel_audio_routing()
+                if self.on_hw_defaults_changed:
+                    self.on_hw_defaults_changed()
 
         def _on_output_changed(row, param):
             if self._refreshing_combos:
@@ -142,6 +145,8 @@ class SettingsView(Gtk.Box):
                             break
                     self.pipewire_mgr._save_state_to_config(immediate=True)
                     self.pipewire_mgr._sync_channel_audio_routing()
+                if self.on_hw_defaults_changed:
+                    self.on_hw_defaults_changed()
 
         self.mic_combo.connect("notify::selected", _on_mic_changed)
         self.output_combo.connect("notify::selected", _on_output_changed)

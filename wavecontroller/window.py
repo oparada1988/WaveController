@@ -87,7 +87,12 @@ class WaveMainWindow(Adw.ApplicationWindow):
         self.effects_view = EffectsView()
         self.stack.add_named(self.effects_view, "effects")
 
-        self.settings_view = SettingsView(self.hardware_mgr, pipewire_mgr=self.pipewire_mgr, on_theme_changed=self._apply_theme)
+        self.settings_view = SettingsView(
+            self.hardware_mgr,
+            pipewire_mgr=self.pipewire_mgr,
+            on_theme_changed=self._apply_theme,
+            on_hw_defaults_changed=self._on_devices_changed
+        )
         self.stack.add_named(self.settings_view, "settings")
 
         main_box.append(self.stack)
