@@ -577,3 +577,95 @@ popover.wave-popover entry:focus {
     margin-top: 4px;
     margin-bottom: 6px;
 }
+
+/* =========================================================================
+   First-Time Setup Wizard (OOBE) Styling
+   ========================================================================= */
+
+.oobe-window {
+    background-color: @window_bg_color;
+    color: @window_fg_color;
+}
+
+.oobe-page {
+    padding: 24px 32px 16px 32px;
+}
+
+.oobe-title {
+    font-size: 20px;
+    font-weight: 800;
+    margin-top: 12px;
+    margin-bottom: 4px;
+    color: @window_fg_color;
+}
+
+.oobe-description {
+    font-size: 14px;
+    font-weight: 500;
+    color: alpha(@window_fg_color, 0.75);
+    line-height: 1.4;
+    margin-top: 6px;
+    margin-bottom: 12px;
+}
+
+/* Accent-Colored Dynamic Drop Shadow & Glow */
+.oobe-glow-container {
+    margin: 10px 16px;
+    border-radius: 12px;
+    box-shadow: 
+        0 0 22px 4px alpha(@accent_color, 0.48),
+        0 0 44px 8px alpha(@accent_color, 0.22);
+    background-color: transparent;
+}
+
+.oobe-preview-img {
+    border-radius: 10px;
+    border: 1px solid alpha(@accent_color, 0.35);
+}
+
+/* Page Action Button Styling */
+.oobe-action-btn {
+    font-weight: 700;
+    font-size: 15px;
+    border-radius: 10px;
+    padding: 8px 36px;
+    background-color: @accent_bg_color;
+    color: @accent_fg_color;
+    transition: all 200ms ease-in-out;
+}
+
+.oobe-action-btn:hover {
+    filter: brightness(1.12);
+}
+
+.oobe-action-btn:active {
+    filter: brightness(0.92);
+}
+
+/* Device Setup Preference Group */
+.oobe-pref-group {
+    background-color: alpha(@card_bg_color, 0.6);
+    border-radius: 12px;
+    border: 1px solid alpha(@window_fg_color, 0.08);
+}
+
+.oobe-icon-white {
+    color: #ffffff;
+}
+
+/* Page 4: Hardware Management Card Preview */
+.oobe-hw-preview-container {
+    background-color: alpha(@card_bg_color, 0.45);
+    border-radius: 12px;
+    border: 1px solid alpha(@window_fg_color, 0.08);
+    padding: 10px 14px;
+    margin: 8px 0;
+}
+
+.oobe-hw-preview-row {
+    background-color: alpha(@window_fg_color, 0.05);
+    border-radius: 8px;
+    border: 1px solid alpha(@window_fg_color, 0.05);
+    padding: 8px 12px;
+}
+
