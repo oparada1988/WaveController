@@ -23,8 +23,8 @@ class SetupWizardDialog(Gtk.Window):
             transient_for=top_parent,
             modal=True,
             title="Welcome to WaveController",
-            default_width=560,
-            default_height=500,
+            default_width=580,
+            default_height=520,
             resizable=False
         )
         self.hardware_mgr = hardware_mgr
@@ -40,8 +40,9 @@ class SetupWizardDialog(Gtk.Window):
         self._can_close = False
         self.connect("close-request", self._on_close_request)
 
-        # Main Layout Container
+        # Main Layout Container (Rounded card with shadow)
         self.main_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        self.main_box.add_css_class("oobe-main-container")
         self.set_child(self.main_box)
 
         # Carousel Container
