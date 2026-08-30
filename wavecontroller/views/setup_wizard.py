@@ -34,6 +34,12 @@ class SetupWizardDialog(Gtk.Window):
         self.add_css_class("wave-window")
         self.add_css_class("oobe-window")
 
+        # Modal configuration (undecorated, no title bar, can only be closed on completion)
+        self.set_decorated(False)
+        self.set_deletable(False)
+        self._can_close = False
+        self.connect("close-request", self._on_close_request)
+
         # Main Layout Container
         self.main_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
         self.set_child(self.main_box)
@@ -83,6 +89,11 @@ class SetupWizardDialog(Gtk.Window):
             if cur > 0:
                 self._go_to_page(cur - 1)
                 return True
+        return False
+
+    def _on_close_request(self, win):
+        if not self._can_close:
+            return True
         return False
 
     def _go_to_page(self, page_index: int):
@@ -493,6 +504,7 @@ class SetupWizardDialog(Gtk.Window):
             self.pipewire_mgr._ensure_virtual_mix_nodes()
             self.pipewire_mgr._sync_channel_audio_routing()
 
+        self._can_close = True
         self.close()
 
         if self.on_complete_callback:
