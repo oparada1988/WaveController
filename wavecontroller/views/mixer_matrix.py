@@ -167,7 +167,7 @@ class MixerMatrixView(Gtk.Box):
         if not hasattr(self, "_header_spacer") or self._header_spacer is None:
             self._header_spacer = Gtk.Box()
             self._header_spacer.set_hexpand(False)
-            self._header_spacer.set_size_request(370, 48)
+            self._header_spacer.set_size_request(510, 48)
         self.grid.attach(self._header_spacer, 0, 0, 1, 1)
 
         # Mix Column Headers (Row 0, Columns 1..N)
@@ -184,7 +184,7 @@ class MixerMatrixView(Gtk.Box):
                     pipewire_mgr=self.pipewire_mgr,
                     hardware_mgr=self.hardware_mgr,
                     on_remove_callback=lambda m_id: GLib.idle_add(self._rebuild_grid),
-                    on_edit_callback=None,
+                    on_edit_callback=self._on_mix_edited,
                     on_reorder_callback=self._on_reorder_mix,
                     on_hover_col_callback=self._on_hover_col,
                     on_move_left_callback=self._on_move_mix_left,
@@ -234,6 +234,7 @@ class MixerMatrixView(Gtk.Box):
                     on_hover_row_callback=self._on_hover_row
                 )
                 self.channel_cards[ch_id] = card
+            card.set_valign(Gtk.Align.START)
             self.grid.attach(card, 0, row_idx, 1, 1)
 
             # Sub-Mix Cells
@@ -246,6 +247,7 @@ class MixerMatrixView(Gtk.Box):
                 else:
                     cell = MatrixCell(ch_id, mix["id"], self.pipewire_mgr, on_change_callback=self._on_cell_changed)
                     self.matrix_cells[cell_k] = cell
+                cell.set_valign(Gtk.Align.START)
                 self.grid.attach(cell, col_idx, row_idx, 1, 1)
 
         # Bottom "+ Create channel" button with dark Popover
@@ -307,6 +309,12 @@ class MixerMatrixView(Gtk.Box):
                         cell.remove_css_class("drop-target-active")
                 return False
             GLib.timeout_add(450, remove_highlight)
+
+    def _on_mix_edited(self, mix_id: str = None):
+        """Refreshes UI state, labels, and badges across all mix header cards."""
+        for mh in list(self.mix_headers.values()):
+            if hasattr(mh, "update_ui_state"):
+                mh.update_ui_state()
 
     def _on_reorder_mix(self, src_mix_id: str, dest_mix_id: str):
         if self.pipewire_mgr.reorder_mixes_by_id(src_mix_id, dest_mix_id):
@@ -769,25 +777,26 @@ class MixerMatrixView(Gtk.Box):
             # Gather all applications already assigned to existing channels
             configured_apps = set()
             for ch in self.pipewire_mgr.channels:
-                configured_apps.add(ch.get("id", "").lower())
+                ch_id = ch.get("id", "")
+                configured_apps.add(ch_id.lower())
                 configured_apps.add(ch.get("name", "").lower())
-            for app_list in self.pipewire_mgr.assigned_apps.values():
-                for a in app_list:
-                    configured_apps.add(a.lower())
+                for a in self.pipewire_mgr.get_assigned_apps(ch_id):
+                    a_clean = str(a).strip().lower()
+                    if a_clean and not a_clean.startswith("usb-") and not a_clean.startswith("alsa_"):
+                        configured_apps.add(a_clean)
 
             available_apps = []
             if running_apps:
                 for app_info in running_apps:
                     app_name = app_info["name"]
                     app_bin = app_info.get("binary", "")
-                    name_low = app_name.lower()
-                    bin_low = app_bin.lower()
+                    name_low = app_name.lower().strip()
+                    bin_low = app_bin.lower().strip()
 
                     is_already_added = (
                         name_low in configured_apps
                         or bin_low in configured_apps
-                        or any(c in name_low or name_low in c for c in configured_apps if len(c) > 2)
-                        or any(c in bin_low or bin_low in c for c in configured_apps if len(c) > 2)
+                        or any(c == name_low or c == bin_low for c in configured_apps)
                     )
                     if not is_already_added:
                         available_apps.append(app_info)
@@ -1126,6 +1135,30 @@ class MixerMatrixView(Gtk.Box):
 
         group_cat_btn.connect("clicked", show_group_page)
 
+        # Custom App Input for Group Creation (e.g. Discord, Spotify, etc.)
+        group_cust_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        group_cust_entry = Gtk.Entry(placeholder_text="Add other application (e.g. Discord)...")
+        group_cust_entry.set_hexpand(True)
+        group_cust_add_btn = Gtk.Button.new_from_icon_name("list-add-symbolic")
+        group_cust_add_btn.add_css_class("suggested-action")
+        group_cust_add_btn.set_tooltip_text("Add application to group")
+
+        def on_group_cust_add(b=None):
+            cname = group_cust_entry.get_text().strip()
+            if cname:
+                group_selected_apps.add(cname)
+                chk = Gtk.CheckButton(label=cname)
+                chk.set_active(True)
+                chk.connect("toggled", lambda btn, name=cname: group_selected_apps.add(name) if btn.get_active() else group_selected_apps.discard(name))
+                group_apps_container.append(chk)
+                group_cust_entry.set_text("")
+
+        group_cust_add_btn.connect("clicked", on_group_cust_add)
+        group_cust_entry.connect("activate", on_group_cust_add)
+        group_cust_box.append(group_cust_entry)
+        group_cust_box.append(group_cust_add_btn)
+        group_page_box.append(group_cust_box)
+
         # Create Group Button
         group_actions_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         group_actions_box.set_margin_top(6)
@@ -1274,12 +1307,13 @@ class MixerMatrixView(Gtk.Box):
             val = float(changed["gain_db"])
             vol_pct = max(0, min(100, int(round((val / 75.0) * 100))))
             for ch_id, card in list(self.channel_cards.items()):
-                if getattr(card, "is_wave_channel", False) or ch_id in ("mic", "elgato_wave_xlr"):
+                if getattr(card, "is_wave_channel", False) or getattr(card, "is_mic_channel", False) or ch_id in ("mic", "elgato_wave_xlr"):
+                    is_muted = self.pipewire_mgr.get_channel_master_mute(ch_id)
+                    card.slider.set_volume(vol_pct, is_muted)
                     self.pipewire_mgr.set_channel_master_volume(ch_id, vol_pct)
-                    card.set_master_volume(vol_pct, self.pipewire_mgr.get_channel_master_mute(ch_id))
                     if self.pipewire_mgr.is_channel_linked(ch_id):
-                        for mx in self.pipewire_mgr.mixes:
-                            cell = self.matrix_cells.get((ch_id, mx["id"]))
+                        for mix_id in list(self.mix_headers.keys()):
+                            cell = self.matrix_cells.get((ch_id, mix_id))
                             if cell and hasattr(cell, "update_ui_state"):
                                 cell.update_ui_state()
 
@@ -1375,6 +1409,11 @@ class MixerMatrixView(Gtk.Box):
             if cell:
                 cell.update_ui_state()
 
+    def rebuild_matrix(self):
+        """Reconstructs the mixer matrix grid, updates device dropdowns, and refreshes telemetry."""
+        self.refresh_device_names()
+        self._rebuild_grid()
+
     def _rebuild_grid(self):
         self._build_grid()
         if self.peak_monitor and hasattr(self.peak_monitor, "trigger_refresh"):
@@ -1462,15 +1501,10 @@ class MixerMatrixView(Gtk.Box):
             cached_peaks[ch_id] = peaks
             card.update_peaks(peaks[0], peaks[1])
 
-        # 3. Push cached peaks to each sub-mix cell (attenuated by per-cell volume and mute state)
+        # 3. Push cached peaks to each sub-mix cell (MatrixCell scales internally using cached volume/mute)
         for (channel_id, mix_id), cell in self.matrix_cells.items():
             p_l, p_r = cached_peaks.get(channel_id, (0.0, 0.0))
-            st = self.pipewire_mgr.get_channel_state(channel_id, mix_id)
-            if st.get("muted", False) or not st.get("enabled", True):
-                cell.update_peaks(0.0, 0.0)
-            else:
-                vol_scale = max(0.0, min(1.5, st.get("volume", 80) / 100.0))
-                cell.update_peaks(p_l * vol_scale, p_r * vol_scale)
+            cell.update_peaks(p_l, p_r)
 
         return True
 

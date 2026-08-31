@@ -4,6 +4,35 @@ gi.require_version("Adw", "1")
 from gi.repository import Gtk, Gdk, GObject, Adw
 from wavecontroller.engine.config_manager import config_manager
 
+AVAILABLE_MIX_COLORS = [
+    ("#9146ff", "Stream Purple"),
+    ("#3584e4", "Ocean Blue"),
+    ("#00e5ff", "Cyber Cyan"),
+    ("#3db356", "Emerald Green"),
+    ("#ffb703", "Amber Gold"),
+    ("#ff7800", "Sunset Orange"),
+    ("#e05252", "Crimson Red"),
+    ("#f72585", "Neon Pink")
+]
+
+_SWATCH_CSS_INITIALIZED = False
+
+def _ensure_swatch_css():
+    global _SWATCH_CSS_INITIALIZED
+    if _SWATCH_CSS_INITIALIZED:
+        return
+    css_rules = [f".mix-c-{hex_c.replace('#', '')} {{ background-color: {hex_c}; border-radius: 13px; }}" for hex_c, _ in AVAILABLE_MIX_COLORS]
+    full_css = "\n".join(css_rules)
+    prov = Gtk.CssProvider()
+    if hasattr(prov, "load_from_string"):
+        prov.load_from_string(full_css)
+    else:
+        prov.load_from_data(full_css.encode())
+    display = Gdk.Display.get_default()
+    if display:
+        Gtk.StyleContext.add_provider_for_display(display, prov, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+    _SWATCH_CSS_INITIALIZED = True
+
 class MixHeaderCard(Gtk.Box):
     """
     Column header card representing an output mix bus (e.g. Personal Mix / Record Mix).
@@ -45,11 +74,18 @@ class MixHeaderCard(Gtk.Box):
         title_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=1)
         title_box.set_hexpand(True)
 
+        header_title_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         self.title_lbl = Gtk.Label(label=mix_info.get("name", "Mix"))
         self.title_lbl.add_css_class("mix-header-title")
         self.title_lbl.set_halign(Gtk.Align.START)
         self.title_lbl.set_ellipsize(3)
-        title_box.append(self.title_lbl)
+        header_title_row.append(self.title_lbl)
+
+        self.default_badge = Gtk.Label()
+        self.default_badge.add_css_class("device-badge")
+        self.default_badge.set_valign(Gtk.Align.CENTER)
+        header_title_row.append(self.default_badge)
+        title_box.append(header_title_row)
 
         is_personal_mix = mix_info.get("id") in ("personal", "personal_mix")
         sub_text = self._resolve_subtitle()
@@ -61,6 +97,8 @@ class MixHeaderCard(Gtk.Box):
         self.subtitle_lbl.set_halign(Gtk.Align.START)
         self.subtitle_lbl.set_ellipsize(3)
         title_box.append(self.subtitle_lbl)
+
+        self._refresh_default_badge()
 
         top_box.append(title_box)
 
@@ -250,11 +288,19 @@ class MixHeaderCard(Gtk.Box):
                 self.hardware_mgr.set_output_volume(volume_pct=vol, transient=True)
 
     def _apply_indicator_color(self, hex_code: str):
-        # We can dynamically apply custom color via CSS provider
-        css = f".mix-color-indicator {{ background-color: {hex_code}; border-radius: 2px; }}"
-        provider = Gtk.CssProvider()
-        provider.load_from_data(css.encode())
-        self.color_bar.get_style_context().add_provider(provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION + 10)
+        if not hasattr(self, "_color_provider") or not self._color_provider:
+            self._color_provider = Gtk.CssProvider()
+            display = Gdk.Display.get_default()
+            if display:
+                Gtk.StyleContext.add_provider_for_display(display, self._color_provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION + 10)
+        clean_id = self.mix_info.get("id", "default").replace(" ", "_").replace("-", "_")
+        css_class = f"mix-ind-{clean_id}"
+        css = f".{css_class} {{ background-color: {hex_code}; border-radius: 2px; }}"
+        if hasattr(self._color_provider, "load_from_string"):
+            self._color_provider.load_from_string(css)
+        else:
+            self._color_provider.load_from_data(css.encode())
+        self.color_bar.add_css_class(css_class)
 
     def _on_delete_clicked(self, b):
         mix_name = self.mix_info.get("name", "Mix")
@@ -281,6 +327,22 @@ class MixHeaderCard(Gtk.Box):
 
         dialog.connect("response", _on_response)
         dialog.present()
+
+    def _refresh_default_badge(self):
+        if not hasattr(self, "default_badge"):
+            return
+        is_default = self.pipewire_mgr.is_mix_system_default(self.mix_info["id"]) if self.pipewire_mgr else False
+        m_type = self.mix_info.get("type", "source" if self.mix_info.get("id") != "personal" else "sink")
+        if is_default:
+            self.default_badge.set_visible(True)
+            self.default_badge.remove_css_class("primary")
+            self.default_badge.add_css_class("online")
+            if m_type == "sink" or self.mix_info.get("id") == "personal":
+                self.default_badge.set_text("Default Output")
+            else:
+                self.default_badge.set_text("Default Input")
+        else:
+            self.default_badge.set_visible(False)
 
     def _setup_edit_popover(self, menu_btn: Gtk.MenuButton):
         popover = Gtk.Popover()
@@ -310,6 +372,50 @@ class MixHeaderCard(Gtk.Box):
         type_box.append(type_lbl)
         box.append(type_box)
 
+        # System Default Toggle Switch Row
+        def_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        def_row.set_margin_top(2)
+        def_row.set_margin_bottom(2)
+
+        is_sys_def = self.pipewire_mgr.is_mix_system_default(self.mix_info["id"]) if self.pipewire_mgr else False
+        is_personal_mix = self.mix_info.get("id") in ("personal", "personal_mix")
+        if m_type == "sink" or is_personal_mix:
+            def_title = "Make OS System Default Output"
+        else:
+            def_title = "Make OS System Default Input"
+
+        def_lbl = Gtk.Label(label=def_title, hexpand=True, halign=Gtk.Align.START)
+        def_lbl.add_css_class("mix-header-subtitle")
+        def_row.append(def_lbl)
+
+        self.def_switch = Gtk.Switch()
+        self.def_switch.set_valign(Gtk.Align.CENTER)
+        self.def_switch.set_active(is_sys_def)
+
+        def on_switch_toggled(sw, gparam):
+            new_val = sw.get_active()
+            if self.pipewire_mgr:
+                self.pipewire_mgr.set_mix_system_default(self.mix_info["id"], new_val)
+            self._refresh_default_badge()
+            if self.on_edit_callback:
+                self.on_edit_callback(self.mix_info["id"])
+
+        self._def_switch_handler_id = self.def_switch.connect("notify::active", on_switch_toggled)
+        def_row.append(self.def_switch)
+
+        def on_popover_visible(p, *args):
+            if p.get_visible() and hasattr(self, "def_switch") and self.def_switch:
+                is_active = self.pipewire_mgr.is_mix_system_default(self.mix_info["id"]) if self.pipewire_mgr else False
+                if hasattr(self, "_def_switch_handler_id") and self._def_switch_handler_id:
+                    self.def_switch.handler_block(self._def_switch_handler_id)
+                    self.def_switch.set_active(is_active)
+                    self.def_switch.handler_unblock(self._def_switch_handler_id)
+                else:
+                    self.def_switch.set_active(is_active)
+
+        popover.connect("notify::visible", on_popover_visible)
+        box.append(def_row)
+
         # Mix Name
         name_entry = Gtk.Entry(text=self.mix_info.get("name", ""))
         name_entry.set_placeholder_text("Mix Name")
@@ -317,7 +423,6 @@ class MixHeaderCard(Gtk.Box):
 
         # Subtitle (Omitted for Personal Mix since it dynamically mirrors default monitor device)
         sub_entry = None
-        is_personal_mix = self.mix_info.get("id") in ("personal", "personal_mix")
         if not is_personal_mix:
             sub_entry = Gtk.Entry(text=self.mix_info.get("subtitle", ""))
             sub_entry.set_placeholder_text("Subtitle (e.g. Broadcast / Headphones)")
@@ -334,17 +439,7 @@ class MixHeaderCard(Gtk.Box):
         color_swatch_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         color_swatch_box.add_css_class("color-palette-grid")
 
-        AVAILABLE_MIX_COLORS = [
-            ("#9146ff", "Stream Purple"),
-            ("#3584e4", "Ocean Blue"),
-            ("#00e5ff", "Cyber Cyan"),
-            ("#3db356", "Emerald Green"),
-            ("#ffb703", "Amber Gold"),
-            ("#ff7800", "Sunset Orange"),
-            ("#e05252", "Crimson Red"),
-            ("#f72585", "Neon Pink")
-        ]
-
+        _ensure_swatch_css()
         self.selected_color = self.mix_info.get("color", "#9146ff")
         color_buttons = {}
 
@@ -363,11 +458,6 @@ class MixHeaderCard(Gtk.Box):
             c_btn.add_css_class("color-palette-btn")
             c_btn.set_size_request(26, 26)
             c_btn.set_tooltip_text(col_name)
-
-            dot_css = f".mix-c-{hex_code.replace('#', '')} {{ background-color: {hex_code}; border-radius: 13px; }}"
-            c_prov = Gtk.CssProvider()
-            c_prov.load_from_data(dot_css.encode())
-            c_btn.get_style_context().add_provider(c_prov, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
             c_btn.add_css_class(f"mix-c-{hex_code.replace('#', '')}")
 
             if hex_code.lower() == self.selected_color.lower():
@@ -444,6 +534,19 @@ class MixHeaderCard(Gtk.Box):
             refresh_header_targets()
             popover.connect("notify::visible", lambda p, *args: refresh_header_targets() if p.get_visible() else None)
             self._refresh_header_targets = refresh_header_targets
+
+        # Hardware LED Controls for Elgato Wave device (Headphone Volume Mode)
+        if is_personal_mix and self.hardware_mgr and (getattr(self.hardware_mgr, "is_elgato", False) or getattr(self.hardware_mgr, "is_connected", False)):
+            box.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
+            from .led_color_picker import LEDColorButton
+
+            hp_led_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+            hp_led_lbl = Gtk.Label(label="Headphone Mode Ring Color:", hexpand=True, halign=Gtk.Align.START)
+            hp_led_lbl.add_css_class("mix-header-subtitle")
+            hp_led_btn = LEDColorButton(self.hardware_mgr, "hp", title="Headphone LED", parent_popover=popover)
+            hp_led_row.append(hp_led_lbl)
+            hp_led_row.append(hp_led_btn)
+            box.append(hp_led_row)
 
         # Minimal Symbolic Icon Palette (Pure Vector Icons, No Text Labels, Zero Emojis)
         AVAILABLE_MIX_ICONS = [
@@ -617,7 +720,17 @@ class MixHeaderCard(Gtk.Box):
             self.subtitle_lbl.set_text(self._resolve_subtitle())
         if hasattr(self, "_refresh_header_targets"):
             self._refresh_header_targets()
+        self._refresh_default_badge()
 
     def update_ui_state(self):
         if self.mix_info.get("id") in ("personal", "personal_mix"):
             self.subtitle_lbl.set_text(self._resolve_subtitle())
+        self._refresh_default_badge()
+        if hasattr(self, "def_switch") and self.def_switch:
+            is_active = self.pipewire_mgr.is_mix_system_default(self.mix_info["id"]) if self.pipewire_mgr else False
+            if hasattr(self, "_def_switch_handler_id") and self._def_switch_handler_id:
+                self.def_switch.handler_block(self._def_switch_handler_id)
+                self.def_switch.set_active(is_active)
+                self.def_switch.handler_unblock(self._def_switch_handler_id)
+            else:
+                self.def_switch.set_active(is_active)

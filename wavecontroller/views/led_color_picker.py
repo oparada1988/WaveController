@@ -13,6 +13,23 @@ LED_PALETTE = [
     ("#F72585", "Neon Pink"),
 ]
 
+_LED_PALETTE_CSS_INITIALIZED = False
+
+def _ensure_led_palette_css():
+    global _LED_PALETTE_CSS_INITIALIZED
+    if _LED_PALETTE_CSS_INITIALIZED:
+        return
+    css_rules = [f".dot-{hex_c.replace('#', '')} {{ background-color: {hex_c}; border-radius: 7px; border: 1px solid rgba(255,255,255,0.2); }}" for hex_c, _ in LED_PALETTE]
+    full_css = "\n".join(css_rules)
+    prov = Gtk.CssProvider()
+    if hasattr(prov, "load_from_string"):
+        prov.load_from_string(full_css)
+    else:
+        prov.load_from_data(full_css.encode())
+    display = Gdk.Display.get_default()
+    if display:
+        Gtk.StyleContext.add_provider_for_display(display, prov, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+    _LED_PALETTE_CSS_INITIALIZED = True
 
 class LEDColorButton(Gtk.MenuButton):
     """
@@ -76,6 +93,8 @@ class LEDColorButton(Gtk.MenuButton):
         sub_lbl.set_halign(Gtk.Align.START)
         box.append(sub_lbl)
 
+        _ensure_led_palette_css()
+
         # Palette list
         for hex_code, name in LED_PALETTE:
             item_btn = Gtk.Button()
@@ -86,10 +105,6 @@ class LEDColorButton(Gtk.MenuButton):
             dot = Gtk.Box()
             dot.set_size_request(14, 14)
             dot.set_valign(Gtk.Align.CENTER)
-            dot_css = f".dot-{hex_code.replace('#', '')} {{ background-color: {hex_code}; border-radius: 7px; border: 1px solid rgba(255,255,255,0.2); }}"
-            provider = Gtk.CssProvider()
-            provider.load_from_data(dot_css.encode())
-            dot.get_style_context().add_provider(provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
             dot.add_css_class(f"dot-{hex_code.replace('#', '')}")
             row_box.append(dot)
 
@@ -147,10 +162,19 @@ class LEDColorButton(Gtk.MenuButton):
 
     def update_color_preview(self):
         curr_hex = self.hardware_mgr.get_led_color(self.mode_key) if self.hardware_mgr else "#FFFFFF"
-        dot_css = f".wave-color-dot {{ background-color: {curr_hex}; border-radius: 4px; border: 1px solid rgba(255,255,255,0.3); }}"
-        provider = Gtk.CssProvider()
-        provider.load_from_data(dot_css.encode())
-        self.color_dot.get_style_context().add_provider(provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+        if not hasattr(self, "_dot_provider") or not self._dot_provider:
+            self._dot_provider = Gtk.CssProvider()
+            display = Gdk.Display.get_default()
+            if display:
+                Gtk.StyleContext.add_provider_for_display(display, self._dot_provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+        clean_key = self.mode_key.replace(" ", "_")
+        css_cls = f"wave-color-dot-{clean_key}"
+        dot_css = f".{css_cls} {{ background-color: {curr_hex}; border-radius: 4px; border: 1px solid rgba(255,255,255,0.3); }}"
+        if hasattr(self._dot_provider, "load_from_string"):
+            self._dot_provider.load_from_string(dot_css)
+        else:
+            self._dot_provider.load_from_data(dot_css.encode())
+        self.color_dot.add_css_class(css_cls)
 
         if hasattr(self, "color_dialog_btn") and self.color_dialog_btn:
             rgba = Gdk.RGBA()

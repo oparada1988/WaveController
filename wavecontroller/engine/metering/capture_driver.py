@@ -38,26 +38,24 @@ def calc_perceptual_peak(peak_raw: float, rms: float) -> float:
     return min(1.0, val)
 
 def open_pw_record(node_name: str, target: str = None, channels: int = 2, is_sink: bool = False):
-    """Spawns an unbuffered background pw-record process for real-time VU meter telemetry."""
+    """Spawns an unbuffered background pw-record process for real-time VU meter telemetry with strict zero-fallback autoconnect gating."""
     cmd = [
         'pw-record',
         '-P', f'node.name={node_name}',
         '-P', f'node.description={node_name}',
         '-P', 'node.autoconnect=false',
+        '-P', 'stream.dont-remix=true',
         '-P', 'application.id=org.PulseAudio.pavucontrol',
         '-P', 'application.name=pavucontrol',
         '-P', 'application.icon_name=pavucontrol',
         '-P', 'application.process.binary=pavucontrol',
         '-P', 'media.role=volume-control',
-        '-P', f'audio.channels={channels}',
-        '-P', 'audio.position=[FL,FR]' if channels == 2 else 'audio.position=[MONO]',
-        '--raw',
         '--format=s16',
         '--rate=48000',
         f'--channels={channels}',
         '--latency=20ms'
     ]
-    if is_sink or (target and ('sink' in target.lower() or 'wavecontroller_submix_' in target.lower())):
+    if is_sink or (target and ('sink' in target.lower() or 'wavecontroller_submix_' in target.lower() or 'wavecontroller_channel_' in target.lower())):
         cmd.extend(['-P', 'stream.capture.sink=true'])
     if target:
         cmd.extend(['--target', target])

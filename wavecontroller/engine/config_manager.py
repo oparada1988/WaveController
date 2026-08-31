@@ -103,6 +103,10 @@ class ConfigManager:
         except Exception:
             self.save_now()
 
+    def save(self, immediate: bool = True):
+        """Alias for save_now() to ensure backward compatibility."""
+        self.save_now()
+
     def save_now(self):
         """Atomically writes configuration to disk using a temporary file."""
         with self._lock:

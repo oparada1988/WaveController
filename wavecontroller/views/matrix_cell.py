@@ -21,6 +21,10 @@ class MatrixCell(Gtk.Box):
         self.set_valign(Gtk.Align.CENTER)
         self.set_size_request(200, 40)
 
+        self.cached_volume = 80
+        self.cached_muted = False
+        self.is_active = False
+
         self.slider = None
         self.mute_btn = None
         self.del_btn = None
@@ -28,17 +32,26 @@ class MatrixCell(Gtk.Box):
 
         self._build_cell_content()
 
-    def _build_cell_content(self):
+    def _build_cell_content(self, force: bool = False):
+        is_compatible = self.pipewire_mgr.is_channel_mix_compatible(self.channel_id, self.mix_id)
+        is_enabled = self.pipewire_mgr.is_channel_mix_enabled(self.channel_id, self.mix_id)
+
+        target_state = "active" if (is_enabled and is_compatible) else ("empty" if is_compatible else "incompatible")
+        if not force and getattr(self, "_current_state", None) == target_state:
+            self.update_ui_state()
+            return
+
+        self._current_state = target_state
+
         # Clear existing children
         while self.get_first_child():
             self.remove(self.get_first_child())
 
-        is_compatible = self.pipewire_mgr.is_channel_mix_compatible(self.channel_id, self.mix_id)
-        is_enabled = self.pipewire_mgr.is_channel_mix_enabled(self.channel_id, self.mix_id)
-
-        if is_enabled and is_compatible:
+        if target_state == "active":
+            self.is_active = True
             self.remove_css_class("matrix-cell-empty")
             self.remove_css_class("matrix-cell-incompatible")
+            self.remove_css_class("matrix-cell-placeholder")
             self.add_css_class("matrix-cell-card")
 
             # 1. Mute button
@@ -52,10 +65,12 @@ class MatrixCell(Gtk.Box):
 
             # 2. Stereo Split Volume Slider & VU Meter
             state = self.pipewire_mgr.get_channel_state(self.channel_id, self.mix_id)
+            self.cached_volume = state.get("volume", 80)
+            self.cached_muted = state.get("muted", False)
             is_synced = self.pipewire_mgr.get_channel_sync_meter(self.channel_id)
             self.slider = StereoSlider(
-                volume=state.get("volume", 80),
-                is_muted=state.get("muted", False),
+                volume=self.cached_volume,
+                is_muted=self.cached_muted,
                 sync_peaks=is_synced,
                 on_volume_changed=self._on_slider_volume_changed
             )
@@ -72,10 +87,12 @@ class MatrixCell(Gtk.Box):
             self.append(self.del_btn)
 
             self.update_ui_state()
-        elif is_compatible:
+        elif target_state == "empty":
             # Compatible but unrouted slot: render '+' button
+            self.is_active = False
             self.remove_css_class("matrix-cell-card")
             self.remove_css_class("matrix-cell-incompatible")
+            self.remove_css_class("matrix-cell-placeholder")
             self.remove_css_class("muted")
             self.add_css_class("matrix-cell-empty")
 
@@ -99,6 +116,7 @@ class MatrixCell(Gtk.Box):
             self.append(empty_box)
         else:
             # Incompatible stream type: solid matching placeholder card (same color/border as channel card)
+            self.is_active = False
             self.remove_css_class("matrix-cell-empty")
             self.remove_css_class("matrix-cell-incompatible")
             self.remove_css_class("muted")
@@ -132,18 +150,25 @@ class MatrixCell(Gtk.Box):
 
     def _on_mute_clicked(self, btn):
         is_muted = self.pipewire_mgr.toggle_channel_mute(self.channel_id, self.mix_id)
+        self.cached_muted = is_muted
         self.update_ui_state()
         if self.on_change_callback:
             self.on_change_callback(self.channel_id, self.mix_id)
 
     def _on_slider_volume_changed(self, vol: int):
+        self.cached_volume = vol
         self.pipewire_mgr.set_channel_volume(self.channel_id, self.mix_id, vol)
         if self.on_change_callback:
             self.on_change_callback(self.channel_id, self.mix_id)
 
-    def update_peaks(self, peak_l: float, peak_r: float):
-        if self.slider:
-            self.slider.set_peaks(peak_l, peak_r)
+    def update_peaks(self, raw_p_l: float, raw_p_r: float):
+        if not self.slider or not self.is_active:
+            return
+        if self.cached_muted or (raw_p_l <= 0.0005 and raw_p_r <= 0.0005):
+            self.slider.set_peaks(0.0, 0.0)
+        else:
+            scale = max(0.0, min(1.5, self.cached_volume / 100.0))
+            self.slider.set_peaks(raw_p_l * scale, raw_p_r * scale)
 
     def update_ui_state(self):
         if not self.slider or not self.mute_btn:
@@ -151,6 +176,8 @@ class MatrixCell(Gtk.Box):
         state = self.pipewire_mgr.get_channel_state(self.channel_id, self.mix_id)
         vol = state.get("volume", 80)
         muted = state.get("muted", False)
+        self.cached_volume = vol
+        self.cached_muted = muted
         
         self.slider.set_volume(vol, muted)
             

@@ -247,14 +247,13 @@ class ElgatoWaveDevice:
                 handle = lib.libusb_open_device_with_vid_pid(_lib_ctx, self.profile.vid, self.profile.pid)
                 if handle:
                     self._handle = handle
-                    # Auto-detach kernel driver for vendor control interface if available
-                    if hasattr(lib, "libusb_set_auto_detach_kernel_driver"):
-                        try:
-                            lib.libusb_set_auto_detach_kernel_driver(handle, 1)
-                        except Exception:
-                            pass
                     # Claim vendor control interface only if profile explicitly requires it
                     if self.profile.claim_interface is not None:
+                        if hasattr(lib, "libusb_detach_kernel_driver"):
+                            try:
+                                lib.libusb_detach_kernel_driver(handle, self.profile.claim_interface)
+                            except Exception:
+                                pass
                         try:
                             lib.libusb_claim_interface(handle, self.profile.claim_interface)
                         except Exception as e:
@@ -423,9 +422,9 @@ class ElgatoWaveDevice:
             if transient:
                 self._trigger_transient_peek("gain", cfg)
             else:
-                is_muted = self.get_mode_mute("gain")
-                cfg[self.profile.off_mute] = self._calc_hw_mute_byte("gain")
-                self._apply_led_colors_to_config(cfg, active_mode="gain")
+                curr_mode = self.get_dial_mode()
+                cfg[self.profile.off_mute] = self._calc_hw_mute_byte(curr_mode)
+                self._apply_led_colors_to_config(cfg, active_mode=curr_mode)
                 self.write_config(cfg)
                 self._last_raw_hw_mute = bool(cfg[self.profile.off_mute])
             self._last_state["gain_db"] = gain_db
@@ -521,6 +520,26 @@ class ElgatoWaveDevice:
         except Exception as e:
             log.warning(f"Failed to set Clipguard: {e}")
 
+    # --- Hardware DSP Meter Telemetry ---
+    def get_meter(self) -> Tuple[float, float]:
+        """Reads instantaneous hardware DSP meter levels from Endpoint 0.
+        
+        Returns (peak_l, peak_r) normalized to 0.0 - 1.0.
+        """
+        try:
+            m = self._ctrl_read(self.profile.wvalue_meter, self.profile.meter_len)
+            if not m or len(m) < 5:
+                return 0.0, 0.0
+            raw_l = m[0]
+            raw_r = m[4] if len(m) > 4 else m[0]
+            
+            p_l = min(1.0, ((raw_l - 144) / 80.0) ** 0.45) if raw_l > 144 else 0.0
+            p_r = min(1.0, ((raw_r - 144) / 80.0) ** 0.45) if raw_r > 144 else 0.0
+                
+            return p_l, p_r
+        except Exception:
+            return 0.0, 0.0
+
     # --- Enhanced Low-Cut Filter ---
     def get_low_cut(self) -> str:
         if self.profile.off_low_cut is None:
@@ -568,9 +587,9 @@ class ElgatoWaveDevice:
             if transient:
                 self._trigger_transient_peek("hp", cfg)
             else:
-                is_hp_muted = self.get_mode_mute("hp")
-                cfg[self.profile.off_mute] = self._calc_hw_mute_byte("hp")
-                self._apply_led_colors_to_config(cfg, active_mode="hp")
+                curr_mode = self.get_dial_mode()
+                cfg[self.profile.off_mute] = self._calc_hw_mute_byte(curr_mode)
+                self._apply_led_colors_to_config(cfg, active_mode=curr_mode)
                 self.write_config(cfg)
                 self._last_raw_hw_mute = bool(cfg[self.profile.off_mute])
             self._last_state["hp_volume_pct"] = pct
@@ -606,9 +625,9 @@ class ElgatoWaveDevice:
             if transient:
                 self._trigger_transient_peek("mix", cfg)
             else:
-                is_mix_muted = self.get_mode_mute("mix")
-                cfg[self.profile.off_mute] = self._calc_hw_mute_byte("mix")
-                self._apply_led_colors_to_config(cfg, active_mode="mix")
+                curr_mode = self.get_dial_mode()
+                cfg[self.profile.off_mute] = self._calc_hw_mute_byte(curr_mode)
+                self._apply_led_colors_to_config(cfg, active_mode=curr_mode)
                 self.write_config(cfg)
                 self._last_raw_hw_mute = bool(cfg[self.profile.off_mute])
             self._last_state["monitor_mix_pct"] = pct
@@ -937,24 +956,12 @@ class ElgatoWaveDevice:
                 # User physically touched capacitive mute button on hardware
                 active_mode = dial_mode
                 if active_mode == "mix":
-                    curr_mix_muted = self.get_mode_mute("mix")
-                    toggled_mute = not curr_mix_muted
-                    self._mode_mutes["gain"] = toggled_mute
-                    self._mode_mutes["hp"] = toggled_mute
-                    self._mode_mutes["mix"] = toggled_mute
+                    self._mode_mutes["gain"] = raw_hw_mute
+                    self._mode_mutes["hp"] = raw_hw_mute
+                    self._mode_mutes["mix"] = raw_hw_mute
                 else:
-                    toggled_mute = not self._mode_mutes.get(active_mode, False)
-                    self._mode_mutes[active_mode] = toggled_mute
-
-                is_curr_muted = self.get_mode_mute(active_mode)
-
-                cfg[self.profile.off_mute] = self._calc_hw_mute_byte(active_mode)
-                self._apply_led_colors_to_config(cfg, active_mode=active_mode)
-                try:
-                    self.write_config(cfg)
-                except Exception:
-                    pass
-                self._last_raw_hw_mute = bool(cfg[self.profile.off_mute])
+                    self._mode_mutes[active_mode] = raw_hw_mute
+                self._last_raw_hw_mute = raw_hw_mute
 
             mute = self.get_mode_mute(dial_mode)
 

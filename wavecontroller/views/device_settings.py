@@ -5,6 +5,7 @@ gi.require_version("Adw", "1")
 from gi.repository import Gtk, Adw, GLib
 import math
 from .led_color_picker import LEDColorButton
+from ..engine.config_manager import config_manager
 
 class UnifiedDeviceSettingsView(Gtk.Box):
     """
@@ -17,14 +18,15 @@ class UnifiedDeviceSettingsView(Gtk.Box):
     - Headphone Output Volume & Low-Impedance Mode (IEMs)
     - Hardware Serial Number & Firmware Version Diagnostics (USB DFU 1.10)
     """
-    def __init__(self, device_info: dict, hardware_mgr, peak_monitor, pipewire_mgr=None, on_device_renamed=None, on_device_removed=None):
-        super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=16)
+    def __init__(self, device_info: dict, hardware_mgr, peak_monitor, pipewire_mgr=None, on_device_renamed=None, on_device_removed=None, on_make_default=None, **kwargs):
+        super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=0, **kwargs)
         self.device_info = device_info
         self.hardware_mgr = hardware_mgr
         self.peak_monitor = peak_monitor
         self.pipewire_mgr = pipewire_mgr
         self.on_device_renamed = on_device_renamed
         self.on_device_removed = on_device_removed
+        self.on_make_default = on_make_default
 
         self.device_key = device_info.get("device_key", "")
         self.device_type = device_info.get("type", "duplex")
@@ -84,6 +86,12 @@ class UnifiedDeviceSettingsView(Gtk.Box):
         grp_header.add(header_box)
         pref_page.add(grp_header)
 
+        self.pref_page = pref_page
+        self.grp_default = Adw.PreferencesGroup(title="Primary Default Device")
+        self.pref_page.add(self.grp_default)
+        self._default_action_row = None
+        self._build_default_device_section()
+
         # Group 1: Nickname & Identification
         grp_ident = Adw.PreferencesGroup(title="Device Identification &amp; Appearance")
         
@@ -141,18 +149,6 @@ class UnifiedDeviceSettingsView(Gtk.Box):
             is_wave_xlr = self.is_elgato and ("xlr" in self.device_key.lower() or "xlr" in self.title_lbl.get_text().lower() or "wave xlr" in self.device_info.get("name", "").lower())
 
             if self.is_elgato:
-                # Preamp Gain Slider (0 to 40 dB for Wave:3, 0 to 75 dB for Wave XLR)
-                max_gain = 40 if is_wave_3 else 75
-                gain_sub = f"Analog condenser microphone preamp gain (0-40 dB) • Current: {self.hardware_mgr.hardware_gain_db} dB" if is_wave_3 else f"Ultra-low-noise microphone preamp with 0-75 dB gain • Current: {self.hardware_mgr.hardware_gain_db} dB"
-                self.gain_row = Adw.ActionRow(title="Analog Preamp Gain", subtitle=gain_sub)
-                self.gain_adj = Gtk.Adjustment(value=min(max_gain, self.hardware_mgr.hardware_gain_db), lower=0, upper=max_gain, step_increment=1, page_increment=5)
-                self.gain_slider = Gtk.Scale(orientation=Gtk.Orientation.HORIZONTAL, adjustment=self.gain_adj)
-                self.gain_slider.set_size_request(180, -1)
-                self.gain_slider.set_valign(Gtk.Align.CENTER)
-                self._gain_handler_id = self.gain_slider.connect("value-changed", self._on_gain_changed)
-                self.gain_row.add_suffix(self.gain_slider)
-                grp_mic.add(self.gain_row)
-
                 # 48V Phantom Power Switch (Strictly for Wave XLR Hardware)
                 if is_wave_xlr:
                     self.phantom_row = Adw.SwitchRow(title="48V Phantom Power", subtitle="Provides 48V DC power to XLR condenser microphones")
@@ -396,18 +392,6 @@ class UnifiedDeviceSettingsView(Gtk.Box):
             return
         self._syncing_from_hw = True
         try:
-            if "gain_db" in changed and hasattr(self, "gain_adj") and hasattr(self, "gain_slider"):
-                val = int(round(changed["gain_db"]))
-                if hasattr(self, "_gain_handler_id") and self._gain_handler_id:
-                    self.gain_slider.handler_block(self._gain_handler_id)
-                    try:
-                        self.gain_adj.set_value(val)
-                    finally:
-                        self.gain_slider.handler_unblock(self._gain_handler_id)
-                else:
-                    self.gain_adj.set_value(val)
-                self.gain_row.set_subtitle(f"{val} dB")
-
             if "hp_volume_pct" in changed and hasattr(self, "vol_adj") and hasattr(self, "vol_slider"):
                 val = int(round(changed["hp_volume_pct"]))
                 if hasattr(self, "_vol_handler_id") and self._vol_handler_id:
@@ -470,6 +454,20 @@ class UnifiedDeviceSettingsView(Gtk.Box):
                             self.low_z_row.handler_unblock(self._low_z_handler_id)
                     else:
                         self.low_z_row.set_active(val)
+
+            if "gain_db" in changed and hasattr(self, "gain_adj") and hasattr(self, "gain_slider"):
+                val = int(round(changed["gain_db"]))
+                if int(round(self.gain_adj.get_value())) != val:
+                    if hasattr(self, "_gain_handler_id") and self._gain_handler_id:
+                        self.gain_slider.handler_block(self._gain_handler_id)
+                        try:
+                            self.gain_adj.set_value(val)
+                        finally:
+                            self.gain_slider.handler_unblock(self._gain_handler_id)
+                    else:
+                        self.gain_adj.set_value(val)
+                    if hasattr(self, "gain_row"):
+                        self.gain_row.set_subtitle(f"{val}%")
 
             if "monitor_mix_pct" in changed and hasattr(self, "bal_adj") and hasattr(self, "bal_slider"):
                 val = int(round(changed["monitor_mix_pct"]))
@@ -538,6 +536,54 @@ class UnifiedDeviceSettingsView(Gtk.Box):
         if self.on_device_renamed:
             self.on_device_renamed()
 
+    def _build_default_device_section(self):
+        """Constructs or refreshes the Primary Default Device management group."""
+        if not hasattr(self, "grp_default") or not self.grp_default:
+            return
+
+        if hasattr(self, "_default_action_row") and self._default_action_row:
+            try:
+                self.grp_default.remove(self._default_action_row)
+            except Exception:
+                pass
+            self._default_action_row = None
+
+        is_default = self.hardware_mgr.is_default_device(self.device_key) if hasattr(self.hardware_mgr, "is_default_device") else False
+        has_default_in_system = self.hardware_mgr.has_default_device() if hasattr(self.hardware_mgr, "has_default_device") else False
+
+        if is_default:
+            self.grp_default.set_visible(True)
+            self._default_action_row = Adw.ActionRow(
+                title="Current Primary Default Device",
+                subtitle="Assigned as default for dedicated Microphone channel and Personal Mix output"
+            )
+            active_badge = Gtk.Label(label="Active Default")
+            active_badge.add_css_class("device-badge")
+            active_badge.add_css_class("online")
+            active_badge.set_valign(Gtk.Align.CENTER)
+            self._default_action_row.add_suffix(active_badge)
+            self.grp_default.add(self._default_action_row)
+        elif not has_default_in_system:
+            # Only appear when there is NO default device in the system (e.g. default was deleted, and modal was cancelled)
+            self.grp_default.set_visible(True)
+            self._default_action_row = Adw.ActionRow(
+                title="Set as Default Device",
+                subtitle="Assign this device as the default for dedicated Microphone channel and Personal Mix output"
+            )
+            make_def_btn = Gtk.Button(label="Make Default")
+            make_def_btn.add_css_class("suggested-action")
+            make_def_btn.set_valign(Gtk.Align.CENTER)
+            make_def_btn.connect("clicked", self._on_make_default_clicked)
+            self._default_action_row.add_suffix(make_def_btn)
+            self._default_action_row.set_activatable_widget(make_def_btn)
+            self.grp_default.add(self._default_action_row)
+        else:
+            self.grp_default.set_visible(False)
+
+    def _on_make_default_clicked(self, btn):
+        if self.on_make_default:
+            GLib.idle_add(lambda: self.on_make_default(self.device_key))
+
     def _on_remove_clicked(self, btn):
         dialog = Adw.MessageDialog(
             transient_for=self.get_root() if isinstance(self.get_root(), Gtk.Window) else None,
@@ -561,12 +607,11 @@ class UnifiedDeviceSettingsView(Gtk.Box):
     def _on_gain_changed(self, scale):
         if getattr(self, "_syncing_from_hw", False):
             return
-        val = int(self.gain_adj.get_value())
-        self.hardware_mgr.set_gain(val, self.device_key, transient=True)
-        if self.is_elgato:
-            self.gain_row.set_subtitle(f"{val} dB")
-        else:
-            self.gain_row.set_subtitle(f"{val}%")
+        if hasattr(self, "gain_adj"):
+            val = int(self.gain_adj.get_value())
+            self.hardware_mgr.set_gain(val, self.device_key, transient=True)
+            if hasattr(self, "gain_row"):
+                self.gain_row.set_subtitle(f"{val}%")
 
     def _on_balance_changed(self, scale):
         if getattr(self, "_syncing_from_hw", False):
@@ -764,6 +809,8 @@ class UnifiedDeviceSettingsView(Gtk.Box):
         if hasattr(self, "title_lbl"):
             self.title_lbl.set_text(display_name)
 
+        self._build_default_device_section()
+
 
 class AddDeviceDialog(Adw.Window):
     """
@@ -867,6 +914,109 @@ class AddDeviceDialog(Adw.Window):
         self.close()
         if self.on_device_added_callback:
             self.on_device_added_callback(device_key)
+
+
+class SelectDefaultDeviceDialog(Adw.Window):
+    """
+    Modal preferences dialog prompted when the primary default device is removed,
+    asking the user to select one of the remaining tracked devices as the new default.
+    """
+    def __init__(self, hardware_mgr, remaining_devices: list, on_selected_callback=None, on_cancel_callback=None, **kwargs):
+        super().__init__(title="Select Default Audio Device", modal=True, **kwargs)
+        self.hardware_mgr = hardware_mgr
+        self.remaining_devices = remaining_devices or []
+        self.on_selected_callback = on_selected_callback
+        self.on_cancel_callback = on_cancel_callback
+        self._selected_device_key = self.remaining_devices[0].get("device_key") if self.remaining_devices else None
+
+        self.set_default_size(500, 420)
+
+        toolbar_view = Adw.ToolbarView()
+
+        header = Adw.HeaderBar()
+        header.set_show_title(True)
+        header.set_show_start_title_buttons(False)
+        header.set_show_end_title_buttons(False)
+
+        cancel_btn = Gtk.Button(label="Cancel")
+        cancel_btn.add_css_class("flat")
+        cancel_btn.connect("clicked", self._on_cancel_clicked)
+        header.pack_start(cancel_btn)
+
+        set_btn = Gtk.Button(label="Set as Default")
+        set_btn.add_css_class("suggested-action")
+        set_btn.connect("clicked", self._on_set_clicked)
+        header.pack_end(set_btn)
+
+        toolbar_view.add_top_bar(header)
+
+        # Scrolled content
+        scrolled = Gtk.ScrolledWindow()
+        scrolled.set_vexpand(True)
+        scrolled.set_hexpand(True)
+
+        content_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=16)
+        content_box.set_margin_top(20)
+        content_box.set_margin_bottom(24)
+        content_box.set_margin_start(24)
+        content_box.set_margin_end(24)
+
+        # Description label
+        desc_lbl = Gtk.Label(
+            label="The previous default audio device was removed.\nSelect a remaining device to use for your Microphone channel and Personal Mix:"
+        )
+        desc_lbl.set_wrap(True)
+        desc_lbl.set_justify(Gtk.Justification.CENTER)
+        desc_lbl.add_css_class("dim-label")
+        desc_lbl.set_margin_bottom(8)
+        content_box.append(desc_lbl)
+
+        # List of remaining devices with radio check buttons
+        pref_group = Adw.PreferencesGroup(title="Remaining Audio Devices")
+        first_btn = None
+
+        for idx, dev in enumerate(self.remaining_devices):
+            row = Adw.ActionRow(title=dev.get("display_name", dev.get("name", "Audio Device")))
+            dtype = dev.get("type", "duplex")
+            badge = dev.get("badge", "In / Out" if dtype == "duplex" else ("Input" if dtype == "input" else "Output"))
+            desc = dev.get("description") or dev.get("device_key", "")
+            row.set_subtitle(f"[{badge}] • {desc}")
+            row.set_icon_name(dev.get("icon", "audio-card-symbolic"))
+
+            check = Gtk.CheckButton()
+            if first_btn is None:
+                first_btn = check
+                check.set_active(True)
+            else:
+                check.set_group(first_btn)
+
+            k = dev.get("device_key")
+            check.connect("toggled", self._make_toggled_handler(k))
+            row.add_prefix(check)
+            row.set_activatable_widget(check)
+
+            pref_group.add(row)
+
+        content_box.append(pref_group)
+        scrolled.set_child(content_box)
+        toolbar_view.set_content(scrolled)
+        self.set_content(toolbar_view)
+
+    def _make_toggled_handler(self, device_key: str):
+        def _handler(chk):
+            if chk.get_active():
+                self._selected_device_key = device_key
+        return _handler
+
+    def _on_set_clicked(self, btn):
+        self.close()
+        if self.on_selected_callback and self._selected_device_key:
+            self.on_selected_callback(self._selected_device_key)
+
+    def _on_cancel_clicked(self, btn):
+        self.close()
+        if self.on_cancel_callback:
+            self.on_cancel_callback()
 
 
 # Legacy Compatibility Aliases

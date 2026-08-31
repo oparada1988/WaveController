@@ -75,16 +75,23 @@ class MultiChannelPeakMonitor:
                         pass
 
     def _discover_mic_target(self) -> tuple:
-        """Finds active physical microphone target node name and channels."""
+        """Finds active physical microphone target node name and channels, prioritizing default_input_device."""
         try:
             out = subprocess.check_output(['pw-link', '-o'], text=True, stderr=subprocess.DEVNULL)
             all_ports = [l.strip() for l in out.splitlines() if l.strip().startswith("alsa_input.") and ":capture_" in l.strip()]
             
+            def_in = getattr(self.pipewire_mgr, "default_input_device", "") if self.pipewire_mgr else ""
+            def_ports = []
+            if isinstance(def_in, str) and def_in:
+                clean_def = def_in.replace("alsa_card.", "").replace("alsa_input.", "").strip().lower()
+                if clean_def:
+                    def_ports = [p for p in all_ports if clean_def in p.lower()]
+
             elgato_ports = [p for p in all_ports if 'wave' in p.lower() or 'elgato' in p.lower()]
             usb_ports = [p for p in all_ports if 'usb' in p.lower() and p not in elgato_ports]
             other_ports = [p for p in all_ports if p not in elgato_ports and p not in usb_ports]
             
-            selected = elgato_ports or usb_ports or other_ports
+            selected = def_ports or elgato_ports or usb_ports or other_ports
             if not selected:
                 return None, 1
             
@@ -145,12 +152,19 @@ class MultiChannelPeakMonitor:
             out = subprocess.check_output(['pw-link', '-o'], text=True, stderr=subprocess.DEVNULL)
             all_ports = [line.strip() for line in out.splitlines() if line.strip().startswith("alsa_input.") and ":capture_" in line.strip()]
 
-            # Prioritize Elgato Wave XLR, then other USB microphones, then PCI
+            # Match default_input_device if configured, else prioritize USB mics / PCI
+            def_in = getattr(self.pipewire_mgr, "default_input_device", "") if self.pipewire_mgr else ""
+            def_ports = []
+            if isinstance(def_in, str) and def_in:
+                clean_def = def_in.replace("alsa_card.", "").replace("alsa_input.", "").strip().lower()
+                if clean_def:
+                    def_ports = [p for p in all_ports if clean_def in p.lower()]
+
             elgato_ports = [p for p in all_ports if 'wave' in p.lower() or 'elgato' in p.lower()]
             usb_ports = [p for p in all_ports if 'usb' in p.lower() and p not in elgato_ports]
             other_ports = [p for p in all_ports if p not in elgato_ports and p not in usb_ports]
 
-            selected_ports = elgato_ports or usb_ports or other_ports
+            selected_ports = def_ports or elgato_ports or usb_ports or other_ports
             if not selected_ports:
                 return
 
@@ -266,7 +280,12 @@ class MultiChannelPeakMonitor:
             self.peaks = {}
 
         try:
-            out = subprocess.check_output(['pw-link', '-o'], text=True, stderr=subprocess.DEVNULL)
+            try:
+                out = subprocess.check_output(['pw-link', '-I', '-o'], text=True, stderr=subprocess.DEVNULL)
+            except Exception:
+                out = ""
+            if not out:
+                out = subprocess.check_output(['pw-link', '-o'], text=True, stderr=subprocess.DEVNULL)
             all_ports = [l.strip() for l in out.splitlines() if l.strip()]
         except Exception:
             return
@@ -287,9 +306,10 @@ class MultiChannelPeakMonitor:
 
                 assigned = self.pipewire_mgr.get_assigned_apps(ch_id) if hasattr(self.pipewire_mgr, "get_assigned_apps") else []
 
-                # 1A. Dedicated Pre-Fader Channel Virtual Ingestion Sinks (if expose_sink is enabled)
+                # 1A. Dedicated Pre-Fader Channel Virtual Ingestion Nodes (Permanent 0ms Metering)
                 sink_node = f"WaveController_Channel_{ch_id}"
-                if any(p.startswith(f"{sink_node}:monitor_") for p in all_ports):
+                has_mon = any(p.startswith(f"{sink_node}:monitor_") or p.startswith(f"{sink_node}:output_") for p in all_ports)
+                if has_mon:
                     if sink_node not in target_map:
                         target_map[sink_node] = {"channels": 2, "is_sink": True, "keys": set()}
                     target_map[sink_node]["keys"].add(ch_id)
@@ -309,10 +329,24 @@ class MultiChannelPeakMonitor:
                                     p_low = p.lower()
                                     matches = any(tok in p_low for tok in tokens if len(tok) >= 3)
                                 if matches:
-                                    app_node = p.split(":")[0]
+                                    clean_p = re.sub(r'^\d+\s+', '', p).strip()
+                                    app_node = clean_p.split(":")[0]
                                     if app_node not in target_map:
                                         target_map[app_node] = {"channels": 2, "is_sink": False, "keys": set()}
                                     target_map[app_node]["keys"].add(ch_id)
+                                    target_map[app_node]["keys"].add(str(app).lower().strip())
+                                    for tok in tokens:
+                                        target_map[app_node]["keys"].add(str(tok).lower().strip())
+                                    meta = port_meta.get(p) or port_meta.get(p.lower()) or port_meta.get(clean_p)
+                                    if meta:
+                                        bin_raw = str(meta.get("binary", "")).strip().lower()
+                                        if bin_raw:
+                                            bin_file = bin_raw.split("/")[-1].split("\\")[-1]
+                                            target_map[app_node]["keys"].add(bin_file)
+                                            target_map[app_node]["keys"].add(bin_raw)
+                                        app_raw = str(meta.get("app_name", "")).strip().lower()
+                                        if app_raw and app_raw not in ("chromium", "playback", "webrtc voiceengine"):
+                                            target_map[app_node]["keys"].add(app_raw)
 
         # 2. Source Channels
         if self.pipewire_mgr:
@@ -326,24 +360,25 @@ class MultiChannelPeakMonitor:
                     matched_node = None
                     is_mono = True
                     for p in all_ports:
-                        if ":capture_" in p and p.startswith("alsa_input."):
-                            p_low = p.lower()
+                        clean_p = re.sub(r'^\d+\s+', '', p).strip()
+                        if ":capture_" in clean_p and clean_p.startswith("alsa_input."):
+                            p_low = clean_p.lower()
                             if "wave" in ch_id_low or "elgato" in ch_id_low or "wave" in ch_name_low:
                                 if "wave" in p_low or "elgato" in p_low or "0fd9" in p_low:
-                                    matched_node = p.split(":")[0]
+                                    matched_node = clean_p.split(":")[0]
                                     is_mono = "mono" in p_low
                                     break
                             elif "fefine" in ch_id_low or "fifine" in ch_id_low or "fefine" in ch_name_low or "fifine" in ch_name_low:
                                 if "fifine" in p_low or "fefine" in p_low or "3142" in p_low:
-                                    matched_node = p.split(":")[0]
+                                    matched_node = clean_p.split(":")[0]
                                     is_mono = "mono" in p_low
                                     break
                             elif any(dev in p_low for dev in assigned_devs if len(dev) >= 3 and dev != "system capture"):
-                                matched_node = p.split(":")[0]
+                                matched_node = clean_p.split(":")[0]
                                 is_mono = "mono" in p_low
                                 break
                             elif ch_id_low in p_low or (len(ch_name_low) >= 3 and ch_name_low in p_low):
-                                matched_node = p.split(":")[0]
+                                matched_node = clean_p.split(":")[0]
                                 is_mono = "mono" in p_low
                                 break
 
@@ -400,6 +435,7 @@ class MultiChannelPeakMonitor:
                         self.peaks[f"wavecontroller_channel_{cid}"] = {"left": 0.0, "right": 0.0, "peak": 0.0}
 
         # Spawn processes for new unique target nodes (outside lock)
+        new_nodes_spawned = False
         for target_node, info in target_map.items():
             with self._lock:
                 proc = self._channel_procs.get(target_node)
@@ -411,11 +447,15 @@ class MultiChannelPeakMonitor:
             node_name = f"wave_meter_{clean_tag[:28]}"
             new_proc = self._open_pw_record(node_name, target=target_node, channels=info["channels"], is_sink=info["is_sink"])
             if new_proc:
+                new_nodes_spawned = True
                 with self._lock:
                     self._channel_procs[target_node] = new_proc
                     self._channel_proc_channels[target_node] = info["channels"]
                     if target_node not in self._target_peaks:
                         self._target_peaks[target_node] = {"left": 0.0, "right": 0.0}
+
+        if new_nodes_spawned:
+            time.sleep(0.04) # Allow PipeWire adapter to register destination meter ports
 
         # Explicit 1:1 Patch Linking & Ingestion Audit (Sever WirePlumber fallbacks & rogue links)
         self._link_and_audit_channel_monitors(target_map, all_ports)
@@ -437,11 +477,13 @@ class MultiChannelPeakMonitor:
                 src_ports = set()
                 if info.get("is_sink", False):
                     for p in all_ports:
-                        if p.startswith(f"{target_node}:") and ":monitor_" in p:
+                        clean_p = re.sub(r'^\d+\s+', '', p).strip()
+                        if clean_p.startswith(f"{target_node}:") and ":monitor_" in clean_p:
                             src_ports.add(p)
                 else:
                     for p in all_ports:
-                        if p.startswith(f"{target_node}:") and (":capture_" in p or ":output_" in p):
+                        clean_p = re.sub(r'^\d+\s+', '', p).strip()
+                        if clean_p.startswith(f"{target_node}:") and (":capture_" in clean_p or ":output_" in clean_p):
                             src_ports.add(p)
 
                 authorized_sources[node_name] = src_ports
@@ -461,7 +503,8 @@ class MultiChannelPeakMonitor:
                         dest_node = current_meter.split(':')[0]
                         src_port = line_str.replace('|<-', '').strip()
                         valid_srcs = authorized_sources.get(dest_node, set())
-                        if src_port not in valid_srcs:
+                        valid_targets = {p.split()[0] for p in valid_srcs if p} | {re.sub(r'^\d+\s+', '', p).strip() for p in valid_srcs if p}
+                        if src_port not in valid_srcs and src_port not in valid_targets:
                             subprocess.run(['pw-link', '-d', src_port, current_meter], stderr=subprocess.DEVNULL)
                         else:
                             existing_meter_links.setdefault(current_meter, set()).add(src_port)
@@ -476,39 +519,44 @@ class MultiChannelPeakMonitor:
                     continue
 
                 if info.get("channels", 2) == 1:
-                    mono_src = next((p for p in src_ports if "mono" in p.lower()), list(src_ports)[0])
-                    dest_mono = f"{node_name}:input_MONO"
-                    if mono_src not in existing_meter_links.get(dest_mono, set()):
-                        subprocess.run(['pw-link', mono_src, dest_mono], stderr=subprocess.DEVNULL)
-                        subprocess.run(['pw-link', mono_src, f"{node_name}:input_FL"], stderr=subprocess.DEVNULL)
-                        subprocess.run(['pw-link', mono_src, f"{node_name}:input_FR"], stderr=subprocess.DEVNULL)
+                    mono_srcs = [p for p in src_ports if "mono" in p.lower()] or list(src_ports)
+                    for mono_src in mono_srcs:
+                        dest_mono = f"{node_name}:input_MONO"
+                        src_target = mono_src.split()[0] if mono_src and mono_src.split()[0].isdigit() else mono_src
+                        if mono_src not in existing_meter_links.get(dest_mono, set()) and src_target not in existing_meter_links.get(dest_mono, set()):
+                            subprocess.run(['pw-link', src_target, dest_mono], stderr=subprocess.DEVNULL)
+                            subprocess.run(['pw-link', src_target, f"{node_name}:input_FL"], stderr=subprocess.DEVNULL)
+                            subprocess.run(['pw-link', src_target, f"{node_name}:input_FR"], stderr=subprocess.DEVNULL)
                 else:
-                    fl_src = next((p for p in src_ports if p.lower().endswith("fl") or p.endswith("1") or "_l" in p.lower()), None)
-                    fr_src = next((p for p in src_ports if p.lower().endswith("fr") or p.endswith("2") or "_r" in p.lower()), None)
+                    fl_srcs = [p for p in src_ports if p.lower().endswith("fl") or p.endswith("1") or "_l" in p.lower()]
+                    fr_srcs = [p for p in src_ports if p.lower().endswith("fr") or p.endswith("2") or "_r" in p.lower()]
 
-                    if fl_src:
+                    for fl_src in fl_srcs:
                         dest_fl = f"{node_name}:input_FL"
-                        if fl_src not in existing_meter_links.get(dest_fl, set()):
-                            subprocess.run(['pw-link', fl_src, dest_fl], stderr=subprocess.DEVNULL)
-                    if fr_src:
+                        src_fl = fl_src.split()[0] if fl_src and fl_src.split()[0].isdigit() else fl_src
+                        if fl_src not in existing_meter_links.get(dest_fl, set()) and src_fl not in existing_meter_links.get(dest_fl, set()):
+                            subprocess.run(['pw-link', src_fl, dest_fl], stderr=subprocess.DEVNULL)
+                    for fr_src in fr_srcs:
                         dest_fr = f"{node_name}:input_FR"
-                        if fr_src not in existing_meter_links.get(dest_fr, set()):
-                            subprocess.run(['pw-link', fr_src, dest_fr], stderr=subprocess.DEVNULL)
-                    if not fl_src and not fr_src and src_ports:
+                        src_fr = fr_src.split()[0] if fr_src and fr_src.split()[0].isdigit() else fr_src
+                        if fr_src not in existing_meter_links.get(dest_fr, set()) and src_fr not in existing_meter_links.get(dest_fr, set()):
+                            subprocess.run(['pw-link', src_fr, dest_fr], stderr=subprocess.DEVNULL)
+                    if not fl_srcs and not fr_srcs and src_ports:
                         for sp in src_ports:
                             dest_fl = f"{node_name}:input_FL"
                             dest_fr = f"{node_name}:input_FR"
-                            if sp not in existing_meter_links.get(dest_fl, set()):
-                                subprocess.run(['pw-link', sp, dest_fl], stderr=subprocess.DEVNULL)
-                            if sp not in existing_meter_links.get(dest_fr, set()):
-                                subprocess.run(['pw-link', sp, dest_fr], stderr=subprocess.DEVNULL)
+                            sp_target = sp.split()[0] if sp and sp.split()[0].isdigit() else sp
+                            if sp not in existing_meter_links.get(dest_fl, set()) and sp_target not in existing_meter_links.get(dest_fl, set()):
+                                subprocess.run(['pw-link', sp_target, dest_fl], stderr=subprocess.DEVNULL)
+                            if sp not in existing_meter_links.get(dest_fr, set()) and sp_target not in existing_meter_links.get(dest_fr, set()):
+                                subprocess.run(['pw-link', sp_target, dest_fr], stderr=subprocess.DEVNULL)
         except Exception:
             pass
 
     def _run_discovery_loop(self):
         """Background asynchronous graph discovery worker that audits links and manages pw-record processes."""
         while self.running:
-            self._refresh_event.wait(timeout=2.0)
+            self._refresh_event.wait(timeout=0.25)
             if not self.running:
                 break
             self._refresh_event.clear()
@@ -572,6 +620,19 @@ class MultiChannelPeakMonitor:
 
                 raw_ml, raw_mr = self._drain_and_calc_peaks(m_proc, channels=m_ch)
                 raw_sl, raw_sr = self._drain_and_calc_peaks(s_proc, channels=2)
+
+                # Query hardware DSP meter telemetry from attached Elgato device
+                try:
+                    from wavecontroller.engine.elgato_wave import elgato_manager
+                    dev = elgato_manager.get_device()
+                    if dev and dev.is_connected():
+                        hw_l, hw_r = dev.get_meter()
+                        if hw_l > raw_ml:
+                            raw_ml = hw_l
+                        if hw_r > raw_mr:
+                            raw_mr = hw_r
+                except Exception:
+                    pass
 
                 # Read per-channel monitor peaks for all active channel sinks
                 for target_node, proc in ch_items:
@@ -767,14 +828,14 @@ class MultiChannelPeakMonitor:
             # 1. Primary Physical Microphone Channels & Source Channels
             if ch_low in ("mic", "elgato_wave_xlr", "wave_xlr", "microphone", "input", "system_capture"):
                 mic_p = getattr(self, "_last_mic_peaks", {})
-                if mic_p:
+                if mic_p and (mic_p.get("left", 0.0) > 0.0 or mic_p.get("right", 0.0) > 0.0):
                     return mic_p.get("left", 0.0), mic_p.get("right", 0.0)
 
             if self.pipewire_mgr:
                 for ch in getattr(self.pipewire_mgr, "channels", []):
                     if ch.get("id", "").lower() == ch_low and ch.get("type") == "source":
                         mic_p = getattr(self, "_last_mic_peaks", {})
-                        if mic_p:
+                        if mic_p and (mic_p.get("left", 0.0) > 0.0 or mic_p.get("right", 0.0) > 0.0):
                             return mic_p.get("left", 0.0), mic_p.get("right", 0.0)
 
             # 2. Per-Channel Dedicated Isolated VU Meter Process Peaks
@@ -782,7 +843,40 @@ class MultiChannelPeakMonitor:
                 p = self._channel_peaks[ch_low]
                 return p.get("left", 0.0), p.get("right", 0.0)
 
+            # 3. Check assigned device tokens for source channels in _channel_peaks
+            if self.pipewire_mgr:
+                assigned_devs = self.pipewire_mgr.get_assigned_apps(channel_id)
+                for dev in assigned_devs:
+                    dev_low = str(dev).lower().strip()
+                    if dev_low in self._channel_peaks:
+                        p = self._channel_peaks[dev_low]
+                        return p.get("left", 0.0), p.get("right", 0.0)
+                    tokens = self.pipewire_mgr._get_match_tokens(dev) if hasattr(self.pipewire_mgr, "_get_match_tokens") else {dev_low}
+                    for tok in tokens:
+                        if tok in self._channel_peaks:
+                            p = self._channel_peaks[tok]
+                            return p.get("left", 0.0), p.get("right", 0.0)
+
+            # 4. Fallback to _last_mic_peaks if source channel
+            if ch_low in ("mic", "elgato_wave_xlr", "wave_xlr", "microphone", "input", "system_capture"):
+                mic_p = getattr(self, "_last_mic_peaks", {})
+                if mic_p:
+                    return mic_p.get("left", 0.0), mic_p.get("right", 0.0)
+
             # Return 0.0 for quiet, unassigned, or secondary mics — Strict Zero Cross-Bleed!
+            return 0.0, 0.0
+
+    def get_app_stereo_peaks(self, app_token: str) -> tuple:
+        with self._lock:
+            a_low = str(app_token).lower().strip()
+            if a_low in self._channel_peaks:
+                p = self._channel_peaks[a_low]
+                return p.get("left", 0.0), p.get("right", 0.0)
+            tokens = self.pipewire_mgr._get_match_tokens(app_token) if (self.pipewire_mgr and hasattr(self.pipewire_mgr, "_get_match_tokens")) else {a_low}
+            for tok in tokens:
+                if tok in self._channel_peaks:
+                    p = self._channel_peaks[tok]
+                    return p.get("left", 0.0), p.get("right", 0.0)
             return 0.0, 0.0
 
     def get_channel_peak(self, channel_id: str) -> float:

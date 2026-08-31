@@ -5,11 +5,14 @@ gi.require_version("Adw", "1")
 from gi.repository import Gtk, Adw, Gdk, Pango, GLib
 
 from .views.mixer_matrix import MixerMatrixView
-from .views.device_settings import UnifiedDeviceSettingsView, AddDeviceDialog
+from .views.device_settings import UnifiedDeviceSettingsView, AddDeviceDialog, SelectDefaultDeviceDialog
 from .views.effects_view import EffectsView
 from .views.settings_view import SettingsView
 from .views.setup_wizard import SetupWizardDialog
 from .engine.config_manager import config_manager
+from .utils.logger import get_logger
+
+log = get_logger("Window")
 
 class WaveMainWindow(Adw.ApplicationWindow):
     """
@@ -21,6 +24,9 @@ class WaveMainWindow(Adw.ApplicationWindow):
         self.pipewire_mgr = pipewire_mgr
         self.peak_monitor = peak_monitor
         self.hardware_mgr = hardware_mgr
+        if self.hardware_mgr and self.pipewire_mgr:
+            self.hardware_mgr.pipewire_mgr = self.pipewire_mgr
+            self.pipewire_mgr.hardware_mgr = self.hardware_mgr
 
         self.device_views = {}
         self.device_buttons = {}
@@ -286,7 +292,8 @@ class WaveMainWindow(Adw.ApplicationWindow):
                     peak_monitor=self.peak_monitor,
                     pipewire_mgr=self.pipewire_mgr,
                     on_device_renamed=self._refresh_sidebar_device_names,
-                    on_device_removed=self._on_device_removed
+                    on_device_removed=self._on_device_removed,
+                    on_make_default=self._on_make_device_default
                 )
                 self.device_views[view_name] = view
                 self.stack.add_named(view, view_name)
@@ -402,36 +409,171 @@ class WaveMainWindow(Adw.ApplicationWindow):
         dialog.set_transient_for(self)
         dialog.present()
 
-    def _on_device_added(self, device_key: str):
-        self._rebuild_device_views(select_device_key=device_key)
-        if hasattr(self, "settings_view") and hasattr(self.settings_view, "refresh_device_list"):
-            self.settings_view.refresh_device_list()
+    def _on_make_device_default(self, device_key: str):
+        """Promotes a device to primary default, provisions Mic channel & Personal Mix, and rebuilds views."""
+        log.info(f"[WaveController.Window] _on_make_device_default invoked for device '{device_key}'")
+        config_manager.set("default_selection_dismissed", False, immediate=True)
 
-    def _on_device_removed(self, device_key: str):
-        # If the removed device was default input or output, fallback cleanly
-        saved_in = config_manager.get("default_input_device", "default")
-        if saved_in == device_key:
-            in_devs = self.hardware_mgr.get_tracked_input_devices()
-            new_in = in_devs[0].get("device_key", "default") if in_devs else "default"
-            config_manager.set("default_input_device", new_in, immediate=True)
+        if self.hardware_mgr:
+            self.hardware_mgr.set_primary_default_device(device_key)
+            dev_name = self.hardware_mgr.get_device_display_name(device_key)
+            dev_info = self.hardware_mgr.discovered_devices.get(device_key, {})
+            dtype = dev_info.get("type", "duplex")
+            has_in = dtype in ("input", "duplex") or bool(dev_info.get("sources") or dev_info.get("primary_source_id"))
+            has_out = dtype in ("output", "duplex") or bool(dev_info.get("sinks") or dev_info.get("primary_sink_id"))
+            log.info(f"[WaveController.Window] Device '{device_key}' ({dev_name}): type={dtype}, has_in={has_in}, has_out={has_out}")
+
             if self.pipewire_mgr:
-                self.pipewire_mgr.default_input_device = new_in
+                log.info(f"[WaveController.Window] Dispatching provision_default_device_channels_and_mix for '{dev_name}' (device_key={device_key})")
+                self.pipewire_mgr.provision_default_device_channels_and_mix(
+                    device_key=device_key,
+                    device_name=dev_name,
+                    is_input=has_in,
+                    is_output=has_out
+                )
 
-        saved_out = config_manager.get("default_output_device", "default")
-        if saved_out == device_key:
-            out_devs = self.hardware_mgr.get_tracked_output_devices()
-            new_out = out_devs[0].get("device_key", "default") if out_devs else "default"
-            config_manager.set("default_output_device", new_out, immediate=True)
-            if self.pipewire_mgr:
-                self.pipewire_mgr.selected_monitor_device = new_out
-
-        if self.pipewire_mgr:
-            self.pipewire_mgr._sync_channel_audio_routing()
+        # Destroy cached views to recreate them with updated default state
+        for v_name, v in list(self.device_views.items()):
+            if self.stack.get_child_by_name(v_name):
+                self.stack.remove(v)
+        self.device_views.clear()
 
         self._rebuild_device_views()
         if hasattr(self, "settings_view") and hasattr(self.settings_view, "refresh_device_list"):
             self.settings_view.refresh_device_list()
+        if hasattr(self, "mixer_view") and self.mixer_view:
+            self.mixer_view.rebuild_matrix()
         self._switch_view("mixes", self.mixes_btn)
+
+    def _on_device_added(self, device_key: str):
+        has_default = self.hardware_mgr.has_default_device() if self.hardware_mgr else False
+        log.info(f"[WaveController.Window] _on_device_added '{device_key}': has_default={has_default}")
+
+        # If no default device is active (e.g. 0 devices previously existed or default was deleted), prompt user to make it default
+        if not has_default:
+            dev_name = self.hardware_mgr.get_device_display_name(device_key) if self.hardware_mgr else "Audio Device"
+            log.info(f"[WaveController.Window] Presenting Make Default dialog for '{dev_name}' ({device_key})")
+            dialog = Adw.MessageDialog(
+                transient_for=self,
+                heading=f"Make '{dev_name}' Default Device?",
+                body=f"Would you like to set '{dev_name}' as your primary default device? This will create a dedicated Microphone channel and Personal Mix for this device."
+            )
+            dialog.add_response("secondary", "Add as Secondary")
+            dialog.add_response("default", "Make Default")
+            dialog.set_response_appearance("default", Adw.ResponseAppearance.SUGGESTED)
+            dialog.set_default_response("default")
+
+            def _on_resp(d, resp):
+                log.info(f"[WaveController.Window] Make Default dialog response: '{resp}' for '{device_key}'")
+                if resp == "default":
+                    GLib.idle_add(lambda: self._on_make_device_default(device_key))
+                else:
+                    self._rebuild_device_views(select_device_key=device_key)
+                    if hasattr(self, "settings_view") and hasattr(self.settings_view, "refresh_device_list"):
+                        self.settings_view.refresh_device_list()
+                    if hasattr(self, "mixer_view") and self.mixer_view:
+                        self.mixer_view.refresh_device_names()
+                    self._switch_view("mixes", self.mixes_btn)
+
+            dialog.connect("response", _on_resp)
+            dialog.present()
+        else:
+            log.info(f"[WaveController.Window] Default device already active. Adding '{device_key}' as secondary device.")
+            self._rebuild_device_views(select_device_key=device_key)
+            if hasattr(self, "settings_view") and hasattr(self.settings_view, "refresh_device_list"):
+                self.settings_view.refresh_device_list()
+            if hasattr(self, "mixer_view") and self.mixer_view:
+                self.mixer_view.refresh_device_names()
+            self._switch_view("mixes", self.mixes_btn)
+
+    def _on_device_removed(self, device_key: str):
+        is_default = self.hardware_mgr.is_default_device(device_key) if self.hardware_mgr and hasattr(self.hardware_mgr, "is_default_device") else False
+        log.info(f"[WaveController.Window] _on_device_removed '{device_key}': is_default={is_default}")
+
+        if not is_default:
+            # Secondary/tertiary device removed: remove any channels and mixes associated with this secondary device
+            log.info(f"[WaveController.Window] Secondary device '{device_key}' removed. Removing tied channels/mixes and keeping remaining configuration.")
+            if self.pipewire_mgr:
+                self.pipewire_mgr.remove_device_associated_channels_and_mixes(device_key)
+
+            for v_name, v in list(self.device_views.items()):
+                if self.stack.get_child_by_name(v_name):
+                    self.stack.remove(v)
+            self.device_views.clear()
+
+            self._rebuild_device_views()
+            if hasattr(self, "settings_view") and hasattr(self.settings_view, "refresh_device_list"):
+                self.settings_view.refresh_device_list()
+            if hasattr(self, "mixer_view") and self.mixer_view:
+                self.mixer_view.rebuild_matrix()
+            self._switch_view("mixes", self.mixes_btn)
+            return
+
+        # Default device was removed:
+        remaining_tracked = self.hardware_mgr.get_remaining_tracked_devices(device_key) if self.hardware_mgr else []
+        log.info(f"[WaveController.Window] Default device '{device_key}' removed. Remaining tracked: {len(remaining_tracked)} devices.")
+
+        if not remaining_tracked:
+            # Case 1: Zero remaining devices -> remove Personal Mix & Microphone channel
+            log.info("[WaveController.Window] Zero devices remaining. Removing default Personal Mix and Mic channel.")
+            if self.pipewire_mgr:
+                self.pipewire_mgr.remove_default_device_channels_and_mix()
+            config_manager.set("default_input_device", "", immediate=False)
+            config_manager.set("default_output_device", "", immediate=False)
+            config_manager.set("primary_device_key", "", immediate=False)
+            config_manager.set("default_selection_dismissed", False, immediate=True)
+
+            for v_name, v in list(self.device_views.items()):
+                if self.stack.get_child_by_name(v_name):
+                    self.stack.remove(v)
+            self.device_views.clear()
+
+            self._rebuild_device_views()
+            if hasattr(self, "settings_view") and hasattr(self.settings_view, "refresh_device_list"):
+                self.settings_view.refresh_device_list()
+            if hasattr(self, "mixer_view") and self.mixer_view:
+                self.mixer_view.rebuild_matrix()
+            self._switch_view("mixes", self.mixes_btn)
+        else:
+            # Case 2: Remaining devices exist -> prompt user to pick the new default device
+            log.info(f"[WaveController.Window] Presenting SelectDefaultDeviceDialog for remaining devices: {[d.get('name') for d in remaining_tracked]}")
+            def _on_new_default_selected(new_dev_key: str):
+                log.info(f"[WaveController.Window] New default device selected from modal: '{new_dev_key}'")
+                if self.pipewire_mgr:
+                    self.pipewire_mgr.remove_default_device_channels_and_mix()
+                GLib.idle_add(lambda: self._on_make_device_default(new_dev_key))
+
+            def _on_default_selection_cancelled():
+                # User declined to make any remaining device default -> remove orphaned channels/mixes
+                log.info("[WaveController.Window] Default device selection modal cancelled. Removing default channels and flagging default_selection_dismissed=True")
+                if self.pipewire_mgr:
+                    self.pipewire_mgr.remove_default_device_channels_and_mix()
+                config_manager.set("default_input_device", "", immediate=False)
+                config_manager.set("default_output_device", "", immediate=False)
+                config_manager.set("primary_device_key", "", immediate=False)
+                config_manager.set("default_selection_dismissed", True, immediate=True)
+
+                # Recreate device views so "Make Default" button appears on remaining devices
+                for v_name, v in list(self.device_views.items()):
+                    if self.stack.get_child_by_name(v_name):
+                        self.stack.remove(v)
+                self.device_views.clear()
+
+                self._rebuild_device_views()
+                if hasattr(self, "settings_view") and hasattr(self.settings_view, "refresh_device_list"):
+                    self.settings_view.refresh_device_list()
+                if hasattr(self, "mixer_view") and self.mixer_view:
+                    self.mixer_view.rebuild_matrix()
+                self._switch_view("mixes", self.mixes_btn)
+
+            dialog = SelectDefaultDeviceDialog(
+                self.hardware_mgr,
+                remaining_devices=remaining_tracked,
+                on_selected_callback=_on_new_default_selected,
+                on_cancel_callback=_on_default_selection_cancelled
+            )
+            dialog.set_transient_for(self)
+            dialog.present()
 
     def _switch_view(self, name: str, active_btn=None):
         if self.stack.get_child_by_name(name):
@@ -516,8 +658,9 @@ class WaveMainWindow(Adw.ApplicationWindow):
 
         def _on_response(d, response_id):
             if response_id == "add":
+                log.info(f"[WaveController.Window] Auto-detection dialog confirmed: Adding device '{device_key}'")
                 self.hardware_mgr.add_tracked_device(device_key)
-                self._rebuild_device_views(select_device_key=device_key)
+                self._on_device_added(device_key)
 
         dialog.connect("response", _on_response)
         dialog.present()

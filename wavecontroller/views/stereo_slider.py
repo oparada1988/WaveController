@@ -2,6 +2,9 @@ import gi
 gi.require_version("Gtk", "4.0")
 from gi.repository import Gtk, Gdk
 import cairo
+import math
+
+TAU = math.tau
 
 class StereoSlider(Gtk.DrawingArea):
     """
@@ -79,8 +82,8 @@ class StereoSlider(Gtk.DrawingArea):
             if self.peak_r < 0.005:
                 self.peak_r = 0.0
 
-        # Only trigger GTK repaint when levels actually change, eliminating idle redraw CPU burn
-        if abs(self.peak_l - prev_l) > 0.002 or abs(self.peak_r - prev_r) > 0.002:
+        # Trigger GTK repaint whenever peaks are active or changing
+        if self.peak_l > 0.0 or prev_l > 0.0 or target_l > 0.0 or self.peak_r > 0.0 or prev_r > 0.0 or target_r > 0.0 or abs(self.peak_l - prev_l) > 0.001 or abs(self.peak_r - prev_r) > 0.001:
             self.queue_draw()
 
     def set_sync_peaks(self, sync: bool):
@@ -173,19 +176,19 @@ class StereoSlider(Gtk.DrawingArea):
         cr.rectangle(margin, y_bot, vol_w, track_h)
         cr.fill()
 
-        # Live VU meter bars bounded by fader knob (fader pushes back the meter)
+        # Live VU meter bars bounded by fader knob (true level bounded by fader position)
         if not self.is_muted and vol_w > 0.0 and (self.peak_l > 0.005 or self.peak_r > 0.005):
-            meter_l = min(vol_w, vol_w * self.peak_l)
-            meter_r = min(vol_w, vol_w * self.peak_r)
+            meter_l = min(vol_w, track_w * self.peak_l)
+            meter_r = min(vol_w, track_w * self.peak_r)
             if meter_l > 0.5 or meter_r > 0.5:
-                if getattr(self, "_cached_gradient_vol_w", None) != vol_w:
-                    pat = cairo.LinearGradient(margin, 0, margin + vol_w, 0)
+                if getattr(self, "_cached_gradient_track_w", None) != track_w:
+                    pat = cairo.LinearGradient(margin, 0, margin + track_w, 0)
                     pat.add_color_stop_rgba(0.00, 0.24, 0.70, 0.34, 1.0)   # Vivid Emerald Green #3db356
                     pat.add_color_stop_rgba(0.65, 0.24, 0.70, 0.34, 1.0)  # Green up to 65%
                     pat.add_color_stop_rgba(0.85, 0.95, 0.75, 0.20, 1.0)  # Warm Yellow at 85%
                     pat.add_color_stop_rgba(1.00, 0.95, 0.30, 0.25, 1.0)  # Studio Red at 100%
                     self._cached_gradient = pat
-                    self._cached_gradient_vol_w = vol_w
+                    self._cached_gradient_track_w = track_w
                 else:
                     pat = self._cached_gradient
                 cr.set_source(pat)
@@ -201,17 +204,17 @@ class StereoSlider(Gtk.DrawingArea):
         else:
             # Drop shadow
             cr.set_source_rgba(0.0, 0.0, 0.0, 0.4)
-            cr.arc(thumb_x + 0.5, thumb_y + 0.8, thumb_r, 0, 6.28318)
+            cr.arc(thumb_x + 0.5, thumb_y + 0.8, thumb_r, 0, TAU)
             cr.fill()
             
             # Knob body
             cr.set_source_rgba(0.21, 0.52, 0.89, 1.0)
 
-        cr.arc(thumb_x, thumb_y, thumb_r, 0, 6.28318)
+        cr.arc(thumb_x, thumb_y, thumb_r, 0, TAU)
         cr.fill()
 
         # White border highlight
         cr.set_source_rgba(1.0, 1.0, 1.0, 0.7 if not self.is_muted else 0.3)
         cr.set_line_width(1.0)
-        cr.arc(thumb_x, thumb_y, thumb_r, 0, 6.28318)
+        cr.arc(thumb_x, thumb_y, thumb_r, 0, TAU)
         cr.stroke()

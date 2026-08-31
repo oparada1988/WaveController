@@ -99,6 +99,8 @@ class SetupWizardDialog(Gtk.Window):
 
     def _go_to_page(self, page_index: int):
         """Smoothly animates carousel to target page index."""
+        if page_index == 4:
+            self._refresh_page_5_device_options()
         widget = self.carousel.get_nth_page(page_index)
         if widget:
             self.carousel.scroll_to(widget, True)
@@ -265,7 +267,11 @@ class SetupWizardDialog(Gtk.Window):
 
         list_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
 
+        if not hasattr(self, "_selected_hw_keys"):
+            self._selected_hw_keys = set()
+
         for dev in detected_devices:
+            dev_k = dev.get("device_key", dev.get("name", ""))
             row_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
             row_box.add_css_class("oobe-hw-preview-row")
 
@@ -291,6 +297,27 @@ class SetupWizardDialog(Gtk.Window):
             add_btn = Gtk.Button.new_from_icon_name("list-add-symbolic")
             add_btn.add_css_class("flat")
             add_btn.add_css_class("circular")
+            add_btn.set_tooltip_text("Add Device")
+
+            def make_toggle_handler(k, r_box, a_btn):
+                def _on_toggle(btn):
+                    if k in self._selected_hw_keys:
+                        self._selected_hw_keys.remove(k)
+                        r_box.remove_css_class("selected")
+                        a_btn.remove_css_class("oobe-btn-added")
+                        a_btn.set_icon_name("list-add-symbolic")
+                        a_btn.set_tooltip_text("Add Device")
+                    else:
+                        self._selected_hw_keys.add(k)
+                        r_box.add_css_class("selected")
+                        a_btn.add_css_class("oobe-btn-added")
+                        a_btn.set_icon_name("emblem-ok-symbolic")
+                        a_btn.set_tooltip_text("Device Added")
+                    if hasattr(self, "page4_next_btn"):
+                        self.page4_next_btn.set_sensitive(len(self._selected_hw_keys) > 0)
+                return _on_toggle
+
+            add_btn.connect("clicked", make_toggle_handler(dev_k, row_box, add_btn))
             row_box.append(add_btn)
 
             list_box.append(row_box)
@@ -299,14 +326,76 @@ class SetupWizardDialog(Gtk.Window):
         hw_card_box.append(scrolled)
         box.append(hw_card_box)
 
-        # Action Button
-        btn = Gtk.Button(label="Next")
-        btn.add_css_class("oobe-action-btn")
-        btn.set_size_request(220, 44)
-        btn.connect("clicked", lambda _: self._go_to_page(4))
-        box.append(btn)
+        # Action Button (Disabled until at least 1 device is added)
+        self.page4_next_btn = Gtk.Button(label="Next")
+        self.page4_next_btn.add_css_class("oobe-action-btn")
+        self.page4_next_btn.set_size_request(220, 44)
+        self.page4_next_btn.set_sensitive(len(self._selected_hw_keys) > 0)
+        self.page4_next_btn.connect("clicked", lambda _: self._go_to_page(4))
+        box.append(self.page4_next_btn)
 
         self.carousel.append(box)
+
+    def _refresh_page_5_device_options(self):
+        """Dynamically populates Page 5 dropdowns strictly based on devices selected on Page 4."""
+        if not hasattr(self, "mic_combo") or not hasattr(self, "output_combo"):
+            return
+
+        selected_keys = getattr(self, "_selected_hw_keys", set())
+
+        # 1. Inputs
+        input_opts = []
+        if self.hardware_mgr:
+            get_inputs_fn = getattr(self.hardware_mgr, "get_all_available_input_devices", None) or self.hardware_mgr.get_tracked_input_devices
+            for dev in get_inputs_fn():
+                k = dev.get("device_key", dev.get("name", ""))
+                if not selected_keys or k in selected_keys or any(sk in k or k in sk for sk in selected_keys):
+                    name = dev.get("display_name", dev.get("name", "Microphone"))
+                    input_opts.append((k, name))
+
+        if not input_opts:
+            if self.hardware_mgr:
+                for dev in (getattr(self.hardware_mgr, "get_all_available_input_devices", None) or self.hardware_mgr.get_tracked_input_devices)():
+                    input_opts.append((dev.get("device_key", dev.get("name", "")), dev.get("display_name", dev.get("name", "Microphone"))))
+            if not input_opts:
+                input_opts = [("default", "Default Microphone (System)")]
+
+        self._input_dev_keys = [opt[0] for opt in input_opts]
+        self.mic_combo.set_model(Gtk.StringList.new([opt[1] for opt in input_opts]))
+        
+        sel_in_idx = 0
+        for idx, (k, name) in enumerate(input_opts):
+            if "wave" in name.lower() or "elgato" in name.lower() or "wave" in k.lower():
+                sel_in_idx = idx
+                break
+        self.mic_combo.set_selected(sel_in_idx)
+
+        # 2. Outputs
+        output_opts = []
+        if self.hardware_mgr:
+            get_outputs_fn = getattr(self.hardware_mgr, "get_all_available_output_devices", None) or self.hardware_mgr.get_tracked_output_devices
+            for dev in get_outputs_fn():
+                k = dev.get("device_key", dev.get("name", ""))
+                if not selected_keys or k in selected_keys or any(sk in k or k in sk for sk in selected_keys):
+                    name = dev.get("display_name", dev.get("name", "Audio Device"))
+                    output_opts.append((k, name))
+
+        if not output_opts:
+            if self.hardware_mgr:
+                for dev in (getattr(self.hardware_mgr, "get_all_available_output_devices", None) or self.hardware_mgr.get_tracked_output_devices)():
+                    output_opts.append((dev.get("device_key", dev.get("name", "")), dev.get("display_name", dev.get("name", "Audio Device"))))
+            if not output_opts:
+                output_opts = [("default", "Default Output (System)")]
+
+        self._output_dev_keys = [opt[0] for opt in output_opts]
+        self.output_combo.set_model(Gtk.StringList.new([opt[1] for opt in output_opts]))
+        
+        sel_out_idx = 0
+        for idx, (k, name) in enumerate(output_opts):
+            if "wave" in name.lower() or "elgato" in name.lower() or "wave" in k.lower():
+                sel_out_idx = idx
+                break
+        self.output_combo.set_selected(sel_out_idx)
 
     def _build_page_5_device_setup(self):
         """Page 5: Primary Device Configuration."""
@@ -341,49 +430,7 @@ class SetupWizardDialog(Gtk.Window):
         self.mic_combo = Adw.ComboRow(title="Primary Input Device")
         self.output_combo = Adw.ComboRow(title="Primary Output Device")
 
-        # Populate Input Devices (All available / connected)
-        input_opts = []
-        if self.hardware_mgr:
-            get_inputs_fn = getattr(self.hardware_mgr, "get_all_available_input_devices", None) or self.hardware_mgr.get_tracked_input_devices
-            for dev in get_inputs_fn():
-                k = dev.get("device_key", dev.get("name", ""))
-                name = dev.get("display_name", dev.get("name", "Microphone"))
-                input_opts.append((k, name))
-        if not input_opts:
-            input_opts = [("default", "Default Microphone (System)")]
-
-        self._input_dev_keys = [opt[0] for opt in input_opts]
-        self.mic_combo.set_model(Gtk.StringList.new([opt[1] for opt in input_opts]))
-
-        # Auto-select Elgato mic if detected, else first device
-        sel_in_idx = 0
-        for idx, (k, name) in enumerate(input_opts):
-            if "wave" in name.lower() or "elgato" in name.lower() or "wave" in k.lower():
-                sel_in_idx = idx
-                break
-        self.mic_combo.set_selected(sel_in_idx)
-
-        # Populate Output Devices (All available / connected)
-        output_opts = []
-        if self.hardware_mgr:
-            get_outputs_fn = getattr(self.hardware_mgr, "get_all_available_output_devices", None) or self.hardware_mgr.get_tracked_output_devices
-            for dev in get_outputs_fn():
-                k = dev.get("device_key", dev.get("name", ""))
-                name = dev.get("display_name", dev.get("name", "Audio Device"))
-                output_opts.append((k, name))
-        if not output_opts:
-            output_opts = [("default", "Default Output (System)")]
-
-        self._output_dev_keys = [opt[0] for opt in output_opts]
-        self.output_combo.set_model(Gtk.StringList.new([opt[1] for opt in output_opts]))
-
-        # Auto-select Elgato output if detected, else first device
-        sel_out_idx = 0
-        for idx, (k, name) in enumerate(output_opts):
-            if "wave" in name.lower() or "elgato" in name.lower() or "wave" in k.lower():
-                sel_out_idx = idx
-                break
-        self.output_combo.set_selected(sel_out_idx)
+        self._refresh_page_5_device_options()
 
         pref_group.add(self.mic_combo)
         pref_group.add(self.output_combo)
@@ -495,6 +542,9 @@ class SetupWizardDialog(Gtk.Window):
         mic_name = "Microphone"
         if self.hardware_mgr:
             if hasattr(self.hardware_mgr, "add_tracked_device"):
+                for k in getattr(self, "_selected_hw_keys", []):
+                    if k and k != "default":
+                        self.hardware_mgr.add_tracked_device(k)
                 if sel_mic_key != "default":
                     self.hardware_mgr.add_tracked_device(sel_mic_key)
                 if sel_out_key != "default":
@@ -510,59 +560,17 @@ class SetupWizardDialog(Gtk.Window):
 
         # Save config preferences
         config_manager.set("first_run_completed", True)
+        config_manager.set("primary_device_key", sel_mic_key if sel_mic_key != "default" else sel_out_key)
         config_manager.set("default_input_device", sel_mic_key)
         config_manager.set("default_output_device", sel_out_key, immediate=True)
 
         if self.pipewire_mgr:
-            self.pipewire_mgr.selected_monitor_device = sel_out_key
-            self.pipewire_mgr.default_input_device = sel_mic_key
-
-            with self.pipewire_mgr._lock:
-                # 1. Provision Personal Mix if empty, else update target_device
-                if not self.pipewire_mgr.mixes:
-                    self.pipewire_mgr.mixes = [
-                        {
-                            "id": "personal",
-                            "name": "Personal Mix",
-                            "subtitle": "1 output",
-                            "icon": "audio-headphones-symbolic",
-                            "color": "#3db356",
-                            "target_device": sel_out_key
-                        }
-                    ]
-                    self.pipewire_mgr.mix_states["personal"] = {"volume": 100, "muted": False}
-                else:
-                    for m in self.pipewire_mgr.mixes:
-                        if m.get("id") in ("personal", "personal_mix") or m.get("type") == "sink":
-                            m["target_device"] = sel_out_key
-                            break
-
-                # 2. Provision Primary Microphone Channel if empty, else update name/app
-                if not self.pipewire_mgr.channels:
-                    self.pipewire_mgr.channels = [
-                        {
-                            "id": "mic",
-                            "name": mic_name,
-                            "type": "source",
-                            "icon": "audio-input-microphone-symbolic",
-                            "default_vol": 80,
-                            "sync_meter": False
-                        }
-                    ]
-                    self.pipewire_mgr.assigned_apps["mic"] = [mic_name, sel_mic_key]
-                    self.pipewire_mgr.channel_master_states["mic"] = {"volume": 80, "muted": False}
-                    self.pipewire_mgr.channel_states["mic"] = {
-                        "personal": {"volume": 80, "muted": False, "linked": True}
-                    }
-                else:
-                    first_ch = self.pipewire_mgr.channels[0]
-                    if first_ch.get("type") == "source" or first_ch.get("id") in ("mic", "elgato_wave_xlr"):
-                        first_ch["name"] = mic_name
-                        self.pipewire_mgr.assigned_apps[first_ch["id"]] = [mic_name, sel_mic_key]
-
-            self.pipewire_mgr._save_state_to_config(immediate=True)
-            self.pipewire_mgr._ensure_virtual_mix_nodes()
-            self.pipewire_mgr._sync_channel_audio_routing()
+            if sel_out_key != "default":
+                self.pipewire_mgr.provision_default_device_channels_and_mix(device_key=sel_out_key, is_input=False, is_output=True)
+            if sel_mic_key != "default":
+                self.pipewire_mgr.provision_default_device_channels_and_mix(device_key=sel_mic_key, device_name=mic_name, is_input=True, is_output=False)
+            elif sel_out_key != "default":
+                self.pipewire_mgr.provision_default_device_channels_and_mix(device_key=sel_out_key, device_name=mic_name, is_input=True, is_output=True)
 
         self._can_close = True
         self.close()

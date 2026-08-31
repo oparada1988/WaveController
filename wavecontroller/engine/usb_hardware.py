@@ -365,6 +365,25 @@ class USBHardwareManager:
 
         self.discovered_devices = hw_map
 
+        # Persist discovered device metadata for tracked devices so disconnected devices keep their friendly names & types
+        tracked_keys = config_manager.get("tracked_devices", []) or []
+        tracked_meta = dict(config_manager.get("tracked_device_metadata", {}) or {})
+        meta_updated = False
+        for k, dev in hw_map.items():
+            dev_meta = {
+                "name": dev["name"],
+                "description": dev.get("description", dev["name"]),
+                "type": dev.get("type", "duplex"),
+                "badge": dev.get("badge", "In / Out"),
+                "icon": dev.get("icon", "audio-headset-symbolic"),
+                "is_elgato": dev.get("is_elgato", False)
+            }
+            if tracked_meta.get(k) != dev_meta:
+                tracked_meta[k] = dev_meta
+                meta_updated = True
+        if meta_updated:
+            config_manager.set("tracked_device_metadata", tracked_meta, immediate=False)
+
         # Legacy and direct list access
         inputs = []
         outputs = []
@@ -668,6 +687,7 @@ class USBHardwareManager:
         """Returns the list of user-tracked devices hydrated with live state."""
         self.detect_connected_hardware()
         tracked_keys = config_manager.get("tracked_devices", []) or []
+        tracked_meta = config_manager.get("tracked_device_metadata", {}) or {}
 
         aliases = config_manager.get("device_aliases", {})
         assigned_mixes = config_manager.get("device_assigned_mixes", {})
@@ -677,10 +697,15 @@ class USBHardwareManager:
             if key in self.discovered_devices:
                 dev = dict(self.discovered_devices[key])
             else:
-                # Disconnected device
+                # Disconnected device: retrieve cached persistent metadata
+                saved = tracked_meta.get(key, {})
+                saved_name = saved.get("name", key)
                 k_low = key.lower()
-                name_low = aliases.get(key, key).lower()
-                if any(m in k_low or m in name_low for m in ("mic", "fefine", "fifine", "capture", "input")):
+                name_low = saved_name.lower()
+                if saved.get("type"):
+                    inferred_type = saved["type"]
+                    badge_text = saved.get("badge", "In / Out" if inferred_type == "duplex" else ("Input" if inferred_type == "input" else "Output"))
+                elif any(m in k_low or m in name_low for m in ("mic", "fefine", "fifine", "capture", "input")):
                     inferred_type = "input"
                     badge_text = "Input"
                 elif any(o in k_low or o in name_low for o in ("headphone", "speaker", "output", "playback", "sink", "iem")):
@@ -692,20 +717,20 @@ class USBHardwareManager:
 
                 dev = {
                     "device_key": key,
-                    "name": aliases.get(key, key),
+                    "name": aliases.get(key, saved_name),
                     "description": "Hardware Disconnected",
                     "type": inferred_type,
                     "badge": badge_text,
-                    "icon": self.get_device_icon(key),
+                    "icon": self.get_device_icon(key) or saved.get("icon", "audio-headset-symbolic"),
                     "sources": [],
                     "sinks": [],
                     "primary_source_id": None,
                     "primary_sink_id": None,
                     "connected": False,
-                    "is_elgato": False
+                    "is_elgato": saved.get("is_elgato", False)
                 }
             
-            dev["icon"] = self.get_device_icon(key)
+            dev["icon"] = self.get_device_icon(key) or dev.get("icon")
             dev["display_name"] = aliases.get(key, dev["name"])
             dev["custom_name"] = aliases.get(key, "")
             dev["assigned_mix"] = assigned_mixes.get(key, "personal_mix")
@@ -778,12 +803,22 @@ class USBHardwareManager:
                 self.on_devices_changed_callback()
 
     def remove_tracked_device(self, device_key: str):
+        log.info(f"[WaveController.Hardware] remove_tracked_device: removing '{device_key}' from tracked_devices")
         tracked = list(config_manager.get("tracked_devices", []))
         if device_key in tracked:
             tracked.remove(device_key)
             config_manager.set("tracked_devices", tracked, immediate=True)
-            if self.on_devices_changed_callback:
-                self.on_devices_changed_callback()
+
+        primary_k = str(config_manager.get("primary_device_key", ""))
+        if primary_k == device_key:
+            config_manager.set("primary_device_key", "", immediate=True)
+        if str(config_manager.get("default_input_device", "")) == device_key:
+            config_manager.set("default_input_device", "", immediate=True)
+        if str(config_manager.get("default_output_device", "")) == device_key:
+            config_manager.set("default_output_device", "", immediate=True)
+
+        if self.on_devices_changed_callback:
+            self.on_devices_changed_callback()
 
     def get_device_display_name(self, dev_info_or_name_or_key) -> str:
         aliases = config_manager.get("device_aliases", {})
@@ -800,11 +835,11 @@ class USBHardwareManager:
             return aliases[key]
         if dev_id and dev_id in aliases and aliases[dev_id]:
             return aliases[dev_id]
-        if name and name in aliases and aliases[name]:
-            return aliases[name]
-
         if key in self.discovered_devices:
             return self.discovered_devices[key]["name"]
+        tracked_meta = config_manager.get("tracked_device_metadata", {})
+        if key in tracked_meta and tracked_meta[key].get("name"):
+            return tracked_meta[key]["name"]
         return name
 
     def set_device_custom_name(self, dev_key_or_name: str, custom_name: str):
@@ -850,6 +885,56 @@ class USBHardwareManager:
         hw = dict(config_manager.get("hardware_settings", {}))
         hw["selected_input_id"] = str(source_id_or_key)
         config_manager.set("hardware_settings", hw, immediate=True)
+
+    def is_default_device(self, device_key: str) -> bool:
+        """Returns True if device_key is currently designated as the primary default audio device."""
+        if not device_key:
+            return False
+        k = str(device_key).lower().strip()
+        primary_k = str(config_manager.get("primary_device_key", "")).lower().strip()
+
+        # 1. Check explicit config designation
+        if primary_k and (k == primary_k or primary_k in k or k in primary_k):
+            return True
+
+        # 2. Check if this device is attached to the physical Microphone channel
+        if getattr(self, "pipewire_mgr", None):
+            for ch in list(getattr(self.pipewire_mgr, "channels", [])):
+                if ch.get("type") == "source" or ch.get("id") in ("mic", "elgato_wave_xlr"):
+                    assigned = [str(a).lower() for a in self.pipewire_mgr.get_assigned_apps(ch["id"])]
+                    if k in assigned or any(k in a for a in assigned) or any(a in k for a in assigned):
+                        return True
+
+        return False
+
+    def has_default_device(self) -> bool:
+        """Returns True if there is currently an active, tracked primary default device."""
+        tracked_keys = [d.get("device_key") for d in self.get_tracked_devices()]
+        for k in tracked_keys:
+            if self.is_default_device(k):
+                return True
+        return False
+
+    def set_primary_default_device(self, device_key: str):
+        """Designates device_key as the primary default audio device in configuration."""
+        if not device_key:
+            return
+        config_manager.set("primary_device_key", device_key)
+        dev_info = self.discovered_devices.get(device_key, {})
+        d_type = dev_info.get("type", "duplex")
+        if d_type in ("input", "duplex") or dev_info.get("sources") or dev_info.get("primary_source_id"):
+            config_manager.set("default_input_device", device_key)
+        if d_type in ("output", "duplex") or dev_info.get("sinks") or dev_info.get("primary_sink_id"):
+            config_manager.set("default_output_device", device_key)
+        config_manager.save_now()
+
+    def get_remaining_tracked_devices(self, exclude_key: str = None) -> list:
+        """Returns all tracked devices excluding exclude_key."""
+        tracked = self.get_tracked_devices()
+        if exclude_key:
+            ex_low = str(exclude_key).lower().strip()
+            return [d for d in tracked if str(d.get("device_key", "")).lower().strip() != ex_low]
+        return tracked
 
     # Volume & Mute Controls
     def get_output_volume(self, sink_id_or_key: str = None) -> int:
@@ -1099,10 +1184,9 @@ class USBHardwareManager:
         if is_elgato:
             self.hardware_gain_db = max(0, min(75, gain_db))
             self._last_gain_set_time = time.time()
-            if not transient:
-                hw = dict(config_manager.get("hardware_settings", {}))
-                hw["gain_db"] = self.hardware_gain_db
-                config_manager.set("hardware_settings", hw)
+            hw = dict(config_manager.get("hardware_settings", {}))
+            hw["gain_db"] = self.hardware_gain_db
+            config_manager.set("hardware_settings", hw)
 
             if elgato_dev:
                 elgato_dev.set_gain_db(self.hardware_gain_db, transient=transient)

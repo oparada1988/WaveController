@@ -684,5 +684,50 @@ window.oobe-window decoration {
     border-radius: 8px;
     border: 1px solid alpha(@window_fg_color, 0.05);
     padding: 8px 12px;
+    transition: all 180ms ease-in-out;
+}
+
+.oobe-hw-preview-row.selected {
+    background-color: alpha(@accent_color, 0.15);
+    border: 1px solid alpha(@accent_color, 0.45);
+}
+
+.oobe-btn-added {
+    background-color: #2ec27e;
+    color: #ffffff;
+    border-radius: 50%;
+}
+
+/* =========================================================================
+   Group Channel Expandable App Drawer (Layered Behind Group Card)
+   ========================================================================= */
+
+.group-drawer-container {
+    background-color: alpha(@card_bg_color, 0.45);
+    border: 1px solid @borders;
+    border-top: none;
+    border-radius: 0 0 12px 12px;
+    padding: 36px 10px 10px 10px;
+    margin-top: -16px;
+}
+
+window.theme-midnight .group-drawer-container {
+    background-color: #141419;
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    border-top: none;
+    border-radius: 0 0 12px 12px;
+}
+
+.group-app-sub-row {
+    background-color: alpha(@window_fg_color, 0.03);
+    border-radius: 8px;
+    border: 1px solid alpha(@window_fg_color, 0.04);
+    padding: 4px 8px;
+    transition: all 150ms ease-in-out;
+}
+
+.group-app-sub-row:hover {
+    background-color: alpha(@window_fg_color, 0.06);
+    border-color: alpha(@window_fg_color, 0.08);
 }
 

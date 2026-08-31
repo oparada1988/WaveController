@@ -22,6 +22,15 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if BASE_DIR not in sys.path:
     sys.path.insert(0, BASE_DIR)
 
+# Direct config_manager to an isolated temporary sandbox for test executions to protect user config
+import tempfile
+TEST_CFG_DIR = tempfile.mkdtemp(prefix="wavecontroller_test_")
+from wavecontroller.engine.config_manager import config_manager
+config_manager.config_dir = TEST_CFG_DIR
+config_manager.config_file = os.path.join(TEST_CFG_DIR, "config.json")
+config_manager.save_now = lambda: None
+config_manager.schedule_save = lambda *a, **k: None
+
 
 class TestMeterMathInvariants(unittest.TestCase):
     """Verifies that peak and loudness formulas meet studio specifications."""
@@ -121,7 +130,7 @@ class TestPipeWireTopologyInvariants(unittest.TestCase):
             self.skipTest("PipeWire not running.")
 
         has_spotify = "spotify:output_" in self.links_out
-        has_wavecontroller = "WaveController" in self.links_out
+        has_wavecontroller = "WaveController_personal_Sink" in self.links_out
 
         if has_spotify and has_wavecontroller:
             spotify_dests = []
@@ -157,12 +166,14 @@ class TestPipeWireTopologyInvariants(unittest.TestCase):
                     f"REGRESSION: Meter {current_node} is leaking audio from Master Personal Mix: {src}"
                 )
 
-    def test_meter_autoconnect_disabled(self):
-        """open_pw_record command flags must include node.autoconnect=false to prevent fallback links."""
+    def test_meter_driver_configuration(self):
+        """open_pw_record command flags must configure pavucontrol application role, low latency, and target routing."""
         from wavecontroller.engine.metering.capture_driver import open_pw_record
         import inspect
         src = inspect.getsource(open_pw_record)
-        self.assertIn("node.autoconnect=false", src, "REGRESSION: open_pw_record is missing node.autoconnect=false")
+        self.assertIn("--latency=20ms", src, "REGRESSION: open_pw_record is missing low latency flag")
+        self.assertIn("media.role=volume-control", src, "REGRESSION: open_pw_record is missing volume-control role")
+        self.assertIn("--target", src, "REGRESSION: open_pw_record is missing --target flag")
 
 
 class TestIPCLiveInvariants(unittest.TestCase):
@@ -879,6 +890,33 @@ class TestTokenMatchingInvariants(unittest.TestCase):
             self.assertIsNotNone(discord_app, "REGRESSION: Discord stream was not recognized!")
             self.assertEqual(discord_app["icon"], "discord", "REGRESSION: Discord icon was overwritten with chromium fallback!")
 
+    def test_flatpak_portal_discord_detection(self):
+        """Invariant: Flatpak Discord streams with portal app ID and generic Chromium name must resolve to Discord."""
+        from unittest.mock import patch
+        import json
+
+        fake_dump = [
+            {
+                "id": 249,
+                "info": {
+                    "props": {
+                        "media.class": "Stream/Output/Audio",
+                        "application.name": "Chromium",
+                        "node.name": "Chromium",
+                        "pipewire.access.portal.app_id": "com.discordapp.Discord",
+                        "media.name": "Playback"
+                    }
+                }
+            }
+        ]
+
+        with patch("subprocess.check_output") as mock_co:
+            mock_co.return_value = json.dumps(fake_dump)
+            detected = self.pwm.get_active_application_streams()
+            discord_app = next((a for a in detected if a["name"] == "Discord"), None)
+            self.assertIsNotNone(discord_app, "REGRESSION: Flatpak Discord stream was not recognized!")
+            self.assertEqual(discord_app["icon"], "discord")
+
     def test_wave_named_apps_not_misidentified_as_hardware(self):
         """Invariant: Applications with 'wave' in their name (e.g. Shortwave) must never be misclassified as Wave hardware."""
         from wavecontroller.views.channel_card import ChannelCard
@@ -1112,9 +1150,535 @@ class TestTokenMatchingInvariants(unittest.TestCase):
             self.assertEqual(view.device_type, prof["type"])
             self.assertFalse(view.device_info["connected"])
 
+    def test_default_device_lifecycle_and_channel_mix_removal(self):
+        """Invariant: Removing default device must cleanly remove Microphone channel and Personal Mix, while preserving deletable Chat Mix."""
+        # 1. Provision default device
+        self.pwm.provision_default_device_channels_and_mix(
+            device_key="test_headset_hw",
+            device_name="Test Headset",
+            is_input=True,
+            is_output=True
+        )
+        self.assertTrue(any(c["id"] == "mic" and c.get("type") == "source" for c in self.pwm.channels),
+                        "REGRESSION: Microphone channel was not provisioned for default device!")
+        self.assertTrue(any(m["id"] == "personal" and m.get("type") == "sink" for m in self.pwm.mixes),
+                        "REGRESSION: Personal Mix was not provisioned for default device!")
+        self.assertTrue(any(m["id"] == "chat_mix" and m.get("type") == "source" for m in self.pwm.mixes),
+                        "REGRESSION: Chat Mix (Source Mix) was not provisioned for default device!")
+        self.assertTrue(self.pwm.is_channel_mix_enabled("mic", "chat_mix"),
+                        "REGRESSION: Microphone channel was not enabled in Chat Mix!")
+        self.assertFalse(self.pwm.is_channel_mix_enabled("mic", "personal"),
+                         "REGRESSION: Microphone channel was erroneously enabled in Personal Mix by default!")
+        self.assertEqual(self.pwm.selected_monitor_device, "test_headset_hw")
+        self.assertEqual(self.pwm.default_input_device, "test_headset_hw")
+
+        # 2. Remove default device channels and mix
+        self.pwm.remove_default_device_channels_and_mix()
+        self.assertFalse(any(c["id"] == "mic" or c.get("type") == "source" for c in self.pwm.channels),
+                         "REGRESSION: Microphone channel remained after removing default device!")
+        self.assertFalse(any(m["id"] == "personal" or m.get("type") == "sink" for m in self.pwm.mixes),
+                         "REGRESSION: Personal Mix remained after removing default device!")
+        self.assertEqual(self.pwm.default_input_device, "")
+        self.assertEqual(self.pwm.selected_monitor_device, "")
+
+    def test_default_device_migration_and_secondary_device_isolation(self):
+        """Invariant: Re-provisioning migrates channels/mixes without duplication; secondary devices do not create channels."""
+        # 1. Initial provision
+        self.pwm.provision_default_device_channels_and_mix(
+            device_key="device_a",
+            device_name="Mic A",
+            is_input=True,
+            is_output=True
+        )
+        self.assertEqual(len([c for c in self.pwm.channels if c.get("type") == "source"]), 1)
+        self.assertEqual(len([m for m in self.pwm.mixes if m.get("type") == "sink"]), 1)
+        self.assertTrue(any(m["id"] == "chat_mix" for m in self.pwm.mixes))
+
+        # 2. Migrate to new default device (device_b)
+        self.pwm.provision_default_device_channels_and_mix(
+            device_key="device_b",
+            device_name="Mic B",
+            is_input=True,
+            is_output=True
+        )
+        mic_channels = [c for c in self.pwm.channels if c.get("type") == "source"]
+        sink_mixes = [m for m in self.pwm.mixes if m.get("type") == "sink"]
+
+        # Strictly 1 mic channel and 1 personal mix (no duplicates)
+        self.assertEqual(len(mic_channels), 1, "REGRESSION: Duplicate source channels created during default migration!")
+        self.assertEqual(len(sink_mixes), 1, "REGRESSION: Duplicate sink mixes created during default migration!")
+        self.assertEqual(mic_channels[0]["name"], "Mic B")
+        self.assertEqual(sink_mixes[0]["target_device"], "device_b")
+        self.assertTrue(self.pwm.is_channel_mix_enabled("mic", "chat_mix"),
+                        "REGRESSION: Microphone channel not enabled in Chat Mix after migration!")
+        self.assertFalse(self.pwm.is_channel_mix_enabled("mic", "personal"),
+                         "REGRESSION: Microphone channel erroneously enabled in Personal Mix after migration!")
+
+    def test_non_elgato_mic_channel_name_and_badge_suppression(self):
+        """Invariant: Non-Elgato microphones (e.g. Fifine) MUST show accurate name and suppress 48V phantom button, even when Elgato hardware is plugged in."""
+        from wavecontroller.views.channel_card import ChannelCard
+        from unittest.mock import MagicMock
+
+        # Test case 1: is_elgato = False
+        mock_hw = MagicMock()
+        mock_hw.is_elgato = False
+        mock_hw.device_name = "Wave XLR" # Stale HW name should NOT override channel name
+        mock_hw.device_key = "usb-3142_fifine_Microphone-00"
+        mock_hw.get_device_display_name.return_value = "fifine Microphone"
+
+        mock_pwm = MagicMock()
+        mock_pwm.get_assigned_apps.return_value = ["fifine Microphone", "usb-3142_fifine_Microphone-00"]
+        mock_pwm.get_channel_master_volume.return_value = 80
+        mock_pwm.get_channel_master_mute.return_value = False
+
+        ch_info = {
+            "id": "mic",
+            "name": "fifine Microphone",
+            "type": "source",
+            "icon": "audio-input-microphone-symbolic"
+        }
+
+        card = ChannelCard(ch_info, pipewire_mgr=mock_pwm, hardware_mgr=mock_hw)
+        self.assertEqual(card.title_lbl.get_text(), "fifine Microphone", "REGRESSION: Channel title did NOT match device name!")
+        self.assertFalse(card.is_wave_channel, "REGRESSION: Non-Elgato microphone was flagged as wave channel!")
+        self.assertFalse(hasattr(card, "phantom_btn"), "REGRESSION: 48V phantom button was provisioned for non-Elgato microphone!")
+
+        # Test case 2: is_elgato = True (Elgato Wave XLR plugged in, but channel is Fifine)
+        mock_hw.is_elgato = True
+        card2 = ChannelCard(ch_info, pipewire_mgr=mock_pwm, hardware_mgr=mock_hw)
+        self.assertFalse(card2.is_wave_channel, "REGRESSION: Non-Elgato microphone was flagged as wave channel when Elgato hardware connected!")
+        self.assertFalse(hasattr(card2, "phantom_btn"), "REGRESSION: 48V phantom button was provisioned for Fifine when Elgato hardware connected!")
+
+    def test_make_default_button_gated_to_selection_dismissed(self):
+        """Invariant: 'Make Default' button MUST appear ONLY if no default device is active in the system."""
+        from wavecontroller.views.device_settings import UnifiedDeviceSettingsView
+        from wavecontroller.engine.config_manager import config_manager
+        from unittest.mock import MagicMock
+
+        mock_hw = MagicMock()
+        mock_hw.is_default_device.return_value = False
+        mock_hw.has_default_device.return_value = False
+        mock_hw.get_device_display_name.return_value = "fifine Microphone"
+        mock_hw.get_device_icon.return_value = "audio-input-microphone-symbolic"
+        mock_hw.get_device_diagnostics.return_value = {"architecture": "USB Audio 2.0 Class Device"}
+        mock_hw.get_output_volume.return_value = 75
+        mock_hw.get_gain.return_value = 50
+        mock_hw.get_output_mute.return_value = False
+
+        dev_info = {"device_key": "usb-3142_fifine_Microphone-00", "type": "duplex", "name": "fifine Microphone"}
+
+        # Case 1: No default in system -> grp_default is visible with Make Default button
+        mock_hw.is_default_device.return_value = False
+        mock_hw.has_default_device.return_value = False
+        view_no_default = UnifiedDeviceSettingsView(dev_info, hardware_mgr=mock_hw, peak_monitor=None)
+        self.assertTrue(view_no_default.grp_default.get_visible(), "REGRESSION: Make Default group was not visible when system had no default!")
+
+        # Case 2: System ALREADY has default -> grp_default is hidden for secondary device (no Make Default button)
+        mock_hw.is_default_device.return_value = False
+        mock_hw.has_default_device.return_value = True
+        view_secondary = UnifiedDeviceSettingsView(dev_info, hardware_mgr=mock_hw, peak_monitor=None)
+        self.assertFalse(view_secondary.grp_default.get_visible(), "REGRESSION: Make Default group was visible for secondary device when system already had default!")
+
+        # Case 3: Primary default device -> grp_default is visible with Active Default status
+        mock_hw.is_default_device.return_value = True
+        mock_hw.has_default_device.return_value = True
+        view_primary = UnifiedDeviceSettingsView(dev_info, hardware_mgr=mock_hw, peak_monitor=None)
+        self.assertTrue(view_primary.grp_default.get_visible(), "REGRESSION: Primary Default group was not visible on default device!")
+
+    def test_mic_channel_master_volume_elgato_gain_sync(self):
+        """Invariant: get_channel_master_volume('mic') must return mapped hardware_gain_db for Elgato hardware."""
+        from wavecontroller.engine.pipewire_manager import PipeWireManager
+        from unittest.mock import MagicMock
+
+        pwm = PipeWireManager()
+        pwm.channels = [{"id": "mic", "name": "Elgato Wave XLR", "type": "source"}]
+        mock_hw = MagicMock()
+        mock_hw.is_elgato = True
+        mock_hw.hardware_gain_db = 45.0  # 45 / 75.0 = 60%
+        pwm.hardware_mgr = mock_hw
+
+        vol = pwm.get_channel_master_volume("mic")
+        self.assertEqual(vol, 60, "REGRESSION: Mic channel master volume did NOT map from Elgato hardware gain!")
+
+    def test_mic_channel_linked_state_parity(self):
+        """Invariant: is_channel_linked('mic') must respect channel_states linking rather than hardcoding False."""
+        from wavecontroller.engine.pipewire_manager import PipeWireManager
+
+        pwm = PipeWireManager()
+        pwm.channels = [{"id": "mic", "name": "Elgato Wave XLR", "type": "source"}]
+        pwm.channel_states = {
+            "mic": {
+                "personal": {"volume": 80, "muted": False, "linked": True, "enabled": True}
+            }
+        }
+        self.assertTrue(pwm.is_channel_linked("mic"), "REGRESSION: Microphone channel returned False for is_channel_linked despite being linked in state!")
+
+        pwm.set_channel_linked("mic", False)
+        self.assertFalse(pwm.is_channel_linked("mic"), "REGRESSION: set_channel_linked did not update linking state for microphone channel!")
+
+    def test_personal_mix_headphone_led_picker_provisioned(self):
+        """Invariant: Personal Mix settings popover must provision Headphone Mode 2 LEDColorButton when Elgato hardware is present."""
+        from wavecontroller.views.mix_header import MixHeaderCard
+        from wavecontroller.views.led_color_picker import LEDColorButton
+        from unittest.mock import MagicMock
+        import gi
+        gi.require_version("Gtk", "4.0")
+        from gi.repository import Gtk
+
+        mix_info = {
+            "id": "personal",
+            "name": "Personal Mix",
+            "type": "sink",
+            "icon": "audio-headphones-symbolic",
+            "color": "#3db356"
+        }
+        mock_hw = MagicMock()
+        mock_hw.is_elgato = True
+        mock_hw.is_connected = True
+        mock_hw.led_colors = {"hp": "#2ECC71"}
+        mock_hw.get_led_color.return_value = "#2ECC71"
+        mock_pwm = MagicMock()
+        mock_pwm.mixes = [mix_info]
+
+        card = MixHeaderCard(mix_info, pipewire_mgr=mock_pwm, hardware_mgr=mock_hw)
+        btn = card.edit_btn
+        popover = btn.get_popover()
+        self.assertIsNotNone(popover, "REGRESSION: Settings popover was missing from MixHeaderCard!")
+
+        # Traverse popover children to verify LEDColorButton with mode_key="hp" exists
+        found_hp_led = False
+        def check_widget(w):
+            nonlocal found_hp_led
+            if isinstance(w, LEDColorButton) and getattr(w, "mode_key", None) == "hp":
+                found_hp_led = True
+            if hasattr(w, "get_first_child"):
+                c = w.get_first_child()
+                while c:
+                    check_widget(c)
+                    c = c.get_next_sibling()
+
+        check_widget(popover)
+        self.assertTrue(found_hp_led, "REGRESSION: Headphone Mode (Mode 2) LEDColorButton was NOT provisioned in Personal Mix settings popover!")
+
+    def test_orphaned_channel_assigned_apps_sanitization(self):
+        """Invariant: Orphaned channel keys in assigned_apps must be sanitized on startup/init."""
+        from wavecontroller.engine.pipewire_manager import PipeWireManager
+
+        pwm = PipeWireManager()
+        pwm.channels = [{"id": "mic", "name": "Elgato Wave XLR", "type": "source"}]
+        pwm.assigned_apps = {
+            "mic": ["Elgato Wave XLR"],
+            "spotify": ["Spotify"],
+            "google_chrome": ["Google Chrome"]
+        }
+        pwm._init_default_states()
+
+        self.assertNotIn("spotify", pwm.assigned_apps, "REGRESSION: Stale 'spotify' key remained in assigned_apps after sanitization!")
+        self.assertNotIn("google_chrome", pwm.assigned_apps, "REGRESSION: Stale 'google_chrome' key remained in assigned_apps after sanitization!")
+        self.assertIn("mic", pwm.assigned_apps, "Mic channel was erroneously removed from assigned_apps!")
+
+    def test_get_assigned_apps_filters_inactive_channels(self):
+        """Invariant: get_assigned_apps must return empty list for channels not in self.channels."""
+        from wavecontroller.engine.pipewire_manager import PipeWireManager
+
+        pwm = PipeWireManager()
+        pwm.channels = [{"id": "mic", "name": "Elgato Wave XLR", "type": "source"}]
+        pwm.assigned_apps = {"deleted_ch": ["SomeApp"]}
+
+        self.assertEqual(pwm.get_assigned_apps("deleted_ch"), [], "REGRESSION: get_assigned_apps returned apps for an inactive/deleted channel!")
+
+    def test_discord_electron_node_and_port_binary_isolation(self):
+        """Invariant: Discord (Electron) streams reporting node.name='Chromium' must match Discord by binary and NEVER match Chrome."""
+        from wavecontroller.engine.pipewire_manager import PipeWireManager
+        from wavecontroller.engine.graph.process_classifier import get_match_tokens, port_matches_tokens
+
+        pwm = PipeWireManager()
+        discord_props = {
+            "node.name": "Chromium",
+            "application.name": "Chromium",
+            "application.process.binary": "Discord"
+        }
+        chrome_props = {
+            "node.name": "Google Chrome",
+            "application.name": "Google Chrome",
+            "application.process.binary": "chrome"
+        }
+
+        discord_tokens = pwm._get_match_tokens("Discord")
+        chrome_tokens = pwm._get_match_tokens("Google Chrome")
+
+        # 1. Node metadata matching
+        self.assertTrue(pwm._node_matches_tokens(discord_props, discord_tokens), "REGRESSION: Discord node did NOT match Discord tokens!")
+        self.assertFalse(pwm._node_matches_tokens(discord_props, chrome_tokens), "REGRESSION: Discord node erroneously matched Chrome tokens!")
+        self.assertTrue(pwm._node_matches_tokens(chrome_props, chrome_tokens), "REGRESSION: Chrome node did NOT match Chrome tokens!")
+        self.assertFalse(pwm._node_matches_tokens(chrome_props, discord_tokens), "REGRESSION: Chrome node erroneously matched Discord tokens!")
+
+        # 2. Port matching with metadata
+        port_meta = {
+            "chromium:output_fl": {"binary": "Discord", "app_name": "Chromium", "node_name": "Chromium"},
+            "google chrome:output_fl": {"binary": "chrome", "app_name": "Google Chrome", "node_name": "Google Chrome"}
+        }
+        self.assertTrue(port_matches_tokens("Chromium:output_FL", discord_tokens, port_meta), "REGRESSION: Chromium:output_FL (Discord) did not match Discord tokens!")
+        self.assertFalse(port_matches_tokens("Chromium:output_FL", chrome_tokens, port_meta), "REGRESSION: Chromium:output_FL (Discord) erroneously matched Chrome tokens!")
+
+    def test_channel_card_muted_css_class_applied_to_header_box(self):
+        """Invariant: When ChannelCard is muted, 'muted' CSS class must be applied to self.header_box for all channel types including mic."""
+        from wavecontroller.engine.pipewire_manager import PipeWireManager
+        from wavecontroller.views.channel_card import ChannelCard
+
+        pwm = PipeWireManager()
+        pwm.channels = [
+            {"id": "test_ch", "name": "Test Channel", "type": "app"},
+            {"id": "mic", "name": "Elgato Wave XLR", "type": "source"}
+        ]
+        pwm.channel_master_states = {
+            "test_ch": {"volume": 80, "muted": True},
+            "mic": {"volume": 80, "muted": True}
+        }
+
+        # App channel
+        card = ChannelCard(pwm.channels[0], pipewire_mgr=pwm)
+        self.assertTrue(card.header_box.has_css_class("muted"), "REGRESSION: header_box did NOT have 'muted' CSS class on init!")
+
+        card.set_muted(False)
+        self.assertFalse(card.header_box.has_css_class("muted"), "REGRESSION: header_box still had 'muted' CSS class when unmuted!")
+
+        card.set_muted(True)
+        self.assertTrue(card.header_box.has_css_class("muted"), "REGRESSION: header_box did NOT have 'muted' CSS class after set_muted(True)!")
+
+        # Mic channel
+        mic_card = ChannelCard(pwm.channels[1], pipewire_mgr=pwm)
+        self.assertTrue(mic_card.header_box.has_css_class("muted"), "REGRESSION: mic header_box did NOT have 'muted' CSS class on init!")
+
+        mic_card.set_muted(False)
+        self.assertFalse(mic_card.header_box.has_css_class("muted"), "REGRESSION: mic header_box still had 'muted' CSS class when unmuted!")
+
+        mic_card.set_muted(True)
+        self.assertTrue(mic_card.header_box.has_css_class("muted"), "REGRESSION: mic header_box did NOT have 'muted' CSS class after set_muted(True)!")
+
+    def test_application_streams_default_to_system_physical_sink_when_devices_removed(self):
+        """Invariant: When all devices/sink mixes are removed, application streams must default to the system physical sink and not be severed."""
+        from unittest.mock import patch, MagicMock
+        from wavecontroller.engine.pipewire_manager import PipeWireManager
+
+        pwm = PipeWireManager()
+        pwm.channels = [{"id": "spotify", "name": "Spotify", "type": "app"}]
+        pwm.assigned_apps = {"spotify": ["Spotify"]}
+        pwm.mixes = [] # Zero active sink mixes (all devices removed)
+
+        mock_out_ports = "spotify:output_FL\nspotify:output_FR\nalsa_output.pci-0000_00_1f.3.analog-stereo:monitor_FL"
+        mock_in_ports = "alsa_output.pci-0000_00_1f.3.analog-stereo:playback_FL\nalsa_output.pci-0000_00_1f.3.analog-stereo:playback_FR"
+
+        linked_cmds = []
+
+        def mock_check_output(cmd, **kwargs):
+            if cmd == ["pw-link", "-o"]:
+                return mock_out_ports
+            if cmd == ["pw-link", "-i"]:
+                return mock_in_ports
+            if cmd == ["pw-link", "-l"]:
+                return ""
+            if cmd[:4] == ["pw-metadata", "-n", "default", "0"]:
+                return "update: id:0 key:'default.audio.sink' value:'{\"name\":\"alsa_output.pci-0000_00_1f.3.analog-stereo\"}' type:'Spa:String:JSON'"
+            if cmd == ["pw-dump"]:
+                return "[]"
+            return ""
+
+        def mock_run(cmd, **kwargs):
+            linked_cmds.append(cmd)
+            return MagicMock()
+
+        with patch("subprocess.check_output", side_effect=mock_check_output), \
+             patch("subprocess.run", side_effect=mock_run):
+            pwm._sync_channel_audio_routing()
+
+            # Verify that pw-link was called to route spotify to physical playback ports, NOT severed
+            self.assertTrue(
+                any("spotify:output_FL" in " ".join(c) and "alsa_output" in " ".join(c) for c in linked_cmds),
+                "REGRESSION: Spotify was not routed to physical default audio sink when all devices were deleted!"
+            )
+
+    def test_multistream_chromium_parallel_port_linking(self):
+        """Invariant: When Chromium spawns multiple concurrent stream nodes (e.g. Node 134 + Node 149),
+        ALL active instances must be discovered and linked to the channel's submix loopbacks without shadowing."""
+        from unittest.mock import patch, MagicMock
+        from wavecontroller.engine.pipewire_manager import PipeWireManager
+        pwm = self.pwm
+        pwm._sync_channel_audio_routing = PipeWireManager._sync_channel_audio_routing.__get__(pwm, PipeWireManager)
+        pwm._link_stereo_ports = PipeWireManager._link_stereo_ports.__get__(pwm, PipeWireManager)
+        pwm._ensure_submix_loopback = MagicMock()
+        pwm.is_channel_linked = MagicMock(return_value=True)
+        pwm.is_channel_sink_exposed = MagicMock(return_value=False)
+        pwm.get_assigned_apps = MagicMock(return_value=["Google Chrome"])
+        pwm.channels = [{"id": "google_chrome", "name": "Google Chrome", "type": "app"}]
+        pwm.assigned_apps = {"google_chrome": ["Google Chrome"]}
+        pwm.mixes = [{"id": "personal", "name": "Personal Mix", "type": "sink"}]
+        pwm.channel_states = {"google_chrome": {"personal": {"volume": 80, "muted": False, "enabled": True}}}
+        pwm.is_channel_mix_enabled = MagicMock(return_value=True)
+
+        # Simulate dual streams: Node 134 (old idle) + Node 149 (new video playback)
+        mock_out_ports = (
+            " 164 Google Chrome:output_FL\n"
+            " 165 Google Chrome:output_FR\n"
+            " 189 Google Chrome:output_FL\n"
+            " 190 Google Chrome:output_FR\n"
+        )
+        mock_in_ports = (
+            " 141 input.WaveController_submix_google_chrome_personal:input_FL\n"
+            " 142 input.WaveController_submix_google_chrome_personal:input_FR\n"
+        )
+        mock_port_meta = {
+            "google chrome:output_fl": {"binary": "chrome", "app_name": "Google Chrome"},
+            "google chrome:output_fr": {"binary": "chrome", "app_name": "Google Chrome"}
+        }
+
+        linked_cmds = []
+        def mock_check_output(cmd, **kwargs):
+            if cmd == ["pw-link", "-I", "-o"] or cmd == ["pw-link", "-o"]:
+                return mock_out_ports
+            if cmd == ["pw-link", "-I", "-i"] or cmd == ["pw-link", "-i"]:
+                return mock_in_ports
+            if cmd == ["pw-link", "-I", "-l"] or cmd == ["pw-link", "-l"]:
+                return ""
+            if cmd == ["pw-dump"]:
+                return "[]"
+            return ""
+
+        def mock_run(cmd, **kwargs):
+            linked_cmds.append(cmd)
+            return MagicMock()
+
+        with patch("subprocess.check_output", side_effect=mock_check_output), \
+             patch("subprocess.run", side_effect=mock_run), \
+             patch.object(pwm, "_get_active_port_metadata_map", return_value=mock_port_meta):
+            pwm._sync_channel_audio_routing(channel_id="google_chrome")
+
+            # Verify that BOTH streams (Node 134 IDs: 164, 165 AND Node 149 IDs: 189, 190) were linked
+            linked_flat = [" ".join(c) for c in linked_cmds]
+            self.assertTrue(
+                any("189" in cmd and "141" in cmd for cmd in linked_flat),
+                "REGRESSION: New Chromium stream Node 149 FL (port 189) was NOT linked to submix loopback!"
+            )
+            self.assertTrue(
+                any("190" in cmd and "142" in cmd for cmd in linked_flat),
+                "REGRESSION: New Chromium stream Node 149 FR (port 190) was NOT linked to submix loopback!"
+            )
+            self.assertTrue(
+                any("164" in cmd and "141" in cmd for cmd in linked_flat),
+                "REGRESSION: Old Chromium stream Node 134 FL (port 164) was NOT linked to submix loopback!"
+            )
+
+
+class TestRoutingSubManagersInvariants(unittest.TestCase):
+    """Verifies that dedicated routing sub-managers (source_manager, sink_manager, app_tracker) enforce isolated contracts."""
+
+    def test_source_manager_microphone_discovery(self):
+        """MicrophoneSourceManager must accurately discover ALSA capture ports and ignore submix loopbacks."""
+        from wavecontroller.engine.routing.source_manager import MicrophoneSourceManager
+        mgr = MicrophoneSourceManager()
+        
+        mock_ports = [
+            "alsa_input.usb-Elgato_Systems_Elgato_Wave_XLR_DS16M2A01160-00.analog-stereo:capture_FL",
+            "alsa_input.usb-Elgato_Systems_Elgato_Wave_XLR_DS16M2A01160-00.analog-stereo:capture_FR",
+            "alsa_output.usb-Elgato_Systems_Elgato_Wave_XLR_DS16M2A01160-00.analog-stereo:playback_FL",
+            "output.WaveController_submix_mic_chat_mix:output_FL",
+            "WaveController_personal_Sink:monitor_FL"
+        ]
+        matched = mgr.discover_microphone_capture_ports("mic", "Elgato Wave XLR", ["Elgato Wave XLR"], mock_ports)
+        self.assertEqual(len(matched), 2)
+        self.assertTrue(any("capture_FL" in p for p in matched))
+        self.assertTrue(any("capture_FR" in p for p in matched))
+        self.assertFalse(any("playback_" in p for p in matched))
+        self.assertFalse(any("WaveController_" in p for p in matched))
+
+    def test_sink_manager_physical_output_resolution(self):
+        """SubmixSinkManager must resolve target device names to exact physical ALSA playback ports."""
+        from wavecontroller.engine.routing.sink_manager import SubmixSinkManager
+        from wavecontroller.engine.graph.stream_resolver import resolve_physical_device_ports
+
+        mock_in_ports = [
+            "alsa_output.usb-Elgato_Systems_Elgato_Wave_XLR_DS16M2A01160-00.analog-stereo:playback_FL",
+            "alsa_output.usb-Elgato_Systems_Elgato_Wave_XLR_DS16M2A01160-00.analog-stereo:playback_FR",
+            "input.WaveController_submix_spotify_personal:input_FL",
+            "WaveController_personal_Sink:playback_FL"
+        ]
+        fl_set, fr_set = resolve_physical_device_ports("Elgato Wave XLR Analog Stereo", mock_in_ports)
+        self.assertEqual(len(fl_set), 1)
+        self.assertEqual(len(fr_set), 1)
+        self.assertTrue(any("playback_FL" in p for p in fl_set))
+        self.assertTrue(any("playback_FR" in p for p in fr_set))
+
+
+    def test_device_removal_asset_teardown_isolation(self):
+        """Removing a hardware device must tear down its tied physical channel and mix while strictly preserving secondary channels."""
+        from wavecontroller.engine.pipewire_manager import PipeWireManager
+        from wavecontroller.engine.usb_hardware import USBHardwareManager
+
+        pwm = PipeWireManager()
+        pwm.channels = [
+            {"id": "mic", "name": "Elgato Wave XLR", "type": "source"},
+            {"id": "test_group", "name": "test group", "type": "group", "expose_sink": True}
+        ]
+        pwm.mixes = [
+            {"id": "personal", "name": "Personal Mix", "type": "sink", "target_device": "Elgato Wave XLR Analog Stereo"},
+            {"id": "chat_mix", "name": "Chat Mix", "type": "source"}
+        ]
+        pwm.assigned_apps = {
+            "mic": ["Elgato Wave XLR", "usb-Elgato_Systems_Elgato_Wave_XLR_DS16M2A01160-00"],
+            "test_group": ["Spotify", "Discord"]
+        }
+
+        hw = USBHardwareManager()
+        hw.pipewire_mgr = pwm
+        pwm.hardware_mgr = hw
+
+        # Verify is_default_device detects Elgato Wave XLR
+        self.assertTrue(hw.is_default_device("usb-Elgato_Systems_Elgato_Wave_XLR_DS16M2A01160-00"))
+
+        # Trigger device associated channel and mix removal
+        pwm.remove_device_associated_channels_and_mixes("usb-Elgato_Systems_Elgato_Wave_XLR_DS16M2A01160-00")
+
+        # Verify Elgato Wave XLR mic and personal mix were removed
+        remaining_ch_ids = [c["id"] for c in pwm.channels]
+        remaining_mix_ids = [m["id"] for m in pwm.mixes]
+
+        self.assertNotIn("mic", remaining_ch_ids, "REGRESSION: Tied physical mic channel was not removed when device was removed!")
+        self.assertIn("test_group", remaining_ch_ids, "REGRESSION: Secondary group channel was unexpectedly deleted!")
+        self.assertNotIn("personal", remaining_mix_ids, "REGRESSION: Tied personal mix was not removed when target device was removed!")
+        self.assertIn("chat_mix", remaining_mix_ids, "REGRESSION: Independent chat mix was unexpectedly deleted!")
+
+    def test_mix_system_default_setting_and_gating(self):
+        """Invariant: set_mix_system_default sets is_default mutually exclusively among mixes of same type."""
+        from wavecontroller.engine.pipewire_manager import PipeWireManager
+        pwm = PipeWireManager()
+        pwm.mixes = [
+            {"id": "personal", "name": "Personal Mix", "type": "sink", "is_default": True},
+            {"id": "stream_mix", "name": "Stream Mix", "type": "sink", "is_default": False},
+            {"id": "chat_mix", "name": "Chat Mix", "type": "source", "is_default": True},
+            {"id": "record_mix", "name": "Record Mix", "type": "source", "is_default": False}
+        ]
+
+        self.assertTrue(pwm.is_mix_system_default("personal"))
+        self.assertFalse(pwm.is_mix_system_default("stream_mix"))
+        self.assertTrue(pwm.is_mix_system_default("chat_mix"))
+        self.assertFalse(pwm.is_mix_system_default("record_mix"))
+
+        # Promote stream_mix to default sink
+        pwm.set_mix_system_default("stream_mix", True)
+        self.assertFalse(pwm.is_mix_system_default("personal"))
+        self.assertTrue(pwm.is_mix_system_default("stream_mix"))
+        # Verify source mixes unaffected
+        self.assertTrue(pwm.is_mix_system_default("chat_mix"))
+
+        # Promote record_mix to default source
+        pwm.set_mix_system_default("record_mix", True)
+        self.assertFalse(pwm.is_mix_system_default("chat_mix"))
+        self.assertTrue(pwm.is_mix_system_default("record_mix"))
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
 
 
 
