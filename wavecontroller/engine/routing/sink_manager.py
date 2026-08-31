@@ -43,7 +43,7 @@ class SubmixSinkManager:
                 needed_nodes[node_name] = (f"WaveController {m_name} (Sink)", "Audio/Sink", False)
             else:
                 node_name = f"WaveController_{m_id}_Source"
-                needed_nodes[node_name] = (f"WaveController {m_name}", "Audio/Source", True)
+                needed_nodes[node_name] = (f"WaveController {m_name}", "Audio/Source/Virtual")
 
         for ch in channels:
             ch_id = ch["id"]
@@ -89,13 +89,9 @@ class SubmixSinkManager:
         for node_name, node_tuple in needed_nodes.items():
             desc = node_tuple[0]
             media_class = node_tuple[1]
-            is_source = node_tuple[2] if len(node_tuple) > 2 else False
             if node_name not in existing_active_names:
                 try:
-                    if is_source:
-                        cmd = f'{{ factory.name=support.null-audio-sink node.name="{node_name}" node.description="{desc}" media.class={media_class} object.linger=true node.always-process=true node.passive=false }}'
-                    else:
-                        cmd = f'{{ factory.name=support.null-audio-sink node.name="{node_name}" node.description="{desc}" media.class={media_class} object.linger=true }}'
+                    cmd = f'{{ factory.name=support.null-audio-sink node.name="{node_name}" node.description="{desc}" media.class={media_class} object.linger=true }}'
                     subprocess.run(["pw-cli", "create-node", "adapter", cmd], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                     nodes_created = True
                 except Exception:
