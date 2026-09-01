@@ -94,6 +94,7 @@ class PipeWireManager:
         self._in_flight_nodes = set()
         self._pending_node_dispatches = {}
         self._bound_stream_nodes = set()
+        self._bound_unassigned_nodes = set()   # tracks unassigned streams bound to physical fallback
         self.on_external_change_callback = None
         self._is_sleeping = False
         self.peak_monitor = None
@@ -793,6 +794,7 @@ class PipeWireManager:
                     if props.get("media.class") == "Stream/Output/Audio":
                         nid = str(obj["id"])
                         self._bound_stream_nodes.discard(obj["id"])
+                        self._bound_unassigned_nodes.discard(obj["id"])
                         subprocess.run(["pw-metadata", "-n", "default", "-d", nid, "target.object"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                         subprocess.run(["pw-metadata", "-n", "default", "-d", nid, "target.node"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                         subprocess.run(["wpctl", "set-volume", nid, "1.00"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -866,8 +868,184 @@ class PipeWireManager:
             return []
 
     def _sync_unassigned_app_streams(self, out_ports=None, in_ports=None, links_map=None, port_meta=None):
-        """Unassigned application streams route natively via WirePlumber directly to the default output (Personal Mix)."""
-        pass
+        """Routes unassigned application streams to the configured physical output device (fallback).
+
+        An 'unassigned' stream is any Stream/Output/Audio PipeWire node that does NOT belong
+        to any channel's assigned_apps list. WirePlumber sets target.node=-1 for such streams
+        when it cannot find a valid default sink (because WaveController_personal_Sink has
+        replaced it). This method explicitly binds those streams to the physical hardware output
+        via pw-metadata target.object and pw-link, overriding the -1 inhibitor.
+        """
+        try:
+            # 1. Build the complete set of match tokens for ALL assigned apps across ALL channels
+            with self._lock:
+                all_assigned_apps = []
+                for apps in self.assigned_apps.values():
+                    all_assigned_apps.extend(apps)
+
+            assigned_tokens_list = [self._get_match_tokens(a) for a in all_assigned_apps]
+
+            # 2. Resolve the physical output: node name (for WirePlumber) and playback ports (for pw-link)
+            phys_ports = self._get_default_sink_playback_ports()
+            if not phys_ports:
+                return
+
+            # Determine the physical sink node name — MUST be an alsa_output.* hardware node,
+            # never a WaveController virtual sink (which would create a silent routing loop).
+            phys_node_name = None
+            for p in phys_ports:
+                clean_p = re.sub(r'^\d+\s+', '', p).strip()
+                if clean_p.startswith("alsa_output.") and ":" in clean_p:
+                    phys_node_name = clean_p.split(":")[0]
+                    break
+
+            # If _get_default_sink_playback_ports returned virtual/non-hardware ports,
+            # fall back to scanning pw-dump for the configured monitor device directly.
+            if not phys_node_name:
+                with self._lock:
+                    mon_dev = getattr(self, "selected_monitor_device", None) or ""
+                try:
+                    fallback_data = json.loads(subprocess.check_output(["pw-dump"], text=True, stderr=subprocess.DEVNULL))
+                    for _fb_obj in fallback_data:
+                        if _fb_obj.get("type") != "PipeWire:Interface:Node":
+                            continue
+                        _fb_props = _fb_obj.get("info", {}).get("props", {})
+                        _fb_name = _fb_props.get("node.name", "")
+                        if _fb_name.startswith("alsa_output.") and _fb_props.get("media.class") == "Audio/Sink":
+                            if not mon_dev or mon_dev.replace("alsa_output.", "").split(".")[0].lower() in _fb_name.lower():
+                                phys_node_name = _fb_name
+                                break
+                except Exception:
+                    pass
+
+            if not phys_node_name:
+                return
+
+            # Refresh phys_ports to ensure they are from the resolved physical node
+            try:
+                all_in_ports_raw = subprocess.check_output(["pw-link", "-i"], text=True, stderr=subprocess.DEVNULL)
+                all_in_ports = [l.strip() for l in all_in_ports_raw.splitlines() if l.strip()]
+                phys_ports = [p for p in all_in_ports if p.startswith(f"{phys_node_name}:") and ":playback_" in p]
+            except Exception:
+                pass
+
+            if not phys_ports:
+                return
+
+            # Separate FL/FR playback ports
+            phys_fl = [p for p in phys_ports if any(s in p.lower().split(":")[-1] for s in ("_fl", "playback_0", "playback_fl"))]
+            phys_fr = [p for p in phys_ports if any(s in p.lower().split(":")[-1] for s in ("_fr", "playback_1", "playback_fr"))]
+
+            # 3. Enumerate all live Stream/Output/Audio nodes from pw-dump
+            try:
+                pw_data = json.loads(subprocess.check_output(["pw-dump"], text=True, stderr=subprocess.DEVNULL))
+            except Exception:
+                return
+
+            if not hasattr(self, "_bound_unassigned_nodes"):
+                self._bound_unassigned_nodes = set()
+
+            # Known system/compositor binaries that should NOT be forcibly routed
+            _SYSTEM_STREAM_SKIP = frozenset({
+                "mutter", "gnome-shell", "gnome-session", "gnome-settings-daemon",
+                "pulseaudio", "pipewire-pulse", "pipewire-media-session", "wireplumber",
+                "pavucontrol", "easyeffects", "carla", "qjackctl",
+                "gst-launch", "gst-plugin-scanner",
+            })
+
+            for obj in pw_data:
+                if obj.get("type") != "PipeWire:Interface:Node":
+                    continue
+                props = obj.get("info", {}).get("props", {})
+                if props.get("media.class") != "Stream/Output/Audio":
+                    continue
+
+                node_name = props.get("node.name", "")
+                app_name = props.get("application.name", "")
+                binary = props.get("application.process.binary", "")
+
+                # Skip all WaveController-internal nodes
+                if (node_name.startswith("WaveController_") or
+                        node_name.startswith("output.WaveController_") or
+                        node_name.startswith("input.WaveController_") or
+                        node_name.startswith("wave_")):
+                    continue
+
+                # Skip known system/compositor streams that should not be force-routed
+                binary_low = binary.lower() if binary else ""
+                node_low = node_name.lower()
+                app_low = app_name.lower() if app_name else ""
+                if any(s in binary_low or s in node_low or s in app_low for s in _SYSTEM_STREAM_SKIP):
+                    continue
+
+                # Skip streams with system-level media roles (notification, event, etc.)
+                media_role = props.get("media.role", "").lower()
+                if media_role in ("event", "notification", "phone", "animation", "a11y"):
+                    continue
+
+                nid = obj["id"]
+
+                # 4. Check if this node matches any assigned app
+                is_assigned = False
+                for tok_set in assigned_tokens_list:
+                    if self._node_matches_tokens(props, tok_set):
+                        is_assigned = True
+                        break
+
+                if is_assigned:
+                    # If the app is now assigned, remove it from unassigned tracking so it can be
+                    # re-bound to the fallback in a future cycle if it becomes unassigned again.
+                    self._bound_unassigned_nodes.discard(nid)
+                    continue
+
+                # 5. This is a genuinely unassigned stream — bind it to the physical output
+                if nid not in self._bound_unassigned_nodes:
+                    # Assert WirePlumber target.object → physical hardware sink
+                    # This overrides the -1 inhibitor WirePlumber sets when it can't find the default sink
+                    subprocess.run(
+                        ["pw-metadata", "-n", "default", str(nid), "target.object", phys_node_name],
+                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+                    )
+                    self._bound_unassigned_nodes.add(nid)
+                    log.info(f"[WaveController.PipeWire] Unassigned stream '{app_name or node_name}' (id={nid}) "
+                             f"bound to physical output '{phys_node_name}' via fallback routing.")
+
+                # 6. Belt-and-suspenders: also pw-link directly to physical FL/FR ports
+                # Resolve this node's output ports from the provided out_ports list
+                app_fl_ports = []
+                app_fr_ports = []
+                if out_ports:
+                    for p in out_ports:
+                        clean_p = re.sub(r'^\d+\s+', '', p).strip()
+                        if clean_p.startswith("WaveController_") or clean_p.startswith("output.WaveController_") or clean_p.startswith("wave_") or clean_p.startswith("alsa_"):
+                            continue
+                        # Match port to this specific node by node_name prefix
+                        if not (clean_p.startswith(f"{node_name}:") or (app_name and clean_p.startswith(f"{app_name}:"))):
+                            continue
+                        p_low = clean_p.split(":")[-1].lower()
+                        if any(s in p_low for s in ("_fl", "output_fl", "playback_fl", "output_0", "_l")):
+                            app_fl_ports.append(clean_p)
+                        elif any(s in p_low for s in ("_fr", "output_fr", "playback_fr", "output_1", "_r")):
+                            app_fr_ports.append(clean_p)
+
+                # Resolve current links for these ports to avoid redundant pw-link calls
+                cur_links = links_map or {}
+                for src_port in app_fl_ports:
+                    existing_dests = {re.sub(r'^\d+\s+', '', d).strip() for d in cur_links.get(src_port, set())}
+                    for dest in phys_fl:
+                        clean_dest = re.sub(r'^\d+\s+', '', dest).strip()
+                        if clean_dest not in existing_dests:
+                            subprocess.run(["pw-link", src_port, clean_dest], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+                for src_port in app_fr_ports:
+                    existing_dests = {re.sub(r'^\d+\s+', '', d).strip() for d in cur_links.get(src_port, set())}
+                    for dest in phys_fr:
+                        clean_dest = re.sub(r'^\d+\s+', '', dest).strip()
+                        if clean_dest not in existing_dests:
+                            subprocess.run(["pw-link", src_port, clean_dest], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+        except Exception:
+            pass
 
     def _reconcile_app_streams_fast(self):
         """Ultra-fast reactive stream interceptor ensuring assigned apps
@@ -1319,6 +1497,11 @@ class PipeWireManager:
 
             # 2. Resync channel routing
             self._sync_channel_audio_routing(channel_id=channel_id)
+
+            # 3. Immediately route this app to the physical fallback output — do not wait for
+            #    the next reconcile cycle.  Without this, WirePlumber re-asserts target.node=-1
+            #    and the stream floats silently until the watchdog fires.
+            self._sync_unassigned_app_streams()
             self._notify_peak_monitor_refresh()
 
         threading.Thread(target=_bg, daemon=True).start()
@@ -2323,6 +2506,54 @@ class PipeWireManager:
 
                     # Link Stage 2: Loopback Output -> Mix Target Input
                     self._link_stereo_ports(lb_out_ports, target_in_ports, unlink=False)
+
+                    # Link Stage 2 — Verification & Retry: pw-link sometimes silently drops FR links
+                    # due to port ID ordering or graph state. Verify each lb_out port has a live
+                    # link to the corresponding target_in port by checking pw-dump Link objects,
+                    # then re-issue pw-link by numeric ID if the link is missing.
+                    try:
+                        # Build a set of (output-port-id, input-port-id) tuples from live links
+                        live_links_raw = subprocess.check_output(["pw-dump"], text=True, stderr=subprocess.DEVNULL)
+                        live_links_data = json.loads(live_links_raw)
+                        active_port_pairs = set()
+                        for _obj in live_links_data:
+                            if _obj.get("type") == "PipeWire:Interface:Link":
+                                _info = _obj.get("info", {})
+                                if _info.get("state") in ("active", "paused", "allocating"):
+                                    active_port_pairs.add((_info.get("output-port-id"), _info.get("input-port-id")))
+
+                        for lb_p in lb_out_ports:
+                            lb_id_str = lb_p.split()[0] if lb_p.split()[0].isdigit() else None
+                            if not lb_id_str:
+                                continue
+                            lb_id = int(lb_id_str)
+                            lb_clean = re.sub(r'^\d+\s+', '', lb_p).strip()
+                            suffix_low = lb_clean.split(":")[-1].lower()
+                            is_lb_fr = "_fr" in suffix_low
+                            is_lb_fl = "_fl" in suffix_low
+
+                            for tgt_p in target_in_ports:
+                                tgt_id_str = tgt_p.split()[0] if tgt_p.split()[0].isdigit() else None
+                                if not tgt_id_str:
+                                    continue
+                                tgt_id = int(tgt_id_str)
+                                tgt_clean = re.sub(r'^\d+\s+', '', tgt_p).strip()
+                                tgt_suf_low = tgt_clean.split(":")[-1].lower()
+                                is_tgt_fr = "_fr" in tgt_suf_low
+                                is_tgt_fl = "_fl" in tgt_suf_low
+
+                                if not ((is_lb_fl and is_tgt_fl) or (is_lb_fr and is_tgt_fr)):
+                                    continue
+
+                                if (lb_id, tgt_id) not in active_port_pairs:
+                                    # Link is missing — re-issue by numeric ID
+                                    subprocess.run(
+                                        ["pw-link", lb_id_str, tgt_id_str],
+                                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+                                    )
+                                    log.debug(f"[WaveController.PipeWire] Submix link re-issued: port {lb_id} -> {tgt_id} ({lb_clean} -> {tgt_clean})")
+                    except Exception:
+                        pass
                 else:
                     self._stop_submix_loopback(ch_id, m_id)
                     self._link_stereo_ports(ch_out_ports, target_in_ports, unlink=True)
