@@ -31,7 +31,7 @@ class UnifiedDeviceSettingsView(Gtk.Box):
         self.device_key = device_info.get("device_key", "")
         self.device_type = device_info.get("type", "duplex")
         dev_name_low = str(device_info.get("name", "")).lower()
-        self.is_elgato = device_info.get("is_elgato", False) or any(w in dev_name_low for w in ("elgato", "wave xlr", "wave:3", "wave:1", "wave neo")) or "0fd9" in self.device_key.lower()
+        self.is_elgato = device_info.get("is_elgato", False) or any(w in dev_name_low for w in ("elgato", "wave xlr", "wave xlr mk2", "wave:3", "wave:1", "wave neo")) or "0fd9" in self.device_key.lower() or "00b6" in self.device_key.lower()
         self._syncing_from_hw = False
 
         self.set_margin_top(16)
@@ -766,12 +766,23 @@ class UnifiedDeviceSettingsView(Gtk.Box):
             self.on_device_renamed()
 
     def _get_device_hero_image_path(self) -> str:
-        is_wave_3 = "wave:3" in self.title_lbl.get_text().lower() or "wave 3" in self.title_lbl.get_text().lower() or "wave_3" in self.device_key.lower() or "wave3" in self.device_key.lower()
+        title_text = self.title_lbl.get_text().lower()
+        key_text = self.device_key.lower()
+        is_wave_3 = "wave:3" in title_text or "wave 3" in title_text or "wave_3" in key_text or "wave3" in key_text
+        is_wave_xlr_mk2 = "wave xlr mk2" in title_text or "wave_xlr_mk2" in key_text or "mk2" in title_text or "mk2" in key_text or "00b6" in key_text
         if is_wave_3:
             candidates = [
                 os.path.join(os.path.dirname(__file__), "..", "..", "assets", "icons", "ElgatoWave3.png"),
                 os.path.expanduser("~/.local/share/wavecontroller/assets/icons/ElgatoWave3.png"),
                 os.path.expanduser("~/Project stuf/Elgato.WaveLink_3.2.10.4073_x64/Assets/ElgatoWave3.png"),
+            ]
+        elif is_wave_xlr_mk2:
+            candidates = [
+                os.path.join(os.path.dirname(__file__), "..", "..", "assets", "icons", "ElgatoWaveXLRMK2_small.png"),
+                os.path.join(os.path.dirname(__file__), "..", "..", "assets", "icons", "ElgatoWaveXLRMK2.png"),
+                os.path.join(os.path.dirname(__file__), "..", "..", "assets", "icons", "elgato-wave-xlr-mk2.png"),
+                os.path.expanduser("~/.local/share/wavecontroller/assets/icons/ElgatoWaveXLRMK2_small.png"),
+                os.path.expanduser("~/.local/share/wavecontroller/assets/icons/ElgatoWaveXLRMK2.png"),
             ]
         else:
             candidates = [

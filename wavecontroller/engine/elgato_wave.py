@@ -153,6 +153,43 @@ PROFILE_WAVE_XLR = ElgatoProfile(
     icon_name="ElgatoWaveXLR.png",
 )
 
+PROFILE_WAVE_XLR_MK2 = ElgatoProfile(
+    key="wave_xlr_mk2",
+    display_name="Wave XLR MK2",
+    vid=0x0FD9,
+    pid=0x00B6,
+    wvalue_config=0x0000,
+    wvalue_meter=0x0001,
+    wvalue_devinfo=0x000A,
+    windex=0x3303,
+    config_len=34,
+    meter_len=10,
+    devinfo_len=51,
+    devinfo_api=(0, 1),
+    devinfo_fw=(6, 7, 8),
+    devinfo_serial=(27, 47),
+    off_gain=0,
+    gain_max_db=75.0,
+    gain_raw_max=0x4B00,
+    gain_scale=256.0,
+    off_mute=4,
+    off_phantom=6,
+    off_clipguard=7,
+    off_low_cut=8,
+    off_hp_vol=9,
+    hp_fmt="<h",
+    hp_scale=256.0,
+    off_vol_select=14,
+    vol_select_map={0x01: "gain", 0x02: "hp", 0x03: "mix"},
+    off_low_z=33,
+    off_monitor_mix=12,
+    mix_max=0x6400,
+    off_rgb_mute=15,
+    off_rgb_ring=18,
+    claim_interface=3,
+    icon_name="ElgatoWaveXLRMK2.png",
+)
+
 PROFILE_WAVE_3 = ElgatoProfile(
     key="wave3",
     display_name="Wave:3",
@@ -190,7 +227,7 @@ PROFILE_WAVE_3 = ElgatoProfile(
     icon_name="ElgatoWave3.png",
 )
 
-ELGATO_PROFILES = [PROFILE_WAVE_XLR, PROFILE_WAVE_3]
+ELGATO_PROFILES = [PROFILE_WAVE_XLR, PROFILE_WAVE_XLR_MK2, PROFILE_WAVE_3]
 
 
 class ElgatoWaveDevice:

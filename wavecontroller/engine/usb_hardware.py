@@ -617,8 +617,10 @@ class USBHardwareManager:
         form_factor = form_factor.lower()
         icon_name = icon_name.lower()
 
-        # 0. Elgato Wave XLR Dedicated Hardware
-        if "wave xlr" in name_low or "wave_xlr" in name_low:
+        # 0. Elgato Wave XLR / XLR MK2 Dedicated Hardware
+        if any(token in name_low for token in ("wave xlr mk2", "wave_xlr_mk2", "mk2")) or "00b6" in name_low:
+            return "elgato-wave-xlr-mk2-symbolic"
+        if "wave xlr" in name_low or "wave_xlr" in name_low or "0fd9" in name_low:
             return "elgato-wave-xlr-symbolic"
 
         # 1. Desktop Standalone Microphones (Fifine, Wave, Blue Yeti, Rode, Shure, QuadCast, etc.)
@@ -661,7 +663,10 @@ class USBHardwareManager:
         for k, dev in self.discovered_devices.items():
             if dev.get("name") == k_str or k_str.lower() in dev.get("name", "").lower():
                 return dev.get("icon", "audio-input-microphone-symbolic")
-        if any(w in k_str.lower() for w in ("wave xlr", "wave_xlr", "wave:3", "wave_3", "wave:1", "wave_1", "wave neo", "wave_neo", "elgato wave")) or (k_str == self.device_name and self.device_type == "elgato") or "0fd9" in k_str.lower():
+        k_lower = k_str.lower()
+        if any(w in k_lower for w in ("wave xlr mk2", "wave_xlr_mk2", "00b6", "mk2")):
+            return "elgato-wave-xlr-mk2-symbolic"
+        if any(w in k_lower for w in ("wave xlr", "wave_xlr", "wave:3", "wave_3", "wave:1", "wave_1", "wave neo", "wave_neo", "elgato wave")) or (k_str == self.device_name and self.device_type == "elgato") or "0fd9" in k_lower:
             return "elgato-wave-xlr-symbolic"
         if any(m in k_str.lower() for m in ("mic", "fefine", "fifine", "capture", "input")):
             return "audio-input-microphone-symbolic"

@@ -553,6 +553,16 @@ class TestTokenMatchingInvariants(unittest.TestCase):
         self.assertIsNone(PROFILE_WAVE_3.claim_interface)
         self.assertEqual(PROFILE_WAVE_3.icon_name, "ElgatoWave3.png")
 
+    def test_wave_xlr_mk2_profile_registration(self):
+        """Invariant: Wave XLR MK2 must be recognized as an Elgato device via its USB PID."""
+        from wavecontroller.engine.elgato_wave import ELGATO_PROFILES
+        mk2 = next((p for p in ELGATO_PROFILES if p.display_name == "Wave XLR MK2"), None)
+        self.assertIsNotNone(mk2)
+        self.assertEqual(mk2.vid, 0x0FD9)
+        self.assertEqual(mk2.pid, 0x00B6)
+        self.assertEqual(mk2.gain_max_db, 75.0)
+        self.assertEqual(mk2.claim_interface, 3)
+
         # Test circuit breaker initialization
     def test_submix_loopback_monitor_sink_flag_enforced(self):
         """Invariant: Virtual channel sink nodes MUST be targeted with is_sink=True to capture monitor ports."""
