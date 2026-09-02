@@ -83,8 +83,6 @@ class MixHeaderCard(Gtk.Box):
 
         self.default_badge = Gtk.Label()
         self.default_badge.add_css_class("device-badge")
-        self.default_badge.set_valign(Gtk.Align.CENTER)
-        header_title_row.append(self.default_badge)
         title_box.append(header_title_row)
 
         is_personal_mix = mix_info.get("id") in ("personal", "personal_mix")
@@ -97,6 +95,8 @@ class MixHeaderCard(Gtk.Box):
         self.subtitle_lbl.set_halign(Gtk.Align.START)
         self.subtitle_lbl.set_ellipsize(3)
         title_box.append(self.subtitle_lbl)
+        self.default_badge.set_halign(Gtk.Align.START)
+        title_box.append(self.default_badge)
 
         self._refresh_default_badge()
 

@@ -15,11 +15,12 @@ class MixerMatrixView(Gtk.Box):
     Main Matrix Sub-Mixer view with dual-track stereo volume sliders,
     live green audio meters, custom mix creation (+), and smart app channel creation.
     """
-    def __init__(self, pipewire_mgr, peak_monitor, hardware_mgr):
+    def __init__(self, pipewire_mgr, peak_monitor, hardware_mgr, on_mix_list_changed=None):
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=16)
         self.pipewire_mgr = pipewire_mgr
         self.peak_monitor = peak_monitor
         self.hardware_mgr = hardware_mgr
+        self.on_mix_list_changed = on_mix_list_changed
         self._syncing_hw_balance = False
         
         self.channel_cards = {}
@@ -183,7 +184,7 @@ class MixerMatrixView(Gtk.Box):
                     mix,
                     pipewire_mgr=self.pipewire_mgr,
                     hardware_mgr=self.hardware_mgr,
-                    on_remove_callback=lambda m_id: GLib.idle_add(self._rebuild_grid),
+                    on_remove_callback=lambda m_id: GLib.idle_add(self._on_mix_removed),
                     on_edit_callback=self._on_mix_edited,
                     on_reorder_callback=self._on_reorder_mix,
                     on_hover_col_callback=self._on_hover_col,
@@ -315,6 +316,14 @@ class MixerMatrixView(Gtk.Box):
         for mh in list(self.mix_headers.values()):
             if hasattr(mh, "update_ui_state"):
                 mh.update_ui_state()
+        if self.on_mix_list_changed:
+            self.on_mix_list_changed()
+
+    def _on_mix_removed(self):
+        self._rebuild_grid()
+        if self.on_mix_list_changed:
+            self.on_mix_list_changed()
+        return False
 
     def _on_reorder_mix(self, src_mix_id: str, dest_mix_id: str):
         if self.pipewire_mgr.reorder_mixes_by_id(src_mix_id, dest_mix_id):
@@ -613,6 +622,8 @@ class MixerMatrixView(Gtk.Box):
                 reset_create_mix_form()
                 popover.popdown()
                 GLib.idle_add(self._rebuild_grid)
+                if self.on_mix_list_changed:
+                    self.on_mix_list_changed()
 
         add_btn.connect("clicked", on_add)
 

@@ -3311,31 +3311,40 @@ class PipeWireManager:
             self._save_state_to_config(immediate=True)
 
         if target_node_name and defaults_enabled:
-            try:
-                out = subprocess.check_output(["pw-dump"], text=True, stderr=subprocess.DEVNULL)
-                found = False
-                for obj in json.loads(out):
-                    if obj.get("type") == "PipeWire:Interface:Node":
-                        props = obj.get("info", {}).get("props", {})
-                        if props.get("node.name") == target_node_name:
-                            if m_type == "source":
-                                result = subprocess.run(
-                                    ["pw-metadata", "-n", "default", "0", "default.audio.source", json.dumps({"name": target_node_name})],
+            def _apply_default_node():
+                for attempt in range(20):
+                    try:
+                        out = subprocess.check_output(["pw-dump"], text=True, stderr=subprocess.DEVNULL)
+                        node_id = None
+                        for obj in json.loads(out):
+                            if obj.get("type") == "PipeWire:Interface:Node":
+                                props = obj.get("info", {}).get("props", {})
+                                if props.get("node.name") == target_node_name:
+                                    node_id = str(obj["id"])
+                                    break
+                        if node_id:
+                            default_key = "default.audio.source" if m_type == "source" else "default.audio.sink"
+                            metadata_result = subprocess.run(
+                                ["pw-metadata", "-n", "default", "0", default_key, json.dumps({"name": target_node_name})],
+                                stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL
+                            )
+                            if m_type == "sink":
+                                subprocess.run(
+                                    ["wpctl", "set-default", node_id],
                                     stdout=subprocess.DEVNULL,
                                     stderr=subprocess.DEVNULL
                                 )
-                            else:
-                                result = subprocess.run(["wpctl", "set-default", str(obj["id"])], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                            if result.returncode == 0:
-                                log.info(f"[WaveController.PipeWire] Set system default {m_type} to '{target_node_name}' (node_id={obj['id']})")
-                                found = True
-                            else:
-                                log.warning(f"[WaveController.PipeWire] wpctl rejected system default {m_type} node '{target_node_name}'")
-                            break
-                if not found:
-                    log.warning(f"[WaveController.PipeWire] Selected system default node '{target_node_name}' is not available yet")
-            except Exception as e:
-                log.warning(f"[WaveController.PipeWire] Failed to set wpctl default: {e}")
+                            if metadata_result.returncode == 0:
+                                log.info(f"[WaveController.PipeWire] Set system default {m_type} to '{target_node_name}' (node_id={node_id})")
+                                return
+                    except Exception as e:
+                        if attempt == 19:
+                            log.warning(f"[WaveController.PipeWire] Failed to set system default {m_type}: {e}")
+                    time.sleep(0.1)
+                log.warning(f"[WaveController.PipeWire] Selected system default node '{target_node_name}' is not available")
+
+            threading.Thread(target=_apply_default_node, daemon=True).start()
         elif not is_default and defaults_enabled:
             try:
                 out = subprocess.check_output(["pw-dump"], text=True, stderr=subprocess.DEVNULL)

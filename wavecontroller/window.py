@@ -98,7 +98,12 @@ class WaveMainWindow(Adw.ApplicationWindow):
         self.stack.set_hexpand(True)
         self.stack.set_vexpand(True)
 
-        self.mixer_view = MixerMatrixView(self.pipewire_mgr, self.peak_monitor, self.hardware_mgr)
+        self.mixer_view = MixerMatrixView(
+            self.pipewire_mgr,
+            self.peak_monitor,
+            self.hardware_mgr,
+            on_mix_list_changed=self._on_mix_list_changed
+        )
         self.stack.add_named(self.mixer_view, "mixes")
 
         self.effects_view = EffectsView()
@@ -660,6 +665,10 @@ class WaveMainWindow(Adw.ApplicationWindow):
     def _on_system_defaults_changed(self):
         if hasattr(self, "mixer_view") and self.mixer_view:
             self.mixer_view.refresh_all_faders()
+        if hasattr(self, "settings_view") and hasattr(self.settings_view, "refresh_mix_defaults"):
+            self.settings_view.refresh_mix_defaults()
+
+    def _on_mix_list_changed(self):
         if hasattr(self, "settings_view") and hasattr(self.settings_view, "refresh_mix_defaults"):
             self.settings_view.refresh_mix_defaults()
 
