@@ -30,6 +30,8 @@ class WaveMainWindow(Adw.ApplicationWindow):
 
         self.device_views = {}
         self.device_buttons = {}
+        self._sidebar_text_widgets = []
+        self._sidebar_collapsed = config_manager.get("sidebar_collapsed", False)
 
         # Restore saved window size & maximized state
         win_state = config_manager.get("window_state", {"width": 1280, "height": 780, "maximized": False})
@@ -81,6 +83,15 @@ class WaveMainWindow(Adw.ApplicationWindow):
         sidebar = self._build_sidebar()
         main_box.append(sidebar)
 
+        sidebar_toggle = Gtk.Button.new_from_icon_name("sidebar-show-symbolic")
+        sidebar_toggle.add_css_class("flat")
+        sidebar_toggle.add_css_class("wave-icon-btn")
+        sidebar_toggle.set_tooltip_text("Collapse Sidebar")
+        sidebar_toggle.connect("clicked", lambda btn: self._toggle_sidebar(btn, sidebar))
+        header_bar.pack_start(sidebar_toggle)
+        self._sidebar_toggle_btn = sidebar_toggle
+        self._apply_sidebar_state(sidebar)
+
         # 2. Main Content Stack
         self.stack = Gtk.Stack()
         self.stack.set_transition_type(Gtk.StackTransitionType.CROSSFADE)
@@ -97,7 +108,7 @@ class WaveMainWindow(Adw.ApplicationWindow):
             self.hardware_mgr,
             pipewire_mgr=self.pipewire_mgr,
             on_theme_changed=self._apply_theme,
-            on_hw_defaults_changed=self._on_devices_changed
+            on_hw_defaults_changed=self._on_system_defaults_changed
         )
         self.stack.add_named(self.settings_view, "settings")
 
@@ -159,12 +170,13 @@ class WaveMainWindow(Adw.ApplicationWindow):
     def _build_sidebar(self) -> Gtk.Box:
         sidebar = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
         sidebar.add_css_class("wave-sidebar")
-        sidebar.set_size_request(225, -1)
+        sidebar.set_size_request(68 if self._sidebar_collapsed else 225, -1)
         sidebar.set_hexpand(False)
 
         # Section 1: Mixes & Effects (Top / 1st Position)
         sec1_lbl = Gtk.Label(label="Mixes & Effects")
         sec1_lbl.add_css_class("wave-sidebar-section-title")
+        self._register_sidebar_text(sec1_lbl)
         sec1_lbl.set_halign(Gtk.Align.START)
         sidebar.append(sec1_lbl)
 
@@ -177,6 +189,7 @@ class WaveMainWindow(Adw.ApplicationWindow):
         mix_icon = Gtk.Image.new_from_icon_name("view-grid-symbolic")
         mix_icon.set_pixel_size(24)
         mix_lbl = Gtk.Label(label="Mixes")
+        self._register_sidebar_text(mix_lbl)
         mix_lbl.set_halign(Gtk.Align.START)
         mix_lbl.set_hexpand(True)
         mix_box.append(mix_icon)
@@ -193,6 +206,7 @@ class WaveMainWindow(Adw.ApplicationWindow):
         fx_icon = Gtk.Image.new_from_icon_name("system-run-symbolic")
         fx_icon.set_pixel_size(24)
         fx_lbl = Gtk.Label(label="Audio Effects (DSP)")
+        self._register_sidebar_text(fx_lbl)
         fx_lbl.set_halign(Gtk.Align.START)
         fx_lbl.set_hexpand(True)
         fx_box.append(fx_icon)
@@ -210,6 +224,7 @@ class WaveMainWindow(Adw.ApplicationWindow):
 
         sec2_dev_lbl = Gtk.Label(label="Audio Devices")
         sec2_dev_lbl.add_css_class("wave-sidebar-section-title")
+        self._register_sidebar_text(sec2_dev_lbl)
         sec2_dev_lbl.set_margin_start(0)
         sec2_dev_lbl.set_margin_end(0)
         sec2_dev_lbl.set_margin_top(0)
@@ -241,6 +256,7 @@ class WaveMainWindow(Adw.ApplicationWindow):
         set_icon = Gtk.Image.new_from_icon_name("emblem-system-symbolic")
         set_icon.set_pixel_size(24)
         set_lbl = Gtk.Label(label="Settings")
+        self._register_sidebar_text(set_lbl)
         set_lbl.set_halign(Gtk.Align.START)
         set_lbl.set_hexpand(True)
         set_box.append(set_icon)
@@ -251,6 +267,29 @@ class WaveMainWindow(Adw.ApplicationWindow):
 
         sidebar.set_margin_bottom(12)
         return sidebar
+
+    def _register_sidebar_text(self, widget):
+        self._sidebar_text_widgets.append(widget)
+
+    def _toggle_sidebar(self, button, sidebar):
+        self._sidebar_collapsed = not self._sidebar_collapsed
+        config_manager.set("sidebar_collapsed", self._sidebar_collapsed, immediate=True)
+        self._apply_sidebar_state(sidebar)
+
+    def _apply_sidebar_state(self, sidebar):
+        collapsed = self._sidebar_collapsed
+        sidebar.set_size_request(68 if collapsed else 225, -1)
+        for widget in self._sidebar_text_widgets:
+            if widget.get_parent() is not None:
+                widget.set_visible(not collapsed)
+        if hasattr(self, "_sidebar_toggle_btn"):
+            self._sidebar_toggle_btn.set_icon_name("sidebar-show-symbolic")
+            self._sidebar_toggle_btn.set_tooltip_text(
+                "Expand Sidebar" if collapsed else "Collapse Sidebar"
+            )
+        sidebar.remove_css_class("sidebar-collapsed")
+        if collapsed:
+            sidebar.add_css_class("sidebar-collapsed")
 
     def _rebuild_device_views(self, select_device_key: str = None):
         """Rebuilds the sidebar device buttons and views stack for all tracked devices."""
@@ -314,6 +353,8 @@ class WaveMainWindow(Adw.ApplicationWindow):
             row_box.append(icon_img)
 
             lbl = Gtk.Label(label=dev.get("display_name", dev.get("name", "Device")))
+            self._register_sidebar_text(lbl)
+            lbl.set_visible(not self._sidebar_collapsed)
             lbl.set_halign(Gtk.Align.START)
             lbl.set_hexpand(True)
             lbl.set_ellipsize(Pango.EllipsizeMode.END)
@@ -329,6 +370,8 @@ class WaveMainWindow(Adw.ApplicationWindow):
 
             badge_lbl = Gtk.Label(label=badge_text)
             badge_lbl.add_css_class("device-badge")
+            self._register_sidebar_text(badge_lbl)
+            badge_lbl.set_visible(not self._sidebar_collapsed)
             
             if not is_connected:
                 badge_lbl.add_css_class("offline")
@@ -610,8 +653,15 @@ class WaveMainWindow(Adw.ApplicationWindow):
         self._rebuild_device_views()
         if hasattr(self, "mixer_view") and self.mixer_view:
             self.mixer_view.refresh_device_names()
+            self.mixer_view.refresh_all_faders()
         if hasattr(self, "settings_view") and hasattr(self.settings_view, "refresh_device_list"):
             self.settings_view.refresh_device_list()
+
+    def _on_system_defaults_changed(self):
+        if hasattr(self, "mixer_view") and self.mixer_view:
+            self.mixer_view.refresh_all_faders()
+        if hasattr(self, "settings_view") and hasattr(self.settings_view, "refresh_mix_defaults"):
+            self.settings_view.refresh_mix_defaults()
 
     def _on_device_renamed(self, *a):
         self._refresh_sidebar_device_names()

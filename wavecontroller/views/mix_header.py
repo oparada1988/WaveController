@@ -331,6 +331,9 @@ class MixHeaderCard(Gtk.Box):
     def _refresh_default_badge(self):
         if not hasattr(self, "default_badge"):
             return
+        if not config_manager.get("system_defaults_enabled", False):
+            self.default_badge.set_visible(False)
+            return
         is_default = self.pipewire_mgr.is_mix_system_default(self.mix_info["id"]) if self.pipewire_mgr else False
         m_type = self.mix_info.get("type", "source" if self.mix_info.get("id") != "personal" else "sink")
         if is_default:
@@ -372,49 +375,7 @@ class MixHeaderCard(Gtk.Box):
         type_box.append(type_lbl)
         box.append(type_box)
 
-        # System Default Toggle Switch Row
-        def_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        def_row.set_margin_top(2)
-        def_row.set_margin_bottom(2)
-
-        is_sys_def = self.pipewire_mgr.is_mix_system_default(self.mix_info["id"]) if self.pipewire_mgr else False
         is_personal_mix = self.mix_info.get("id") in ("personal", "personal_mix")
-        if m_type == "sink" or is_personal_mix:
-            def_title = "Make OS System Default Output"
-        else:
-            def_title = "Make OS System Default Input"
-
-        def_lbl = Gtk.Label(label=def_title, hexpand=True, halign=Gtk.Align.START)
-        def_lbl.add_css_class("mix-header-subtitle")
-        def_row.append(def_lbl)
-
-        self.def_switch = Gtk.Switch()
-        self.def_switch.set_valign(Gtk.Align.CENTER)
-        self.def_switch.set_active(is_sys_def)
-
-        def on_switch_toggled(sw, gparam):
-            new_val = sw.get_active()
-            if self.pipewire_mgr:
-                self.pipewire_mgr.set_mix_system_default(self.mix_info["id"], new_val)
-            self._refresh_default_badge()
-            if self.on_edit_callback:
-                self.on_edit_callback(self.mix_info["id"])
-
-        self._def_switch_handler_id = self.def_switch.connect("notify::active", on_switch_toggled)
-        def_row.append(self.def_switch)
-
-        def on_popover_visible(p, *args):
-            if p.get_visible() and hasattr(self, "def_switch") and self.def_switch:
-                is_active = self.pipewire_mgr.is_mix_system_default(self.mix_info["id"]) if self.pipewire_mgr else False
-                if hasattr(self, "_def_switch_handler_id") and self._def_switch_handler_id:
-                    self.def_switch.handler_block(self._def_switch_handler_id)
-                    self.def_switch.set_active(is_active)
-                    self.def_switch.handler_unblock(self._def_switch_handler_id)
-                else:
-                    self.def_switch.set_active(is_active)
-
-        popover.connect("notify::visible", on_popover_visible)
-        box.append(def_row)
 
         # Mix Name
         name_entry = Gtk.Entry(text=self.mix_info.get("name", ""))

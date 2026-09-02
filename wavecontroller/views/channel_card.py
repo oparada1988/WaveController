@@ -515,10 +515,17 @@ class ChannelCard(Gtk.Box):
                     avail_apps_box.remove(avail_apps_box.get_first_child())
 
                 ch_id = self.channel_info["id"]
-                current_app_names = {a["name"].lower() for a in self.pipewire_mgr.get_channel_all_apps(ch_id)}
+                # Build set of ALL app names assigned to ANY channel (not just this one)
+                all_assigned_names = set()
+                for other_ch_id, apps in self.pipewire_mgr.assigned_apps.items():
+                    for app in apps:
+                        all_assigned_names.add(str(app).strip().lower())
+                # Also include dynamically connected apps for this channel
+                for a in self.pipewire_mgr.get_channel_all_apps(ch_id):
+                    all_assigned_names.add(a["name"].lower())
                 running_apps = self.pipewire_mgr.get_detected_apps()
 
-                avail = [a for a in running_apps if a["name"].lower() not in current_app_names]
+                avail = [a for a in running_apps if a["name"].lower() not in all_assigned_names]
                 if not avail:
                     none_lbl = Gtk.Label(label="No other active audio apps found")
                     none_lbl.add_css_class("dim-label")
@@ -736,8 +743,6 @@ class ChannelCard(Gtk.Box):
     def _on_mute_clicked(self, btn):
         ch_id = self.channel_info["id"]
         is_muted = self.pipewire_mgr.toggle_channel_master_mute(ch_id)
-        if self.is_wave_channel and self.hardware_mgr and getattr(self.hardware_mgr, "is_elgato", False):
-            self.hardware_mgr.set_mode_mute("gain", is_muted, transient=False)
         self.update_ui_state()
         if self.pipewire_mgr.is_channel_linked(ch_id) and self.on_link_toggle_callback:
             self.on_link_toggle_callback(ch_id, True)

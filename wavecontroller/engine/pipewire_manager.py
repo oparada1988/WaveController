@@ -192,6 +192,7 @@ class PipeWireManager:
         self.refresh_devices()
         self._ensure_virtual_mix_nodes()
         self._refresh_node_cache()
+        self.apply_pipewire_quantum()
         self._ensure_client_streams_unity_volume()
         
         # 1. Volume dispatch worker
@@ -201,6 +202,29 @@ class PipeWireManager:
         # 2. External volume sync poller (Syncs Volume Controller Plus on Stream Deck +)
         self._sync_thread = threading.Thread(target=self._external_sync_loop, daemon=True)
         self._sync_thread.start()
+
+    def apply_pipewire_quantum(self, quantum=None) -> bool:
+        """Applies the configured system-wide PipeWire processing quantum."""
+        if quantum is None:
+            quantum = config_manager.get("pipewire_quantum", 512)
+        try:
+            quantum = int(quantum)
+        except (TypeError, ValueError):
+            return False
+        if quantum not in (256, 512, 1024):
+            return False
+
+        result = subprocess.run(
+            ["pw-metadata", "-n", "settings", "0", "clock.quantum", str(quantum)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL
+        )
+        if result.returncode == 0:
+            config_manager.set("pipewire_quantum", quantum, immediate=True)
+            log.info(f"[WaveController.PipeWire] Set global quantum to {quantum} frames")
+            return True
+        log.warning(f"[WaveController.PipeWire] Failed to set global quantum to {quantum} frames")
+        return False
 
     def _ensure_virtual_mix_nodes(self):
         """
@@ -222,7 +246,7 @@ class PipeWireManager:
                 needed_nodes[node_name] = (f"WaveController {m_name} (Sink)", "Audio/Sink", False)
             else:
                 node_name = f"WaveController_{m_id}_Source"
-                needed_nodes[node_name] = (f"WaveController {m_name}", "Audio/Source/Virtual")
+                needed_nodes[node_name] = (f"WaveController {m_name}", "Audio/Duplex")
 
         # Provision dedicated pre-fader virtual ingestion nodes ONLY for exposed Group Channels
         for ch in channels_copy:
@@ -263,6 +287,10 @@ class PipeWireManager:
                         obj_id = obj.get("id")
                         if obj_id:
                             subprocess.run(["pw-cli", "destroy", str(obj_id)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    elif props.get("media.class") != needed_nodes[n_name][1]:
+                        obj_id = obj.get("id")
+                        if obj_id:
+                            subprocess.run(["pw-cli", "destroy", str(obj_id)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                     elif n_name in existing_active_names:
                         # Duplicate node with identical name already tracked! Destroy duplicate to ensure strict 1:1 node cardinality
                         obj_id = obj.get("id")
@@ -295,41 +323,7 @@ class PipeWireManager:
         # Real-time synchronization of PipeWire port connections (pw-link)
         self._sync_channel_audio_routing()
 
-        # Assert default system audio sink and source to WaveController default mixes
-        try:
-            default_sink_node = "WaveController_personal_Sink"
-            for mx in mixes_copy:
-                if mx.get("is_default", False) and (mx.get("type", "sink") == "sink" or mx.get("id") == "personal"):
-                    default_sink_node = f"WaveController_{mx['id']}_Sink"
-                    break
-            else:
-                for mx in mixes_copy:
-                    if mx.get("id") == "personal" or mx.get("type") == "sink":
-                        default_sink_node = f"WaveController_{mx['id']}_Sink"
-                        break
-
-            default_source_node = "WaveController_chat_mix_Source"
-            for mx in mixes_copy:
-                if mx.get("is_default", False) and (mx.get("type") == "source" or mx.get("id") == "chat_mix"):
-                    default_source_node = f"WaveController_{mx['id']}_Source"
-                    break
-            else:
-                for mx in mixes_copy:
-                    if mx.get("id") == "chat_mix" or mx.get("type") == "source":
-                        default_source_node = f"WaveController_{mx['id']}_Source"
-                        break
-
-            out = subprocess.check_output(["pw-dump"], text=True, stderr=subprocess.DEVNULL)
-            for obj in json.loads(out):
-                if obj.get("type") == "PipeWire:Interface:Node":
-                    props = obj.get("info", {}).get("props", {})
-                    n_name = props.get("node.name")
-                    if n_name == default_sink_node:
-                        subprocess.run(["wpctl", "set-default", str(obj["id"])], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                    elif n_name == default_source_node:
-                        subprocess.run(["wpctl", "set-default", str(obj["id"])], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        except Exception:
-            pass
+        self._apply_configured_system_defaults()
 
         # Enforce all configured volumes to override stale WirePlumber state on startup
         with self._lock:
@@ -458,12 +452,31 @@ class PipeWireManager:
         self._is_sleeping = True
 
     def on_system_resume(self):
-        """Restores all channel master volumes, submix faders, and audio routing after system resume."""
-        log.info("[WaveController.PipeWire] System resumed: restoring channel volumes and routing...")
+        """Restores all virtual nodes, channel master volumes, submix faders, and audio routing after system resume."""
+        log.info("[WaveController.PipeWire] System resumed: restoring virtual nodes, volumes, and routing...")
         self._is_sleeping = False
+
+        # 0. Wait for PipeWire daemon to be responsive before re-provisioning
+        for attempt in range(20):
+            try:
+                subprocess.check_output(["pw-cli", "info", "0"], text=True, stderr=subprocess.DEVNULL, timeout=1.0)
+                log.info(f"[WaveController.PipeWire] PipeWire daemon ready on attempt {attempt + 1}")
+                break
+            except Exception:
+                time.sleep(0.15)
+
+        # 1. Clear stale caches — PipeWire node IDs are invalid after suspend
+        with self._lock:
+            self._node_cache.clear()
+            self._mix_node_ids_cache.clear()
+            self._submix_node_ids.clear()
+            self._last_cache_time = 0
+
+        # 2. Re-provision virtual mix/channel sink/source nodes (may have been destroyed by PipeWire restart)
+        self._ensure_virtual_mix_nodes()
         self._refresh_node_cache()
 
-        # 1. Re-assert all Channel Master Volumes
+        # 3. Re-assert all Channel Master Volumes
         with self._lock:
             master_states = {k: dict(v) for k, v in self.channel_master_states.items()}
             submix_states = {k: {m: dict(v) for m, v in mv.items()} for k, mv in self.channel_states.items()}
@@ -476,7 +489,7 @@ class PipeWireManager:
             if muted:
                 self.set_channel_master_mute(ch_id, True)
 
-        # 2. Re-assert all Submix Faders
+        # 4. Re-assert all Submix Faders
         for ch_id, m_map in submix_states.items():
             for m_id, s_st in m_map.items():
                 vol = s_st.get("volume", 80)
@@ -485,7 +498,7 @@ class PipeWireManager:
                 if muted:
                     self.set_channel_mute(ch_id, m_id, True)
 
-        # 3. Re-assert Mix Master Volumes
+        # 5. Re-assert Mix Master Volumes
         for m_id, m_st in mix_states.items():
             vol = m_st.get("volume", 100)
             muted = m_st.get("muted", False)
@@ -493,11 +506,11 @@ class PipeWireManager:
             if muted:
                 self.set_mix_master_mute(m_id, True)
 
-        # 4. Trigger volume event to dispatch to PipeWire nodes immediately
+        # 6. Trigger volume event to dispatch to PipeWire nodes immediately
         with self._lock:
             self._volume_event.set()
 
-        # 5. Re-synchronize channel audio routing
+        # 7. Re-synchronize channel audio routing
         self._sync_channel_audio_routing()
 
     def get_application_volume_status(self, app_name: str) -> tuple:
@@ -1757,9 +1770,8 @@ class PipeWireManager:
             self._volume_queue[channel_id] = (vol, new_mute)
             self._volume_event.set()
             self._save_state_to_config(immediate=False)
-            self._sync_channel_audio_routing(channel_id)
 
-            # Sync physical Elgato hardware mute if this is a genuine hardware mic channel
+            # Determine hardware mic status while holding lock
             ch_obj = next((c for c in self.channels if c["id"] == channel_id), None)
             is_hw_mic = bool(ch_obj and ch_obj.get("type") in ("source", "hardware") and (
                 channel_id in ("mic", "elgato_wave_xlr") or
@@ -1769,10 +1781,17 @@ class PipeWireManager:
                 "wave_1" in channel_id.lower() or
                 "wave_neo" in channel_id.lower()
             ))
+
+        # Heavy operations run outside the lock in a background thread to avoid blocking UI
+        def _bg_sync():
+            self._sync_channel_audio_routing(channel_id)
+            # Sync physical Elgato hardware mute if this is a genuine hardware mic channel
             if self.hardware_mgr and is_hw_mic:
                 self.hardware_mgr.set_mode_mute("gain", new_mute, transient=True)
 
-            return new_mute
+        threading.Thread(target=_bg_sync, daemon=True).start()
+
+        return new_mute
 
     # -------------------------------------------------------------
     # Mix Master Bus Control (for Discord, OBS, Headphones, etc.)
@@ -2434,7 +2453,11 @@ class PipeWireManager:
 
             for m in mixes_to_sync:
                 m_id = m["id"]
-                target_prefixes = [f"WaveController_{m_id}_Sink:playback_", f"WaveController_{m_id}_Source:input_"]
+                target_prefixes = [
+                    f"WaveController_{m_id}_Sink:playback_",
+                    f"WaveController_{m_id}_Source:playback_",
+                    f"WaveController_{m_id}_Source:input_",
+                ]
                 target_in_ports = []
                 for p in in_ports:
                     p_clean = re.sub(r'^\d+\s+', '', p).strip()
@@ -2460,9 +2483,9 @@ class PipeWireManager:
                     lb_in_ports = [p for p in in_ports if re.sub(r'^\d+\s+', '', p).strip().startswith(loopback_in_prefix)]
                     lb_out_ports = [p for p in out_ports if re.sub(r'^\d+\s+', '', p).strip().startswith(loopback_out_prefix)]
 
-                    if not lb_in_ports or not lb_out_ports:
-                        for _ in range(4):
-                            time.sleep(0.005)
+                    if not target_in_ports or not lb_in_ports or not lb_out_ports:
+                        for _ in range(20):
+                            time.sleep(0.01)
                             try:
                                 try:
                                     o_raw = subprocess.check_output(["pw-link", "-I", "-o"], text=True, stderr=subprocess.DEVNULL)
@@ -2575,7 +2598,11 @@ class PipeWireManager:
             port_meta = self._get_active_port_metadata_map()
             for m in mixes_copy:
                 m_id = m["id"]
-                target_prefixes = (f"WaveController_{m_id}_Sink:playback_", f"WaveController_{m_id}_Source:input_")
+                target_prefixes = (
+                    f"WaveController_{m_id}_Sink:playback_",
+                    f"WaveController_{m_id}_Source:playback_",
+                    f"WaveController_{m_id}_Source:input_",
+                )
                 for src_p, dests in fresh_links.items():
                     if not src_p.startswith("output.WaveController_submix_"):
                         # If the source belongs to an actively assigned channel or channel sink, sever the direct bypass link
@@ -3234,13 +3261,32 @@ class PipeWireManager:
                         has_explicit = any(other.get("is_default", False) for other in self.mixes if (other.get("type") == "sink" or other.get("id") == "personal"))
                         return not has_explicit
                     elif m_type == "source" and m.get("id") in ("chat_mix", "chat"):
-                        has_explicit = any(other.get("is_default", False) for other in self.mixes if (other.get("type") == "source" or other.get("id") != "personal"))
+                        has_explicit = any(
+                            other.get("is_default", False)
+                            for other in self.mixes
+                            if other.get("type", "source" if other.get("id") != "personal" else "sink") == "source"
+                        )
                         return not has_explicit
         return False
+
+    def _apply_configured_system_defaults(self):
+        """Applies saved mix defaults only after the user has opted in."""
+        if not config_manager.get("system_defaults_enabled", False):
+            return
+
+        selected_types = set()
+        for mix in list(self.mixes):
+            mix_type = mix.get("type", "source" if mix.get("id") != "personal" else "sink")
+            if mix_type in selected_types:
+                continue
+            if self.is_mix_system_default(mix["id"]):
+                self.set_mix_system_default(mix["id"], True)
+                selected_types.add(mix_type)
 
     def set_mix_system_default(self, mix_id: str, is_default: bool = True) -> bool:
         """Sets or unsets a mix as the system default audio sink (for Output mixes) or source (for Input mixes)."""
         canon_mix = self._match_mix_id(mix_id)
+        defaults_enabled = config_manager.get("system_defaults_enabled", False)
         target_node_name = None
         m_type = "sink"
         with self._lock:
@@ -3264,19 +3310,33 @@ class PipeWireManager:
 
             self._save_state_to_config(immediate=True)
 
-        if target_node_name:
+        if target_node_name and defaults_enabled:
             try:
                 out = subprocess.check_output(["pw-dump"], text=True, stderr=subprocess.DEVNULL)
+                found = False
                 for obj in json.loads(out):
                     if obj.get("type") == "PipeWire:Interface:Node":
                         props = obj.get("info", {}).get("props", {})
                         if props.get("node.name") == target_node_name:
-                            subprocess.run(["wpctl", "set-default", str(obj["id"])], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                            log.info(f"[WaveController.PipeWire] Set system default {m_type} to '{target_node_name}' (node_id={obj['id']})")
+                            if m_type == "source":
+                                result = subprocess.run(
+                                    ["pw-metadata", "-n", "default", "0", "default.audio.source", json.dumps({"name": target_node_name})],
+                                    stdout=subprocess.DEVNULL,
+                                    stderr=subprocess.DEVNULL
+                                )
+                            else:
+                                result = subprocess.run(["wpctl", "set-default", str(obj["id"])], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                            if result.returncode == 0:
+                                log.info(f"[WaveController.PipeWire] Set system default {m_type} to '{target_node_name}' (node_id={obj['id']})")
+                                found = True
+                            else:
+                                log.warning(f"[WaveController.PipeWire] wpctl rejected system default {m_type} node '{target_node_name}'")
                             break
+                if not found:
+                    log.warning(f"[WaveController.PipeWire] Selected system default node '{target_node_name}' is not available yet")
             except Exception as e:
                 log.warning(f"[WaveController.PipeWire] Failed to set wpctl default: {e}")
-        elif not is_default:
+        elif not is_default and defaults_enabled:
             try:
                 out = subprocess.check_output(["pw-dump"], text=True, stderr=subprocess.DEVNULL)
                 for obj in json.loads(out):

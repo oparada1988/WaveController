@@ -34,125 +34,131 @@ class SettingsView(Gtk.Box):
 
         pref_page = Adw.PreferencesPage()
 
-        # Group 0: Default Hardware Devices
-        grp_hw = Adw.PreferencesGroup(title="Default Hardware Devices")
-
-        hw_refresh_btn = Gtk.Button(label="Refresh Devices")
-        hw_refresh_btn.set_icon_name("view-refresh-symbolic")
-        hw_refresh_btn.add_css_class("flat")
-        hw_refresh_btn.set_valign(Gtk.Align.CENTER)
-        grp_hw.set_header_suffix(hw_refresh_btn)
-
-        self.mic_combo = Adw.ComboRow(
-            title="Primary Microphone",
-            subtitle="Default hardware capture device for main microphone channel and telemetry"
+        # Group 0: Opt-in system defaults
+        grp_hw = Adw.PreferencesGroup(title="System Default")
+        self.system_defaults_switch = Adw.SwitchRow(
+            title="Allow WaveController to set system input and output defaults?",
+            subtitle="When disabled, WaveController leaves system defaults unchanged"
         )
-        self.output_combo = Adw.ComboRow(
-            title="Primary Monitor Output",
-            subtitle="Default hardware DAC / headphones for Personal Mix and fallback audio"
+        self.system_defaults_switch.set_active(config_manager.get("system_defaults_enabled", False))
+        grp_hw.add(self.system_defaults_switch)
+
+        # System Default Output Mix (replaces per-mix toggle in mix_header)
+        self.default_output_mix_combo = Adw.ComboRow(
+            title="System Default Output Mix",
+            subtitle="OS applications will route audio to this mix by default"
+        )
+        # System Default Input Mix
+        self.default_input_mix_combo = Adw.ComboRow(
+            title="System Default Input Mix",
+            subtitle="OS applications will capture audio from this mix by default"
         )
 
-        self._input_dev_keys = []
-        self._output_dev_keys = []
-        self._refreshing_combos = False
+        self._output_mix_ids = []
+        self._input_mix_ids = []
+        self._refreshing_mix_combos = False
+        self._output_mix_handler_id = None
+        self._input_mix_handler_id = None
 
-        def _refresh_hw_combos():
-            self._refreshing_combos = True
+        def _refresh_mix_combos():
+            self._refreshing_mix_combos = True
+            if self._output_mix_handler_id:
+                self.default_output_mix_combo.handler_block(self._output_mix_handler_id)
+            if self._input_mix_handler_id:
+                self.default_input_mix_combo.handler_block(self._input_mix_handler_id)
             try:
-                if self.hardware_mgr and hasattr(self.hardware_mgr, "detect_connected_hardware"):
-                    self.hardware_mgr.detect_connected_hardware()
+                if not self.pipewire_mgr:
+                    return
 
-                # Populate inputs (strictly added/tracked devices in WaveController)
-                input_opts = []
-                if self.hardware_mgr:
-                    for dev in self.hardware_mgr.get_tracked_input_devices():
-                        k = dev.get("device_key", dev.get("name", ""))
-                        name = dev.get("display_name", dev.get("name", "Microphone"))
-                        input_opts.append((k, name))
-                if not input_opts:
-                    input_opts = [("default", "Default Microphone (System)")]
+                # Populate output mixes (type=sink or personal mix)
+                output_mix_opts = []
+                input_mix_opts = []
+                mixes = list(self.pipewire_mgr.mixes)
 
-                self._input_dev_keys = [opt[0] for opt in input_opts]
-                self.mic_combo.set_model(Gtk.StringList.new([opt[1] for opt in input_opts]))
+                for m in mixes:
+                    m_type = m.get("type", "source" if m.get("id") != "personal" else "sink")
+                    if m_type == "sink" or m.get("id") in ("personal", "personal_mix"):
+                        output_mix_opts.append((m["id"], m.get("name", m["id"])))
+                    else:
+                        input_mix_opts.append((m["id"], m.get("name", m["id"])))
 
-                saved_in = config_manager.get("default_input_device", "default")
-                sel_in_idx = 0
-                for idx, k in enumerate(self._input_dev_keys):
-                    if k == saved_in or (saved_in in k):
-                        sel_in_idx = idx
+                if not output_mix_opts:
+                    output_mix_opts = [("personal", "Personal Mix")]
+                if not input_mix_opts:
+                    input_mix_opts = [("chat_mix", "Chat Mix")]
+
+                self._output_mix_ids = [opt[0] for opt in output_mix_opts]
+                self.default_output_mix_combo.set_model(Gtk.StringList.new([opt[1] for opt in output_mix_opts]))
+
+                # Select the current default output mix
+                sel_out = 0
+                for idx, mid in enumerate(self._output_mix_ids):
+                    if self.pipewire_mgr.is_mix_system_default(mid):
+                        sel_out = idx
                         break
-                self.mic_combo.set_selected(sel_in_idx)
+                self.default_output_mix_combo.set_selected(sel_out)
 
-                # Populate outputs (strictly added/tracked devices in WaveController)
-                output_opts = []
-                if self.hardware_mgr:
-                    for dev in self.hardware_mgr.get_tracked_output_devices():
-                        k = dev.get("device_key", dev.get("name", ""))
-                        name = dev.get("display_name", dev.get("name", "Audio Device"))
-                        output_opts.append((k, name))
-                if not output_opts:
-                    output_opts = [("default", "Default Output (System)")]
+                self._input_mix_ids = [opt[0] for opt in input_mix_opts]
+                self.default_input_mix_combo.set_model(Gtk.StringList.new([opt[1] for opt in input_mix_opts]))
 
-                self._output_dev_keys = [opt[0] for opt in output_opts]
-                self.output_combo.set_model(Gtk.StringList.new([opt[1] for opt in output_opts]))
-
-                saved_out = config_manager.get("default_output_device", "default")
-                sel_out_idx = 0
-                for idx, k in enumerate(self._output_dev_keys):
-                    if k == saved_out or (saved_out in k):
-                        sel_out_idx = idx
+                # Select the current default input mix
+                sel_in = 0
+                for idx, mid in enumerate(self._input_mix_ids):
+                    if self.pipewire_mgr.is_mix_system_default(mid):
+                        sel_in = idx
                         break
-                self.output_combo.set_selected(sel_out_idx)
+                self.default_input_mix_combo.set_selected(sel_in)
             finally:
-                self._refreshing_combos = False
+                if self._output_mix_handler_id:
+                    self.default_output_mix_combo.handler_unblock(self._output_mix_handler_id)
+                if self._input_mix_handler_id:
+                    self.default_input_mix_combo.handler_unblock(self._input_mix_handler_id)
+                self._refreshing_mix_combos = False
 
-        self.refresh_device_list = _refresh_hw_combos
-        _refresh_hw_combos()
+        self.refresh_mix_defaults = _refresh_mix_combos
+        _refresh_mix_combos()
 
-        def _on_manual_refresh_clicked(btn):
-            _refresh_hw_combos()
-            btn.set_label("Refreshed!")
-            GLib.timeout_add(1500, lambda: (btn.set_label("Refresh Devices"), False))
-
-        hw_refresh_btn.connect("clicked", _on_manual_refresh_clicked)
-
-        def _on_mic_changed(row, param):
-            if self._refreshing_combos:
+        def _on_output_mix_default_changed(row, param):
+            if self._refreshing_mix_combos:
                 return
             idx = row.get_selected()
-            if 0 <= idx < len(self._input_dev_keys):
-                new_k = self._input_dev_keys[idx]
-                config_manager.set("default_input_device", new_k, immediate=True)
+            if 0 <= idx < len(self._output_mix_ids):
+                mix_id = self._output_mix_ids[idx]
                 if self.pipewire_mgr:
-                    self.pipewire_mgr.default_input_device = new_k
-                    self.pipewire_mgr._sync_channel_audio_routing()
+                    self.pipewire_mgr.set_mix_system_default(mix_id, True)
                 if self.on_hw_defaults_changed:
                     self.on_hw_defaults_changed()
 
-        def _on_output_changed(row, param):
-            if self._refreshing_combos:
+        def _on_input_mix_default_changed(row, param):
+            if self._refreshing_mix_combos:
                 return
             idx = row.get_selected()
-            if 0 <= idx < len(self._output_dev_keys):
-                new_k = self._output_dev_keys[idx]
-                config_manager.set("default_output_device", new_k, immediate=True)
+            if 0 <= idx < len(self._input_mix_ids):
+                mix_id = self._input_mix_ids[idx]
                 if self.pipewire_mgr:
-                    self.pipewire_mgr.selected_monitor_device = new_k
-                    # Update Personal Mix target_device
-                    for m in self.pipewire_mgr.mixes:
-                        if m.get("id") in ("personal", "personal_mix") or m.get("type") == "sink":
-                            m["target_device"] = new_k
-                            break
-                    self.pipewire_mgr._save_state_to_config(immediate=True)
-                    self.pipewire_mgr._sync_channel_audio_routing()
+                    self.pipewire_mgr.set_mix_system_default(mix_id, True)
                 if self.on_hw_defaults_changed:
                     self.on_hw_defaults_changed()
 
-        self.mic_combo.connect("notify::selected", _on_mic_changed)
-        self.output_combo.connect("notify::selected", _on_output_changed)
+        self._output_mix_handler_id = self.default_output_mix_combo.connect("notify::selected", _on_output_mix_default_changed)
+        self._input_mix_handler_id = self.default_input_mix_combo.connect("notify::selected", _on_input_mix_default_changed)
 
-        grp_hw.add(self.mic_combo)
-        grp_hw.add(self.output_combo)
+        self.mic_combo = self.default_input_mix_combo
+        self.output_combo = self.default_output_mix_combo
+        self.refresh_device_list = _refresh_mix_combos
+
+        grp_hw.add(self.default_output_mix_combo)
+        grp_hw.add(self.default_input_mix_combo)
+
+        def _on_system_defaults_changed(row, param):
+            enabled = row.get_active()
+            config_manager.set("system_defaults_enabled", enabled, immediate=True)
+            if enabled and self.pipewire_mgr:
+                self.pipewire_mgr._apply_configured_system_defaults()
+            if self.on_hw_defaults_changed:
+                self.on_hw_defaults_changed()
+
+        self.system_defaults_switch.connect("notify::active", _on_system_defaults_changed)
         pref_page.add(grp_hw)
 
         # Group 1: Appearance & Theme
@@ -206,8 +212,22 @@ class SettingsView(Gtk.Box):
         grp_audio.add(rate_row)
 
         buffer_row = Adw.ComboRow(title="Buffer Size / Latency", subtitle="Lower values reduce monitoring latency")
-        buffer_row.set_model(Gtk.StringList.new(["64 samples (1.3 ms)", "128 samples (2.7 ms - Recommended)", "256 samples (5.3 ms)", "512 samples (10.7 ms)"]))
-        buffer_row.set_selected(1)
+        buffer_values = [256, 512, 1024]
+        buffer_row.set_model(Gtk.StringList.new([
+            "256 frames (5.3 ms - Low latency)",
+            "512 frames (10.7 ms - Recommended)",
+            "1024 frames (21.3 ms - Maximum stability)",
+        ]))
+        configured_quantum = config_manager.get("pipewire_quantum", 512)
+        buffer_row.set_selected(buffer_values.index(configured_quantum) if configured_quantum in buffer_values else 1)
+
+        def _on_buffer_changed(row, param):
+            quantum = buffer_values[row.get_selected()]
+            config_manager.set("pipewire_quantum", quantum, immediate=True)
+            if self.pipewire_mgr:
+                self.pipewire_mgr.apply_pipewire_quantum(quantum)
+
+        buffer_row.connect("notify::selected", _on_buffer_changed)
         grp_audio.add(buffer_row)
 
         pref_page.add(grp_audio)

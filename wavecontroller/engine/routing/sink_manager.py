@@ -43,7 +43,7 @@ class SubmixSinkManager:
                 needed_nodes[node_name] = (f"WaveController {m_name} (Sink)", "Audio/Sink", False)
             else:
                 node_name = f"WaveController_{m_id}_Source"
-                needed_nodes[node_name] = (f"WaveController {m_name}", "Audio/Source/Virtual")
+                needed_nodes[node_name] = (f"WaveController {m_name}", "Audio/Duplex")
 
         for ch in channels:
             ch_id = ch["id"]

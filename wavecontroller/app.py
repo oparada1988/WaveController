@@ -189,8 +189,8 @@ class WaveControllerApp(Adw.Application):
             if hasattr(self, "hardware_mgr") and self.hardware_mgr:
                 self.hardware_mgr.on_system_resume()
 
-            # 2. PipeWire audio routing & UI refresh runs with a brief 250ms settling window
-            GLib.timeout_add(250, self._on_system_resume_delayed)
+            # 2. PipeWire audio routing & UI refresh runs with a 1.5s settling window for daemon restart
+            GLib.timeout_add(1500, self._on_system_resume_delayed)
 
     def _on_system_resume_delayed(self):
         try:
@@ -210,6 +210,22 @@ class WaveControllerApp(Adw.Application):
                     view.refresh_all_faders()
         except Exception as e:
             log.error(f"[WaveController.Power] Error during system resume restoration: {e}")
+
+        # Schedule a secondary retry to catch late-arriving PipeWire nodes
+        GLib.timeout_add(2500, self._on_system_resume_secondary)
+        return False  # Run once in GLib main loop
+
+    def _on_system_resume_secondary(self):
+        """Secondary resume pass to catch PipeWire nodes that arrive late after wake."""
+        try:
+            log.info("[WaveController.Power] Secondary resume pass: re-syncing routing...")
+            if hasattr(self, "pipewire_mgr") and self.pipewire_mgr:
+                self.pipewire_mgr._refresh_node_cache()
+                self.pipewire_mgr._sync_channel_audio_routing()
+            if hasattr(self, "peak_monitor") and self.peak_monitor:
+                self.peak_monitor.on_system_resume()
+        except Exception as e:
+            log.error(f"[WaveController.Power] Error during secondary resume: {e}")
         return False  # Run once in GLib main loop
 
     def do_shutdown(self):

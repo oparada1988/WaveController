@@ -78,7 +78,11 @@ class MicrophoneSourceManager:
         """
         for m in mixes:
             m_id = m["id"]
-            target_prefixes = [f"WaveController_{m_id}_Sink:playback_", f"WaveController_{m_id}_Source:input_"]
+            target_prefixes = [
+                f"WaveController_{m_id}_Sink:playback_",
+                f"WaveController_{m_id}_Source:playback_",
+                f"WaveController_{m_id}_Source:input_",
+            ]
             target_in_ports = []
             for p in in_ports:
                 p_clean = re.sub(r"^\d+\s+", "", p).strip()

@@ -768,22 +768,30 @@ class MixerMatrixView(Gtk.Box):
         # ==========================================
         # Dynamic Refresh Handlers
         # ==========================================
+        def configured_app_tokens():
+            tokens = set()
+            for apps in self.pipewire_mgr.assigned_apps.values():
+                for app in apps:
+                    value = str(app).strip().lower()
+                    if value:
+                        tokens.add(value)
+                        tokens.add(value.rsplit("/", 1)[-1])
+            return tokens
+
+        def app_is_configured(app_info, tokens):
+            values = (app_info.get("name", ""), app_info.get("binary", ""))
+            return any(
+                token and (token in tokens or token.rsplit("/", 1)[-1] in tokens)
+                for token in (str(value).strip().lower() for value in values)
+            )
+
         def show_app_page(b=None):
             while apps_list_container.get_first_child():
                 apps_list_container.remove(apps_list_container.get_first_child())
 
             running_apps = self.pipewire_mgr.get_active_application_streams()
 
-            # Gather all applications already assigned to existing channels
-            configured_apps = set()
-            for ch in self.pipewire_mgr.channels:
-                ch_id = ch.get("id", "")
-                configured_apps.add(ch_id.lower())
-                configured_apps.add(ch.get("name", "").lower())
-                for a in self.pipewire_mgr.get_assigned_apps(ch_id):
-                    a_clean = str(a).strip().lower()
-                    if a_clean and not a_clean.startswith("usb-") and not a_clean.startswith("alsa_"):
-                        configured_apps.add(a_clean)
+            configured_apps = configured_app_tokens()
 
             available_apps = []
             if running_apps:
@@ -793,11 +801,7 @@ class MixerMatrixView(Gtk.Box):
                     name_low = app_name.lower().strip()
                     bin_low = app_bin.lower().strip()
 
-                    is_already_added = (
-                        name_low in configured_apps
-                        or bin_low in configured_apps
-                        or any(c == name_low or c == bin_low for c in configured_apps)
-                    )
+                    is_already_added = app_is_configured(app_info, configured_apps)
                     if not is_already_added:
                         available_apps.append(app_info)
 
@@ -1109,6 +1113,8 @@ class MixerMatrixView(Gtk.Box):
             sink_toggle_switch.set_active(True)
 
             running_apps = self.pipewire_mgr.get_detected_apps()
+            configured_apps = configured_app_tokens()
+            running_apps = [app for app in running_apps if not app_is_configured(app, configured_apps)]
             if not running_apps:
                 no_apps = Gtk.Label(label="No audio apps currently detected.")
                 no_apps.add_css_class("dim-label")
