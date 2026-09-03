@@ -7,6 +7,7 @@ from gi.repository import Gtk, Adw, Gio, GLib
 from ..engine.config_manager import config_manager
 from ..utils.logger import get_log_file_path, get_log_dir_path, get_log_size_str, export_logs_to, clear_logs
 from ..utils.autostart import is_autostart_enabled, set_autostart_enabled
+from ..utils.gtk_helpers import blocked_handler
 from .. import __version__, __github__, __issues__
 
 class SettingsView(Gtk.Box):
@@ -62,57 +63,51 @@ class SettingsView(Gtk.Box):
 
         def _refresh_mix_combos():
             self._refreshing_mix_combos = True
-            if self._output_mix_handler_id:
-                self.default_output_mix_combo.handler_block(self._output_mix_handler_id)
-            if self._input_mix_handler_id:
-                self.default_input_mix_combo.handler_block(self._input_mix_handler_id)
             try:
-                if not self.pipewire_mgr:
-                    return
+                with blocked_handler(self.default_output_mix_combo, self._output_mix_handler_id), \
+                     blocked_handler(self.default_input_mix_combo, self._input_mix_handler_id):
+                    if not self.pipewire_mgr:
+                        return
 
-                # Populate output mixes (type=sink or personal mix)
-                output_mix_opts = []
-                input_mix_opts = []
-                mixes = list(self.pipewire_mgr.mixes)
+                    # Populate output mixes (type=sink or personal mix)
+                    output_mix_opts = []
+                    input_mix_opts = []
+                    mixes = list(self.pipewire_mgr.mixes)
 
-                for m in mixes:
-                    m_type = m.get("type", "source" if m.get("id") != "personal" else "sink")
-                    if m_type == "sink" or m.get("id") in ("personal", "personal_mix"):
-                        output_mix_opts.append((m["id"], m.get("name", m["id"])))
-                    else:
-                        input_mix_opts.append((m["id"], m.get("name", m["id"])))
+                    for m in mixes:
+                        m_type = m.get("type", "source" if m.get("id") != "personal" else "sink")
+                        if m_type == "sink" or m.get("id") in ("personal", "personal_mix"):
+                            output_mix_opts.append((m["id"], m.get("name", m["id"])))
+                        else:
+                            input_mix_opts.append((m["id"], m.get("name", m["id"])))
 
-                if not output_mix_opts:
-                    output_mix_opts = [("personal", "Personal Mix")]
-                if not input_mix_opts:
-                    input_mix_opts = [("chat_mix", "Chat Mix")]
+                    if not output_mix_opts:
+                        output_mix_opts = [("personal", "Personal Mix")]
+                    if not input_mix_opts:
+                        input_mix_opts = [("chat_mix", "Chat Mix")]
 
-                self._output_mix_ids = [opt[0] for opt in output_mix_opts]
-                self.default_output_mix_combo.set_model(Gtk.StringList.new([opt[1] for opt in output_mix_opts]))
+                    self._output_mix_ids = [opt[0] for opt in output_mix_opts]
+                    self.default_output_mix_combo.set_model(Gtk.StringList.new([opt[1] for opt in output_mix_opts]))
 
-                # Select the current default output mix
-                sel_out = 0
-                for idx, mid in enumerate(self._output_mix_ids):
-                    if self.pipewire_mgr.is_mix_system_default(mid):
-                        sel_out = idx
-                        break
-                self.default_output_mix_combo.set_selected(sel_out)
+                    # Select the current default output mix
+                    sel_out = 0
+                    for idx, mid in enumerate(self._output_mix_ids):
+                        if self.pipewire_mgr.is_mix_system_default(mid):
+                            sel_out = idx
+                            break
+                    self.default_output_mix_combo.set_selected(sel_out)
 
-                self._input_mix_ids = [opt[0] for opt in input_mix_opts]
-                self.default_input_mix_combo.set_model(Gtk.StringList.new([opt[1] for opt in input_mix_opts]))
+                    self._input_mix_ids = [opt[0] for opt in input_mix_opts]
+                    self.default_input_mix_combo.set_model(Gtk.StringList.new([opt[1] for opt in input_mix_opts]))
 
-                # Select the current default input mix
-                sel_in = 0
-                for idx, mid in enumerate(self._input_mix_ids):
-                    if self.pipewire_mgr.is_mix_system_default(mid):
-                        sel_in = idx
-                        break
-                self.default_input_mix_combo.set_selected(sel_in)
+                    # Select the current default input mix
+                    sel_in = 0
+                    for idx, mid in enumerate(self._input_mix_ids):
+                        if self.pipewire_mgr.is_mix_system_default(mid):
+                            sel_in = idx
+                            break
+                    self.default_input_mix_combo.set_selected(sel_in)
             finally:
-                if self._output_mix_handler_id:
-                    self.default_output_mix_combo.handler_unblock(self._output_mix_handler_id)
-                if self._input_mix_handler_id:
-                    self.default_input_mix_combo.handler_unblock(self._input_mix_handler_id)
                 self._refreshing_mix_combos = False
 
         self.refresh_mix_defaults = _refresh_mix_combos

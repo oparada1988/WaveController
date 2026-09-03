@@ -143,7 +143,7 @@ class WaveMainWindow(Adw.ApplicationWindow):
         else:
             self.add_css_class("theme-midnight")
 
-    def save_window_state(self):
+    def save_window_state(self, immediate: bool = False):
         """Persists current window geometry, unmaximized bounds, and maximized status."""
         is_max = self.is_maximized()
         w = self.get_width()
@@ -159,13 +159,15 @@ class WaveMainWindow(Adw.ApplicationWindow):
             "width": target_w,
             "height": target_h,
             "maximized": is_max
-        }, immediate=True)
+        }, immediate=immediate)
 
     def _on_window_size_changed(self, *args):
+        # Debounced: avoids a disk write on every pixel during a live resize drag
         self.save_window_state()
 
     def _on_close_request(self, win):
-        self.save_window_state()
+        # Immediate: ensures the final geometry isn't lost if the app quits before the debounce timer fires
+        self.save_window_state(immediate=True)
         close_to_tray = config_manager.get("close_to_tray", True)
         if close_to_tray:
             self.set_visible(False)
@@ -336,6 +338,15 @@ class WaveMainWindow(Adw.ApplicationWindow):
         self._sidebar_animation = animation
         animation.play()
 
+    def _teardown_device_views(self):
+        """Removes all cached device views from the stack and unregisters their hardware listeners."""
+        for v_name, v in list(self.device_views.items()):
+            if self.stack.get_child_by_name(v_name):
+                self.stack.remove(v)
+            if hasattr(v, "cleanup"):
+                v.cleanup()
+        self.device_views.clear()
+
     def _rebuild_device_views(self, select_device_key: str = None):
         """Rebuilds the sidebar device buttons and views stack for all tracked devices."""
         # 1. Capture the currently active view name BEFORE tearing down views
@@ -446,6 +457,8 @@ class WaveMainWindow(Adw.ApplicationWindow):
                 old_view = self.device_views.pop(old_view_name)
                 if self.stack.get_child_by_name(old_view_name):
                     self.stack.remove(old_view)
+                if hasattr(old_view, "cleanup"):
+                    old_view.cleanup()
 
         # Handle View Selection & Persistence
         if target_view and target_view in self.device_buttons:
@@ -521,10 +534,7 @@ class WaveMainWindow(Adw.ApplicationWindow):
                 )
 
         # Destroy cached views to recreate them with updated default state
-        for v_name, v in list(self.device_views.items()):
-            if self.stack.get_child_by_name(v_name):
-                self.stack.remove(v)
-        self.device_views.clear()
+        self._teardown_device_views()
 
         self._rebuild_device_views()
         if hasattr(self, "settings_view") and hasattr(self.settings_view, "refresh_device_list"):
@@ -584,10 +594,7 @@ class WaveMainWindow(Adw.ApplicationWindow):
             if self.pipewire_mgr:
                 self.pipewire_mgr.remove_device_associated_channels_and_mixes(device_key)
 
-            for v_name, v in list(self.device_views.items()):
-                if self.stack.get_child_by_name(v_name):
-                    self.stack.remove(v)
-            self.device_views.clear()
+            self._teardown_device_views()
 
             self._rebuild_device_views()
             if hasattr(self, "settings_view") and hasattr(self.settings_view, "refresh_device_list"):
@@ -611,10 +618,7 @@ class WaveMainWindow(Adw.ApplicationWindow):
             config_manager.set("primary_device_key", "", immediate=False)
             config_manager.set("default_selection_dismissed", False, immediate=True)
 
-            for v_name, v in list(self.device_views.items()):
-                if self.stack.get_child_by_name(v_name):
-                    self.stack.remove(v)
-            self.device_views.clear()
+            self._teardown_device_views()
 
             self._rebuild_device_views()
             if hasattr(self, "settings_view") and hasattr(self.settings_view, "refresh_device_list"):
@@ -642,10 +646,7 @@ class WaveMainWindow(Adw.ApplicationWindow):
                 config_manager.set("default_selection_dismissed", True, immediate=True)
 
                 # Recreate device views so "Make Default" button appears on remaining devices
-                for v_name, v in list(self.device_views.items()):
-                    if self.stack.get_child_by_name(v_name):
-                        self.stack.remove(v)
-                self.device_views.clear()
+                self._teardown_device_views()
 
                 self._rebuild_device_views()
                 if hasattr(self, "settings_view") and hasattr(self.settings_view, "refresh_device_list"):

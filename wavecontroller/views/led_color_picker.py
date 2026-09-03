@@ -1,6 +1,7 @@
 import gi
 gi.require_version("Gtk", "4.0")
 from gi.repository import Gtk, Gdk, GLib
+from ..utils.css_helpers import install_palette_css
 
 LED_PALETTE = [
     ("#FFFFFF", "White (Default)"),
@@ -13,23 +14,8 @@ LED_PALETTE = [
     ("#F72585", "Neon Pink"),
 ]
 
-_LED_PALETTE_CSS_INITIALIZED = False
-
 def _ensure_led_palette_css():
-    global _LED_PALETTE_CSS_INITIALIZED
-    if _LED_PALETTE_CSS_INITIALIZED:
-        return
-    css_rules = [f".dot-{hex_c.replace('#', '')} {{ background-color: {hex_c}; border-radius: 7px; border: 1px solid rgba(255,255,255,0.2); }}" for hex_c, _ in LED_PALETTE]
-    full_css = "\n".join(css_rules)
-    prov = Gtk.CssProvider()
-    if hasattr(prov, "load_from_string"):
-        prov.load_from_string(full_css)
-    else:
-        prov.load_from_data(full_css.encode())
-    display = Gdk.Display.get_default()
-    if display:
-        Gtk.StyleContext.add_provider_for_display(display, prov, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
-    _LED_PALETTE_CSS_INITIALIZED = True
+    install_palette_css(LED_PALETTE, "dot-", 7, extra_css=" border: 1px solid rgba(255,255,255,0.2);")
 
 class LEDColorButton(Gtk.MenuButton):
     """
@@ -65,8 +51,16 @@ class LEDColorButton(Gtk.MenuButton):
         self._setup_popover()
         self.update_color_preview()
 
+        self._hw_listener_cb = None
         if self.hardware_mgr and hasattr(self.hardware_mgr, "add_hardware_listener"):
-            self.hardware_mgr.add_hardware_listener(lambda curr, changed: GLib.idle_add(self._on_hw_sync, curr, changed))
+            self._hw_listener_cb = lambda curr, changed: GLib.idle_add(self._on_hw_sync, curr, changed)
+            self.hardware_mgr.add_hardware_listener(self._hw_listener_cb)
+
+    def cleanup(self):
+        """Unregisters the hardware listener; call when this widget is torn down."""
+        if self._hw_listener_cb and self.hardware_mgr and hasattr(self.hardware_mgr, "remove_hardware_listener"):
+            self.hardware_mgr.remove_hardware_listener(self._hw_listener_cb)
+            self._hw_listener_cb = None
 
     def _setup_popover(self):
         popover = Gtk.Popover()
@@ -184,3 +178,14 @@ class LEDColorButton(Gtk.MenuButton):
     def _on_hw_sync(self, curr: dict, changed: dict):
         if "led_colors" in changed:
             self.update_color_preview()
+
+
+def build_led_color_row(hardware_mgr, mode_key: str, label_text: str, led_title: str, parent_popover: Gtk.Popover = None):
+    """Builds a labeled row pairing a subtitle Label with an LEDColorButton; returns (row, button)."""
+    row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+    lbl = Gtk.Label(label=label_text, hexpand=True, halign=Gtk.Align.START)
+    lbl.add_css_class("mix-header-subtitle")
+    btn = LEDColorButton(hardware_mgr, mode_key, title=led_title, parent_popover=parent_popover)
+    row.append(lbl)
+    row.append(btn)
+    return row, btn

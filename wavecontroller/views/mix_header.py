@@ -3,6 +3,8 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import Gtk, Gdk, GObject, Adw
 from wavecontroller.engine.config_manager import config_manager
+from ..utils.css_helpers import install_palette_css
+from ..utils.gtk_helpers import blocked_handler
 
 AVAILABLE_MIX_COLORS = [
     ("#9146ff", "Stream Purple"),
@@ -15,23 +17,8 @@ AVAILABLE_MIX_COLORS = [
     ("#f72585", "Neon Pink")
 ]
 
-_SWATCH_CSS_INITIALIZED = False
-
 def _ensure_swatch_css():
-    global _SWATCH_CSS_INITIALIZED
-    if _SWATCH_CSS_INITIALIZED:
-        return
-    css_rules = [f".mix-c-{hex_c.replace('#', '')} {{ background-color: {hex_c}; border-radius: 13px; }}" for hex_c, _ in AVAILABLE_MIX_COLORS]
-    full_css = "\n".join(css_rules)
-    prov = Gtk.CssProvider()
-    if hasattr(prov, "load_from_string"):
-        prov.load_from_string(full_css)
-    else:
-        prov.load_from_data(full_css.encode())
-    display = Gdk.Display.get_default()
-    if display:
-        Gtk.StyleContext.add_provider_for_display(display, prov, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
-    _SWATCH_CSS_INITIALIZED = True
+    install_palette_css(AVAILABLE_MIX_COLORS, "mix-c-", 13)
 
 class MixHeaderCard(Gtk.Box):
     """
@@ -224,13 +211,7 @@ class MixHeaderCard(Gtk.Box):
 
     def set_volume(self, volume: int):
         vol = max(0, min(100, int(volume)))
-        if hasattr(self, "_scale_handler_id") and self._scale_handler_id:
-            self.scale.handler_block(self._scale_handler_id)
-            try:
-                self.scale.set_value(vol)
-            finally:
-                self.scale.handler_unblock(self._scale_handler_id)
-        else:
+        with blocked_handler(self.scale, getattr(self, "_scale_handler_id", None)):
             self.scale.set_value(vol)
         self.vol_lbl.set_text(f"{vol}%")
         self.scale.queue_draw()
@@ -241,13 +222,7 @@ class MixHeaderCard(Gtk.Box):
         vol = self.pipewire_mgr.get_mix_master_volume(self.mix_info["id"])
         muted = self.pipewire_mgr.get_mix_master_mute(self.mix_info["id"])
 
-        if hasattr(self, "_scale_handler_id") and self._scale_handler_id:
-            self.scale.handler_block(self._scale_handler_id)
-            try:
-                self.scale.set_value(vol)
-            finally:
-                self.scale.handler_unblock(self._scale_handler_id)
-        else:
+        with blocked_handler(self.scale, getattr(self, "_scale_handler_id", None)):
             self.scale.set_value(vol)
 
         self.vol_lbl.set_text(f"{int(vol)}%")
@@ -499,14 +474,11 @@ class MixHeaderCard(Gtk.Box):
         # Hardware LED Controls for Elgato Wave device (Headphone Volume Mode)
         if is_personal_mix and self.hardware_mgr and (getattr(self.hardware_mgr, "is_elgato", False) or getattr(self.hardware_mgr, "is_connected", False)):
             box.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
-            from .led_color_picker import LEDColorButton
+            from .led_color_picker import build_led_color_row
 
-            hp_led_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-            hp_led_lbl = Gtk.Label(label="Headphone Mode Ring Color:", hexpand=True, halign=Gtk.Align.START)
-            hp_led_lbl.add_css_class("mix-header-subtitle")
-            hp_led_btn = LEDColorButton(self.hardware_mgr, "hp", title="Headphone LED", parent_popover=popover)
-            hp_led_row.append(hp_led_lbl)
-            hp_led_row.append(hp_led_btn)
+            hp_led_row, hp_led_btn = build_led_color_row(
+                self.hardware_mgr, "hp", "Headphone Mode Ring Color:", "Headphone LED", parent_popover=popover
+            )
             box.append(hp_led_row)
 
         # Minimal Symbolic Icon Palette (Pure Vector Icons, No Text Labels, Zero Emojis)
@@ -689,9 +661,5 @@ class MixHeaderCard(Gtk.Box):
         self._refresh_default_badge()
         if hasattr(self, "def_switch") and self.def_switch:
             is_active = self.pipewire_mgr.is_mix_system_default(self.mix_info["id"]) if self.pipewire_mgr else False
-            if hasattr(self, "_def_switch_handler_id") and self._def_switch_handler_id:
-                self.def_switch.handler_block(self._def_switch_handler_id)
-                self.def_switch.set_active(is_active)
-                self.def_switch.handler_unblock(self._def_switch_handler_id)
-            else:
+            with blocked_handler(self.def_switch, getattr(self, "_def_switch_handler_id", None)):
                 self.def_switch.set_active(is_active)

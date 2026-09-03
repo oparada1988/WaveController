@@ -148,7 +148,9 @@ class MixerMatrixView(Gtk.Box):
         # 1. Prune removed channels from internal dict
         for ch_id in list(self.channel_cards.keys()):
             if ch_id not in current_ch_ids:
-                self.channel_cards.pop(ch_id, None)
+                removed_card = self.channel_cards.pop(ch_id, None)
+                if removed_card and hasattr(removed_card, "cleanup"):
+                    removed_card.cleanup()
 
         # 2. Prune removed mixes from internal dict
         for m_id in list(self.mix_headers.keys()):

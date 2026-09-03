@@ -4,8 +4,8 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import Gtk, Adw, GLib
 import math
-from .led_color_picker import LEDColorButton
 from ..engine.config_manager import config_manager
+from ..utils.gtk_helpers import blocked_handler
 
 class UnifiedDeviceSettingsView(Gtk.Box):
     """
@@ -379,12 +379,20 @@ class UnifiedDeviceSettingsView(Gtk.Box):
         self.append(pref_page)
 
         # Hook live state changes from physical hardware
+        self._hw_listener_cb = None
         if self.hardware_mgr and hasattr(self.hardware_mgr, "add_hardware_listener"):
-            self.hardware_mgr.add_hardware_listener(lambda curr, changed: GLib.idle_add(self._on_hardware_synced, curr, changed))
+            self._hw_listener_cb = lambda curr, changed: GLib.idle_add(self._on_hardware_synced, curr, changed)
+            self.hardware_mgr.add_hardware_listener(self._hw_listener_cb)
 
         # Start live meter timer if mic is available
         if self.device_type in ["duplex", "input"]:
             GLib.timeout_add(25, self._on_meter_tick)
+
+    def cleanup(self):
+        """Unregisters the hardware listener; call before dropping the last reference to this view."""
+        if self._hw_listener_cb and self.hardware_mgr and hasattr(self.hardware_mgr, "remove_hardware_listener"):
+            self.hardware_mgr.remove_hardware_listener(self._hw_listener_cb)
+            self._hw_listener_cb = None
 
     def _on_hardware_synced(self, curr: dict, changed: dict):
         """Called when physical rotary dial, 48V, or touch mute is adjusted on the hardware."""
@@ -394,13 +402,7 @@ class UnifiedDeviceSettingsView(Gtk.Box):
         try:
             if "hp_volume_pct" in changed and hasattr(self, "vol_adj") and hasattr(self, "vol_slider"):
                 val = int(round(changed["hp_volume_pct"]))
-                if hasattr(self, "_vol_handler_id") and self._vol_handler_id:
-                    self.vol_slider.handler_block(self._vol_handler_id)
-                    try:
-                        self.vol_adj.set_value(val)
-                    finally:
-                        self.vol_slider.handler_unblock(self._vol_handler_id)
-                else:
+                with blocked_handler(self.vol_slider, getattr(self, "_vol_handler_id", None)):
                     self.vol_adj.set_value(val)
 
             if "dial_mode" in changed and hasattr(self, "dial_mode_row"):
@@ -409,62 +411,32 @@ class UnifiedDeviceSettingsView(Gtk.Box):
             if "phantom_power" in changed and hasattr(self, "phantom_row"):
                 val = bool(changed["phantom_power"])
                 if self.phantom_row.get_active() != val:
-                    if hasattr(self, "_phantom_handler_id") and self._phantom_handler_id:
-                        self.phantom_row.handler_block(self._phantom_handler_id)
-                        try:
-                            self.phantom_row.set_active(val)
-                        finally:
-                            self.phantom_row.handler_unblock(self._phantom_handler_id)
-                    else:
+                    with blocked_handler(self.phantom_row, getattr(self, "_phantom_handler_id", None)):
                         self.phantom_row.set_active(val)
 
             if "clipguard" in changed and hasattr(self, "clipguard_row"):
                 val = bool(changed["clipguard"])
                 if self.clipguard_row.get_active() != val:
-                    if hasattr(self, "_clipguard_handler_id") and self._clipguard_handler_id:
-                        self.clipguard_row.handler_block(self._clipguard_handler_id)
-                        try:
-                            self.clipguard_row.set_active(val)
-                        finally:
-                            self.clipguard_row.handler_unblock(self._clipguard_handler_id)
-                    else:
+                    with blocked_handler(self.clipguard_row, getattr(self, "_clipguard_handler_id", None)):
                         self.clipguard_row.set_active(val)
 
             if "low_cut" in changed and hasattr(self, "low_cut_row"):
                 mode = str(changed["low_cut"])
                 sel = 1 if mode == "80Hz" else (2 if mode == "120Hz" else 0)
                 if self.low_cut_row.get_selected() != sel:
-                    if hasattr(self, "_low_cut_handler_id") and self._low_cut_handler_id:
-                        self.low_cut_row.handler_block(self._low_cut_handler_id)
-                        try:
-                            self.low_cut_row.set_selected(sel)
-                        finally:
-                            self.low_cut_row.handler_unblock(self._low_cut_handler_id)
-                    else:
+                    with blocked_handler(self.low_cut_row, getattr(self, "_low_cut_handler_id", None)):
                         self.low_cut_row.set_selected(sel)
 
             if "low_impedance" in changed and hasattr(self, "low_z_row"):
                 val = bool(changed["low_impedance"])
                 if self.low_z_row.get_active() != val:
-                    if hasattr(self, "_low_z_handler_id") and self._low_z_handler_id:
-                        self.low_z_row.handler_block(self._low_z_handler_id)
-                        try:
-                            self.low_z_row.set_active(val)
-                        finally:
-                            self.low_z_row.handler_unblock(self._low_z_handler_id)
-                    else:
+                    with blocked_handler(self.low_z_row, getattr(self, "_low_z_handler_id", None)):
                         self.low_z_row.set_active(val)
 
             if "gain_db" in changed and hasattr(self, "gain_adj") and hasattr(self, "gain_slider"):
                 val = int(round(changed["gain_db"]))
                 if int(round(self.gain_adj.get_value())) != val:
-                    if hasattr(self, "_gain_handler_id") and self._gain_handler_id:
-                        self.gain_slider.handler_block(self._gain_handler_id)
-                        try:
-                            self.gain_adj.set_value(val)
-                        finally:
-                            self.gain_slider.handler_unblock(self._gain_handler_id)
-                    else:
+                    with blocked_handler(self.gain_slider, getattr(self, "_gain_handler_id", None)):
                         self.gain_adj.set_value(val)
                     if hasattr(self, "gain_row"):
                         self.gain_row.set_subtitle(f"{val}%")
@@ -472,13 +444,7 @@ class UnifiedDeviceSettingsView(Gtk.Box):
             if "monitor_mix_pct" in changed and hasattr(self, "bal_adj") and hasattr(self, "bal_slider"):
                 val = int(round(changed["monitor_mix_pct"]))
                 if int(round(self.bal_adj.get_value())) != val:
-                    if hasattr(self, "_bal_handler_id") and self._bal_handler_id:
-                        self.bal_slider.handler_block(self._bal_handler_id)
-                        try:
-                            self.bal_adj.set_value(val)
-                        finally:
-                            self.bal_slider.handler_unblock(self._bal_handler_id)
-                    else:
+                    with blocked_handler(self.bal_slider, getattr(self, "_bal_handler_id", None)):
                         self.bal_adj.set_value(val)
         finally:
             self._syncing_from_hw = False
@@ -504,13 +470,7 @@ class UnifiedDeviceSettingsView(Gtk.Box):
                     if resp == "enable":
                         self.hardware_mgr.set_phantom_power(True)
                     else:
-                        if hasattr(self, "_phantom_handler_id") and self._phantom_handler_id:
-                            self.phantom_row.handler_block(self._phantom_handler_id)
-                            try:
-                                self.phantom_row.set_active(False)
-                            finally:
-                                self.phantom_row.handler_unblock(self._phantom_handler_id)
-                        else:
+                        with blocked_handler(self.phantom_row, getattr(self, "_phantom_handler_id", None)):
                             self.phantom_row.set_active(False)
 
                 dialog.connect("response", _on_response)

@@ -113,14 +113,19 @@ class ConfigManager:
     def save_now(self):
         """Atomically writes configuration to disk using a temporary file."""
         with self._lock:
+            tmp_file = f"{self.config_file}.tmp"
             try:
                 os.makedirs(self.config_dir, exist_ok=True)
-                tmp_file = f"{self.config_file}.tmp"
                 with open(tmp_file, "w", encoding="utf-8") as f:
                     json.dump(self._data, f, indent=2, ensure_ascii=False)
                 os.replace(tmp_file, self.config_file)
             except Exception as e:
                 log.error(f"Failed to write config to {self.config_file}: {e}")
+                if os.path.exists(tmp_file):
+                    try:
+                        os.remove(tmp_file)
+                    except OSError:
+                        pass
 
     def export_backup(self, target_path: str) -> bool:
         """Exports current full configuration to an external JSON backup file."""

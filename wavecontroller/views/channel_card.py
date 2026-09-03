@@ -1,7 +1,7 @@
 import gi
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
-from gi.repository import Gtk, Gdk, GObject, Adw
+from gi.repository import Gtk, Gdk, GObject, Adw, GLib
 
 from .stereo_slider import StereoSlider
 
@@ -115,6 +115,8 @@ class ChannelCard(Gtk.Box):
             self.sub_lbl.add_css_class("mix-header-subtitle")
             self.sub_lbl.set_halign(Gtk.Align.START)
             self.sub_lbl.set_ellipsize(3)
+            # Hide when it just repeats the title (single auto-assigned app named after the channel)
+            self.sub_lbl.set_visible(sub_text.strip().lower() != display_name.strip().lower())
             title_box.append(self.sub_lbl)
             self.badge_lbl = None
 
@@ -221,8 +223,10 @@ class ChannelCard(Gtk.Box):
             self._build_app_sub_strips()
 
         # Hook live state changes from physical hardware dial & mute
+        self._hw_listener_cb = None
         if self.is_wave_channel and self.hardware_mgr and hasattr(self.hardware_mgr, "add_hardware_listener"):
-            self.hardware_mgr.add_hardware_listener(lambda curr, changed: GLib.idle_add(self._on_hardware_synced, curr, changed))
+            self._hw_listener_cb = lambda curr, changed: GLib.idle_add(self._on_hardware_synced, curr, changed)
+            self.hardware_mgr.add_hardware_listener(self._hw_listener_cb)
 
         # -------------------------------------------------------------
         # Vertical Drag & Drop Controller Setup (Attached ONLY to Grip)
@@ -646,15 +650,12 @@ class ChannelCard(Gtk.Box):
         # Hardware LED Controls for Elgato Wave device
         if self.is_wave_channel and self.hardware_mgr:
             vbox.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
-            from .led_color_picker import LEDColorButton
-            
-            # Mic Gain Mode LED Ring Color
-            gain_led_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-            gain_led_lbl = Gtk.Label(label="Mic Gain Mode Ring Color:", hexpand=True, halign=Gtk.Align.START)
-            gain_led_lbl.add_css_class("mix-header-subtitle")
-            gain_led_btn = LEDColorButton(self.hardware_mgr, "gain", title="Mic Gain LED", parent_popover=popover)
-            gain_led_row.append(gain_led_lbl)
-            gain_led_row.append(gain_led_btn)
+            from .led_color_picker import build_led_color_row
+
+            gain_led_row, gain_led_btn = build_led_color_row(
+                self.hardware_mgr, "gain", "Mic Gain Mode Ring Color:", "Mic Gain LED", parent_popover=popover
+            )
+            self.gain_led_btn = gain_led_btn
             vbox.append(gain_led_row)
 
         vbox.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
@@ -826,6 +827,14 @@ class ChannelCard(Gtk.Box):
                 self.badge_lbl.remove_css_class("offline")
                 self.badge_lbl.add_css_class("online")
 
+    def cleanup(self):
+        """Unregisters hardware listeners; call before dropping the last reference to this card."""
+        if self._hw_listener_cb and self.hardware_mgr and hasattr(self.hardware_mgr, "remove_hardware_listener"):
+            self.hardware_mgr.remove_hardware_listener(self._hw_listener_cb)
+            self._hw_listener_cb = None
+        if hasattr(self, "gain_led_btn") and self.gain_led_btn:
+            self.gain_led_btn.cleanup()
+
     def _on_toggle_drawer(self, btn):
         if not hasattr(self, "drawer_revealer"):
             return
@@ -996,7 +1005,10 @@ class ChannelCard(Gtk.Box):
         else:
             sub_text = "No apps assigned"
 
+        display_name = self.channel_info.get("name", "")
         self.sub_lbl.set_label(sub_text)
+        # Hide when it just repeats the title (single auto-assigned app named after the channel)
+        self.sub_lbl.set_visible(sub_text.strip().lower() != display_name.strip().lower())
         if self.is_group_channel:
             self._build_app_sub_strips()
 
