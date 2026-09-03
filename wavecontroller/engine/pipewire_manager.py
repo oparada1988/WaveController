@@ -246,7 +246,8 @@ class PipeWireManager:
                 needed_nodes[node_name] = (f"WaveController {m_name} (Sink)", "Audio/Sink", False)
             else:
                 node_name = f"WaveController_{m_id}_Source"
-                needed_nodes[node_name] = (f"WaveController {m_name}", "Audio/Duplex")
+                # Audio/Source/Virtual (not Audio/Duplex) so GNOME/OBS list it as input-only, not also as an output
+                needed_nodes[node_name] = (f"WaveController {m_name}", "Audio/Source/Virtual")
 
         # Provision dedicated pre-fader virtual ingestion nodes ONLY for exposed Group Channels
         for ch in channels_copy:
@@ -3327,14 +3328,16 @@ class PipeWireManager:
                                     break
                         if node_id:
                             default_key = "default.audio.source" if m_type == "source" else "default.audio.sink"
-                            configured_key = f"default.configured.{default_key}"
+                            # NOTE: do not naively prefix default_key here - it already contains "default.",
+                            # which would double up (e.g. "default.configured.default.audio.source").
+                            configured_key = "default.configured.audio.source" if m_type == "source" else "default.configured.audio.sink"
                             node_json = json.dumps({"name": target_node_name})
                             metadata_result = subprocess.run(
                                 ["pw-metadata", "-n", "default", "0", default_key, node_json],
                                 stdout=subprocess.DEVNULL,
                                 stderr=subprocess.DEVNULL
                             )
-                            # Our virtual "_Source" mixes are Audio/Duplex nodes, which `wpctl set-default`
+                            # Our virtual "_Source" mixes are Audio/Source/Virtual nodes, which `wpctl set-default`
                             # refuses ("not a device node"), so write the persisted GNOME/PulseAudio-visible
                             # key directly instead of relying on wpctl for it.
                             configured_result = subprocess.run(

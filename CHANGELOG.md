@@ -2,6 +2,12 @@
 
 All notable changes to WaveController are documented in this file.
 
+## [0.0.3.1] - 2026-09-03
+
+### Fixed
+- **"Chat Mix" (and other input mixes) no longer appear as an Output device** in GNOME Settings and OBS. The virtual `_Source` node was created with `media.class=Audio/Duplex`, which exposes both playback and capture ports and is therefore listed under both Output and Input device pickers. It now uses `media.class=Audio/Source/Virtual`, which only ever appears under Sources/Inputs. Routing (submix loopback -> mix node) required no logic changes since the link-matching code already handled both port-naming contracts.
+- **GNOME Input default silently failed to persist across reboots for input mixes.** `set_mix_system_default()` built the persisted PipeWire metadata key as `default.configured.default.audio.source` (a leftover double `"default."` prefix bug) instead of the correct `default.configured.audio.source`, so the actual key GNOME/WirePlumber reads for the saved Input default was never updated. Output/sink mixes were unaffected because `wpctl set-default` succeeds for sinks and updates that key itself. Fixed by writing the correct key name directly.
+
 ## [0.0.3.0] - 2026-09-03 (Alpha 3)
 
 ### Added
