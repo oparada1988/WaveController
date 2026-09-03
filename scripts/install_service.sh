@@ -20,8 +20,9 @@ cat << EOF_UNIT > "$SYSTEMD_USER_DIR/wavecontroller.service"
 [Unit]
 Description=WaveController Audio Routing Daemon
 Documentation=https://github.com/oparada1988/WaveController
-After=pipewire.service wireplumber.service
+After=graphical-session.target pipewire.service wireplumber.service
 Wants=pipewire.service wireplumber.service
+PartOf=graphical-session.target
 
 [Service]
 Type=simple
@@ -32,7 +33,7 @@ StandardOutput=journal
 StandardError=journal
 
 [Install]
-WantedBy=default.target
+WantedBy=graphical-session.target
 EOF_UNIT
 
 echo "Reloading systemd user daemon..."

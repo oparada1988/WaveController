@@ -476,6 +476,9 @@ class PipeWireManager:
         self._ensure_virtual_mix_nodes()
         self._refresh_node_cache()
 
+        # 2b. Re-bind system default sink/source since node ids are regenerated above
+        self._apply_configured_system_defaults()
+
         # 3. Re-assert all Channel Master Volumes
         with self._lock:
             master_states = {k: dict(v) for k, v in self.channel_master_states.items()}
@@ -569,15 +572,15 @@ class PipeWireManager:
                 # 2. Periodic real-time stream, guard & mix reconciliation
                 sync_tick = getattr(self, "_sync_loop_tick", 0) + 1
                 self._sync_loop_tick = sync_tick
-                if sync_tick % 2 == 0:
+                if sync_tick % 4 == 0:
                     self._reconcile_app_streams_fast()
-                if sync_tick % 10 == 0:
+                if sync_tick % 20 == 0:
                     self._enforce_exclusive_volume_guard()
                     self._ensure_mix_sinks_unmuted()
                     self._sync_channel_audio_routing()
             except Exception:
                 pass
-            time.sleep(0.04) # 25 Hz fast poller (40ms)
+            time.sleep(0.25) # 4 Hz source-volume poller; graph work is rate-limited above
 
     def _enforce_exclusive_volume_guard(self):
         """
@@ -3324,18 +3327,28 @@ class PipeWireManager:
                                     break
                         if node_id:
                             default_key = "default.audio.source" if m_type == "source" else "default.audio.sink"
+                            configured_key = f"default.configured.{default_key}"
+                            node_json = json.dumps({"name": target_node_name})
                             metadata_result = subprocess.run(
-                                ["pw-metadata", "-n", "default", "0", default_key, json.dumps({"name": target_node_name})],
+                                ["pw-metadata", "-n", "default", "0", default_key, node_json],
                                 stdout=subprocess.DEVNULL,
                                 stderr=subprocess.DEVNULL
                             )
-                            if m_type == "sink":
+                            # Our virtual "_Source" mixes are Audio/Duplex nodes, which `wpctl set-default`
+                            # refuses ("not a device node"), so write the persisted GNOME/PulseAudio-visible
+                            # key directly instead of relying on wpctl for it.
+                            configured_result = subprocess.run(
+                                ["pw-metadata", "-n", "default", "0", configured_key, node_json],
+                                stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL
+                            )
+                            if m_type != "source":
                                 subprocess.run(
                                     ["wpctl", "set-default", node_id],
                                     stdout=subprocess.DEVNULL,
                                     stderr=subprocess.DEVNULL
                                 )
-                            if metadata_result.returncode == 0:
+                            if metadata_result.returncode == 0 and configured_result.returncode == 0:
                                 log.info(f"[WaveController.PipeWire] Set system default {m_type} to '{target_node_name}' (node_id={node_id})")
                                 return
                     except Exception as e:

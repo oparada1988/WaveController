@@ -555,13 +555,22 @@ class MultiChannelPeakMonitor:
 
     def _run_discovery_loop(self):
         """Background asynchronous graph discovery worker that audits links and manages pw-record processes."""
+        minimum_refresh_interval = 2.0
+        last_refresh_time = 0.0
         while self.running:
-            self._refresh_event.wait(timeout=0.25)
+            self._refresh_event.wait(timeout=minimum_refresh_interval)
             if not self.running:
                 break
             self._refresh_event.clear()
+            remaining_delay = minimum_refresh_interval - (time.monotonic() - last_refresh_time)
+            if remaining_delay > 0:
+                if self._refresh_event.wait(timeout=remaining_delay):
+                    self._refresh_event.clear()
+                if not self.running:
+                    break
             try:
                 self._do_refresh_discovery()
+                last_refresh_time = time.monotonic()
             except Exception:
                 pass
 
