@@ -214,24 +214,34 @@ upgrade_app() {
     echo -e "${GREEN}${BOLD}✔ Upgrade complete! Saved configurations were preserved.${NC}"
 }
 
-# Autostart Management
+# Autostart Management (user-space systemd unit, no sudo required)
 enable_autostart() {
-    mkdir -p "${AUTOSTART_DIR}"
-    cat << EOF > "${AUTOSTART_DIR}/com.oparada.WaveController.desktop"
-[Desktop Entry]
-Type=Application
-Name=WaveController
-GenericName=Audio Mixer
-Comment=Elgato Wave Link & Advanced Multi-Track Virtual Mixer for Linux
-Exec=${BIN_DIR}/wavecontroller --daemon
-Icon=com.oparada.WaveController
-Terminal=false
-Categories=AudioVideo;Audio;Mixer;GTK;
-StartupWMClass=com.oparada.WaveController
-X-GNOME-Autostart-enabled=true
+    # Remove any leftover pre-systemd XDG autostart entry
+    rm -f "${AUTOSTART_DIR}/com.oparada.WaveController.desktop"
+
+    mkdir -p "${SYSTEMD_USER_DIR}"
+    cat << EOF > "${SYSTEMD_USER_DIR}/wavecontroller.service"
+[Unit]
+Description=WaveController Audio Routing Daemon
+Documentation=https://github.com/oparada1988/WaveController
+After=graphical-session.target pipewire.service wireplumber.service
+Wants=pipewire.service wireplumber.service
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=${BIN_DIR}/wavecontroller --daemon
+Restart=on-failure
+RestartSec=3
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=graphical-session.target
 EOF
-    chmod +x "${AUTOSTART_DIR}/com.oparada.WaveController.desktop"
-    echo -e "${GREEN}✔ WaveController background auto-start enabled in ~/.config/autostart.${NC}"
+    systemctl --user daemon-reload
+    systemctl --user enable --now wavecontroller.service
+    echo -e "${GREEN}✔ WaveController background auto-start enabled via systemd user service.${NC}"
 }
 
 disable_autostart() {

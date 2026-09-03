@@ -279,22 +279,62 @@ class WaveMainWindow(Adw.ApplicationWindow):
     def _toggle_sidebar(self, button, sidebar):
         self._sidebar_collapsed = not self._sidebar_collapsed
         config_manager.set("sidebar_collapsed", self._sidebar_collapsed, immediate=True)
-        self._apply_sidebar_state(sidebar)
+        self._animate_sidebar_state(sidebar)
 
     def _apply_sidebar_state(self, sidebar):
+        """Instantly apply the collapsed/expanded state (used on initial build, no animation)."""
         collapsed = self._sidebar_collapsed
         sidebar.set_size_request(68 if collapsed else 225, -1)
         for widget in self._sidebar_text_widgets:
             if widget.get_parent() is not None:
                 widget.set_visible(not collapsed)
+        self._update_sidebar_toggle_button(collapsed)
+        sidebar.remove_css_class("sidebar-collapsed")
+        if collapsed:
+            sidebar.add_css_class("sidebar-collapsed")
+
+    def _update_sidebar_toggle_button(self, collapsed):
         if hasattr(self, "_sidebar_toggle_btn"):
             self._sidebar_toggle_btn.set_icon_name("sidebar-show-symbolic")
             self._sidebar_toggle_btn.set_tooltip_text(
                 "Expand Sidebar" if collapsed else "Collapse Sidebar"
             )
+
+    def _animate_sidebar_state(self, sidebar):
+        """Animates the sidebar width smoothly between collapsed/expanded states."""
+        collapsed = self._sidebar_collapsed
+        target_width = 68 if collapsed else 225
+        start_width = sidebar.get_width() or (225 if collapsed else 68)
+
+        self._update_sidebar_toggle_button(collapsed)
         sidebar.remove_css_class("sidebar-collapsed")
         if collapsed:
-            sidebar.add_css_class("sidebar-collapsed")
+            # Hide labels immediately so they don't wrap/overflow while shrinking
+            for widget in self._sidebar_text_widgets:
+                if widget.get_parent() is not None:
+                    widget.set_visible(False)
+
+        def on_tick(value):
+            sidebar.set_size_request(int(value), -1)
+
+        def on_done(*_args):
+            sidebar.set_size_request(target_width, -1)
+            if collapsed:
+                sidebar.add_css_class("sidebar-collapsed")
+            else:
+                for widget in self._sidebar_text_widgets:
+                    if widget.get_parent() is not None:
+                        widget.set_visible(True)
+
+        if getattr(self, "_sidebar_animation", None):
+            self._sidebar_animation.pause()
+
+        target = Adw.CallbackAnimationTarget.new(on_tick)
+        animation = Adw.TimedAnimation.new(sidebar, start_width, target_width, 220, target)
+        animation.set_easing(Adw.Easing.EASE_OUT_CUBIC)
+        animation.connect("done", on_done)
+        self._sidebar_animation = animation
+        animation.play()
 
     def _rebuild_device_views(self, select_device_key: str = None):
         """Rebuilds the sidebar device buttons and views stack for all tracked devices."""

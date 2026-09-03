@@ -1,25 +1,17 @@
 import os
 import shutil
+import subprocess
 from .logger import get_logger
 
 logger = get_logger("Autostart")
 
-AUTOSTART_DIR = os.path.expanduser("~/.config/autostart")
-AUTOSTART_FILE = os.path.join(AUTOSTART_DIR, "com.oparada.WaveController.desktop")
+SERVICE_NAME = "wavecontroller.service"
+SYSTEMD_USER_DIR = os.path.expanduser("~/.config/systemd/user")
+SERVICE_FILE = os.path.join(SYSTEMD_USER_DIR, SERVICE_NAME)
 
-def is_autostart_enabled() -> bool:
-    """Checks if WaveController autostart desktop entry exists and is enabled."""
-    if not os.path.isfile(AUTOSTART_FILE):
-        return False
-    try:
-        with open(AUTOSTART_FILE, "r", encoding="utf-8") as f:
-            for line in f:
-                if line.strip().lower() == "x-gnome-autostart-enabled=false":
-                    return False
-        return True
-    except Exception as e:
-        logger.warning(f"Failed to read autostart file: {e}")
-        return False
+# Legacy XDG autostart entry, superseded by the systemd user service below.
+LEGACY_AUTOSTART_FILE = os.path.expanduser("~/.config/autostart/com.oparada.WaveController.desktop")
+
 
 def get_executable_path() -> str:
     """Determines the best executable command for launching WaveController in background."""
@@ -34,33 +26,69 @@ def get_executable_path() -> str:
         return f"/usr/bin/python3 {local_main} --daemon"
     return "/usr/bin/python3 -m wavecontroller.main --daemon"
 
+
+def _cleanup_legacy_autostart() -> None:
+    """Removes the old XDG autostart desktop entry left over from pre-systemd versions."""
+    if os.path.exists(LEGACY_AUTOSTART_FILE):
+        try:
+            os.remove(LEGACY_AUTOSTART_FILE)
+            logger.info(f"Removed legacy autostart entry: {LEGACY_AUTOSTART_FILE}")
+        except Exception as e:
+            logger.warning(f"Failed to remove legacy autostart entry: {e}")
+
+
+def _write_service_unit() -> None:
+    """Writes/refreshes the user-space systemd unit so it always points at the current install."""
+    os.makedirs(SYSTEMD_USER_DIR, exist_ok=True)
+    exec_cmd = get_executable_path()
+    content = f"""[Unit]
+Description=WaveController Audio Routing Daemon
+Documentation=https://github.com/oparada1988/WaveController
+After=graphical-session.target pipewire.service wireplumber.service
+Wants=pipewire.service wireplumber.service
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart={exec_cmd}
+Restart=on-failure
+RestartSec=3
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=graphical-session.target
+"""
+    with open(SERVICE_FILE, "w", encoding="utf-8") as f:
+        f.write(content)
+    subprocess.run(["systemctl", "--user", "daemon-reload"], check=False)
+
+
+def is_autostart_enabled() -> bool:
+    """Checks if the WaveController systemd user service is enabled."""
+    try:
+        result = subprocess.run(
+            ["systemctl", "--user", "is-enabled", SERVICE_NAME],
+            capture_output=True, text=True, check=False,
+        )
+        return result.stdout.strip() == "enabled"
+    except Exception as e:
+        logger.warning(f"Failed to query systemd autostart state: {e}")
+        return False
+
+
 def set_autostart_enabled(enabled: bool) -> bool:
-    """Creates or removes the XDG autostart desktop entry."""
+    """Enables or disables the WaveController systemd user service (user-space unit, no sudo required)."""
+    _cleanup_legacy_autostart()
     try:
         if enabled:
-            os.makedirs(AUTOSTART_DIR, exist_ok=True)
-            exec_cmd = get_executable_path()
-            content = f"""[Desktop Entry]
-Type=Application
-Name=WaveController
-GenericName=Audio Mixer
-Comment=Elgato Wave Link & Advanced Multi-Track Virtual Mixer for Linux
-Exec={exec_cmd}
-Icon=com.oparada.WaveController
-Terminal=false
-Categories=AudioVideo;Audio;Mixer;GTK;
-StartupWMClass=com.oparada.WaveController
-X-GNOME-Autostart-enabled=true
-"""
-            with open(AUTOSTART_FILE, "w", encoding="utf-8") as f:
-                f.write(content)
-            logger.info(f"Autostart enabled: created {AUTOSTART_FILE}")
-            return True
+            _write_service_unit()
+            subprocess.run(["systemctl", "--user", "enable", "--now", SERVICE_NAME], check=True)
+            logger.info("Autostart enabled via systemd user service")
         else:
-            if os.path.exists(AUTOSTART_FILE):
-                os.remove(AUTOSTART_FILE)
-                logger.info(f"Autostart disabled: removed {AUTOSTART_FILE}")
-            return True
+            subprocess.run(["systemctl", "--user", "disable", "--now", SERVICE_NAME], check=False)
+            logger.info("Autostart disabled via systemd user service")
+        return True
     except Exception as e:
         logger.error(f"Failed to update autostart setting ({enabled}): {e}")
         return False

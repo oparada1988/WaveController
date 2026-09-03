@@ -60,7 +60,7 @@
 #### 1. One-Line Remote Installer
 Install WaveController, desktop launcher, application icons, and `udev` hardware permissions in a single command:
 ```bash
-curl -fsSL https://raw.githubusercontent.com/oparada1988/WaveController/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/oparada1988/WaveController/main/install.sh | bash
 ```
 
 #### 2. Local Script Installation

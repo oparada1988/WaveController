@@ -178,7 +178,7 @@ class SettingsView(Gtk.Box):
         # Group 2: General
         grp_gen = Adw.PreferencesGroup(title="General")
 
-        autostart_row = Adw.SwitchRow(title="Start Automatically on Login", subtitle="Launch WaveController daemon in background")
+        autostart_row = Adw.SwitchRow(title="Enable Background Service (systemd)", subtitle="Auto-restarts on crash and starts after PipeWire is ready")
         autostart_row.set_active(is_autostart_enabled())
         autostart_row.connect("notify::active", lambda r, p: set_autostart_enabled(r.get_active()))
         grp_gen.add(autostart_row)
