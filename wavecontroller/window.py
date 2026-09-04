@@ -127,6 +127,7 @@ class WaveMainWindow(Adw.ApplicationWindow):
 
         self.hardware_mgr.on_device_renamed_callback = lambda *a: GLib.idle_add(self._on_device_renamed)
         self.hardware_mgr.on_devices_changed_callback = lambda *a: GLib.idle_add(self._on_devices_changed)
+        self.hardware_mgr.on_device_disconnected_callback = lambda device_key: GLib.idle_add(self._on_device_disconnected, device_key)
         self.hardware_mgr.on_new_device_detected_callback = lambda dev_info: GLib.idle_add(self._on_new_device_detected, dev_info)
 
         # Check for first-time OOBE setup
@@ -702,6 +703,14 @@ class WaveMainWindow(Adw.ApplicationWindow):
             self.mixer_view.refresh_all_faders()
         if hasattr(self, "settings_view") and hasattr(self.settings_view, "refresh_device_list"):
             self.settings_view.refresh_device_list()
+
+    def _on_device_disconnected(self, device_key: str):
+        """Keep configured virtual mixes alive during a temporary hardware loss."""
+        log.warning(f"[WaveController.Window] Physical device temporarily unavailable: '{device_key}'. Preserving virtual mixes.")
+        if self.pipewire_mgr:
+            self.pipewire_mgr._ensure_virtual_mix_nodes()
+            self.pipewire_mgr._refresh_node_cache()
+            self.pipewire_mgr._sync_channel_audio_routing()
 
     def _on_system_defaults_changed(self):
         if hasattr(self, "mixer_view") and self.mixer_view:

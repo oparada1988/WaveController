@@ -60,6 +60,8 @@ class USBHardwareManager:
         self._elgato_initialized = False
         self._is_sleeping = False
         self._restoring_hardware = False
+        self._device_missing_since = {}
+        self.on_device_disconnected_callback = None
 
     def _ensure_elgato_card_profile(self, card_id: int):
         """Ensures the ALSA device profile is locked to 'Analog Stereo Output + Mono Input'."""
@@ -552,6 +554,27 @@ class USBHardwareManager:
 
         threading.Thread(target=_do_fast_restore, daemon=True).start()
 
+    def _get_stably_removed_keys(self, known_keys, current_keys, now=None, grace_period=3.0):
+        """Returns devices absent continuously for the grace period, once per loss."""
+        now = time.monotonic() if now is None else now
+        removed_keys = set(known_keys) - set(current_keys)
+        current_keys = set(current_keys)
+
+        for key in list(self._device_missing_since):
+            if key in current_keys:
+                del self._device_missing_since[key]
+
+        for key in removed_keys:
+            self._device_missing_since.setdefault(key, now)
+
+        stable_keys = {
+            key for key, missing_since in self._device_missing_since.items()
+            if key not in current_keys and now - missing_since >= grace_period
+        }
+        for key in stable_keys:
+            del self._device_missing_since[key]
+        return stable_keys
+
     def _start_hotplug_monitor(self):
         """Background worker checking for newly attached or detached hardware devices via kernel uevents."""
         def _monitor_loop():
@@ -593,6 +616,7 @@ class USBHardwareManager:
                     curr_keys = set(self.discovered_devices.keys())
                     if curr_keys != known_keys:
                         new_keys = curr_keys - known_keys
+                        stably_removed_keys = self._get_stably_removed_keys(known_keys, curr_keys)
                         if new_keys:
                             tracked = set(config_manager.get("tracked_devices", []))
                             for nk in new_keys:
@@ -600,11 +624,25 @@ class USBHardwareManager:
                                 if dev and nk not in tracked:
                                     if self.on_new_device_detected_callback:
                                         self.on_new_device_detected_callback(dev)
+                        if stably_removed_keys and self.on_device_disconnected_callback:
+                            for removed_key in stably_removed_keys:
+                                if removed_key in config_manager.get("tracked_devices", []):
+                                    self.on_device_disconnected_callback(removed_key)
                         known_keys = curr_keys
                         if self.on_devices_changed_callback:
                             self.on_devices_changed_callback()
                         if self.pipewire_mgr and hasattr(self.pipewire_mgr, "_sync_channel_audio_routing"):
+                            if hasattr(self.pipewire_mgr, "_ensure_virtual_mix_nodes"):
+                                self.pipewire_mgr._ensure_virtual_mix_nodes()
+                            if hasattr(self.pipewire_mgr, "_refresh_node_cache"):
+                                self.pipewire_mgr._refresh_node_cache()
                             self.pipewire_mgr._sync_channel_audio_routing()
+                    else:
+                        stably_removed_keys = self._get_stably_removed_keys(known_keys, curr_keys)
+                        if stably_removed_keys and self.on_device_disconnected_callback:
+                            for removed_key in stably_removed_keys:
+                                if removed_key in config_manager.get("tracked_devices", []):
+                                    self.on_device_disconnected_callback(removed_key)
                 except Exception:
                     pass
 

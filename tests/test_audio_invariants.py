@@ -176,6 +176,25 @@ class TestPipeWireTopologyInvariants(unittest.TestCase):
         self.assertIn("--target", src, "REGRESSION: open_pw_record is missing --target flag")
 
 
+class TestHardwareDisconnectProtection(unittest.TestCase):
+    """Verifies transient device loss does not immediately become removal."""
+
+    def setUp(self):
+        from wavecontroller.engine.usb_hardware import USBHardwareManager
+        self.manager = USBHardwareManager.__new__(USBHardwareManager)
+        self.manager._device_missing_since = {}
+
+    def test_transient_loss_is_not_reported(self):
+        self.assertEqual(self.manager._get_stably_removed_keys({"wave"}, set(), now=100.0), set())
+        self.assertEqual(self.manager._get_stably_removed_keys(set(), set(), now=102.9), set())
+        self.assertEqual(self.manager._get_stably_removed_keys(set(), {"wave"}, now=103.0), set())
+
+    def test_persistent_loss_is_reported_once(self):
+        self.assertEqual(self.manager._get_stably_removed_keys({"wave"}, set(), now=100.0), set())
+        self.assertEqual(self.manager._get_stably_removed_keys(set(), set(), now=103.0), {"wave"})
+        self.assertEqual(self.manager._get_stably_removed_keys(set(), set(), now=106.0), set())
+
+
 class TestIPCLiveInvariants(unittest.TestCase):
     """Verifies live daemon socket contracts if the daemon is currently active."""
 
