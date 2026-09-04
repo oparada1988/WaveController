@@ -514,9 +514,13 @@ class USBHardwareManager:
         self._last_gain_set_time = time.time() + 3.0
         self._last_hp_set_time = time.time() + 3.0
         self._elgato_initialized = False
-        elgato_manager.on_system_resume()
 
         def _do_fast_restore():
+            # elgato_manager.on_system_resume() performs blocking libusb I/O (device open + control
+            # transfers); it MUST run off the main/GLib thread or a slow post-suspend USB
+            # re-enumeration freezes the whole app (including the scheduled PipeWire/UI restore).
+            elgato_manager.on_system_resume()
+
             # Fast retry loop: attempt immediate connection every 35ms (up to 35 attempts = ~1.2s max)
             # Reconnects in <100ms on typical resume as soon as the USB hub is powered
             for attempt in range(35):

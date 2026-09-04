@@ -59,6 +59,9 @@ def _init_libusb():
             _lib.libusb_claim_interface.restype = ctypes.c_int
             _lib.libusb_release_interface.argtypes = [ctypes.c_void_p, ctypes.c_int]
             _lib.libusb_release_interface.restype = ctypes.c_int
+            if hasattr(_lib, "libusb_detach_kernel_driver"):
+                _lib.libusb_detach_kernel_driver.argtypes = [ctypes.c_void_p, ctypes.c_int]
+                _lib.libusb_detach_kernel_driver.restype = ctypes.c_int
             if hasattr(_lib, "libusb_set_auto_detach_kernel_driver"):
                 _lib.libusb_set_auto_detach_kernel_driver.argtypes = [ctypes.c_void_p, ctypes.c_int]
                 _lib.libusb_set_auto_detach_kernel_driver.restype = ctypes.c_int
@@ -67,6 +70,10 @@ def _init_libusb():
                 ctypes.c_uint16, ctypes.c_uint16,
                 ctypes.POINTER(ctypes.c_ubyte), ctypes.c_uint16, ctypes.c_uint,
             ]
+            _lib.libusb_control_transfer.restype = ctypes.c_int
+            if hasattr(_lib, "libusb_exit"):
+                _lib.libusb_exit.argtypes = [ctypes.c_void_p]
+                _lib.libusb_exit.restype = None
             _lib_ctx = ctypes.c_void_p()
             ret = _lib.libusb_init(ctypes.byref(_lib_ctx))
             if ret != 0:
@@ -76,6 +83,29 @@ def _init_libusb():
             log.error(f"Failed to load libusb library: {e}")
             _lib = None
     return _lib
+
+
+def _reinit_libusb_after_resume():
+    """Recreates the libusb context after system resume.
+
+    The kernel resets/re-powers USB root hubs across suspend (observed as
+    "root hub lost power or was reset"), which invalidates the libusb context
+    created before sleep. Reusing it crashes the whole process with a native
+    segfault deep inside libusb_open_device_with_vid_pid, bypassing Python's
+    exception handling entirely. Tearing down and recreating the context
+    avoids handing libusb any state that predates the reset.
+    """
+    global _lib, _lib_ctx
+    with _lib_lock:
+        if _lib is not None and _lib_ctx:
+            try:
+                if hasattr(_lib, "libusb_exit"):
+                    _lib.libusb_exit(_lib_ctx)
+            except Exception as e:
+                log.warning(f"libusb_exit during resume reinit failed (continuing): {e}")
+        _lib = None
+        _lib_ctx = None
+    _init_libusb()
 
 
 @dataclass(frozen=True)
@@ -286,6 +316,11 @@ class ElgatoWaveDevice:
                     self._handle = handle
                     # Claim vendor control interface only if profile explicitly requires it
                     if self.profile.claim_interface is not None:
+                        if hasattr(lib, "libusb_set_auto_detach_kernel_driver"):
+                            try:
+                                lib.libusb_set_auto_detach_kernel_driver(handle, 1)
+                            except Exception:
+                                pass
                         if hasattr(lib, "libusb_detach_kernel_driver"):
                             try:
                                 lib.libusb_detach_kernel_driver(handle, self.profile.claim_interface)
@@ -1066,16 +1101,27 @@ class ElgatoManager:
         self._is_sleeping = False
         self._poll_thread: Optional[threading.Thread] = None
         self.on_state_changed = None # Callback when hardware dial/mute/48V changes physically
+        # Serializes all libusb open/connect attempts: multiple threads (poll loop,
+        # resume fast-restore, peak-monitor capture loop) call detect_device()/get_device()
+        # concurrently, and concurrent libusb_open_device_with_vid_pid calls during a
+        # post-resume USB hotplug storm segfault natively inside libusb. RLock so
+        # on_system_resume() can hold it across reinit + detect_device() as one unit.
+        self._detect_lock = threading.RLock()
 
     def detect_device(self) -> Optional[ElgatoWaveDevice]:
         if self._is_sleeping:
             return None
-        for p in ELGATO_PROFILES:
-            dev = ElgatoWaveDevice(p)
-            if dev.connect():
-                self.active_device = dev
-                self._start_sync_loop()
-                return dev
+        with self._detect_lock:
+            if self._is_sleeping:
+                return None
+            if self.active_device and self.active_device.is_connected():
+                return self.active_device
+            for p in ELGATO_PROFILES:
+                dev = ElgatoWaveDevice(p)
+                if dev.connect():
+                    self.active_device = dev
+                    self._start_sync_loop()
+                    return dev
         return None
 
     def get_device(self) -> Optional[ElgatoWaveDevice]:
@@ -1095,18 +1141,23 @@ class ElgatoManager:
             except Exception:
                 pass
         self._poll_thread = None
-        if self.active_device:
-            try:
-                self.active_device.disconnect()
-            except Exception:
-                pass
-        self.active_device = None
+        with self._detect_lock:
+            if self.active_device:
+                try:
+                    self.active_device.disconnect()
+                except Exception:
+                    pass
+            self.active_device = None
 
     def on_system_resume(self):
         """Restores background sync loop and reconnects Elgato hardware after wake."""
-        self._is_sleeping = False
         self._stop_poll = False
-        dev = self.detect_device()
+        with self._detect_lock:
+            # Keep other threads (peak-monitor capture loop, poll loop) locked out of
+            # get_device()/detect_device() until libusb has a fresh post-resume context.
+            _reinit_libusb_after_resume()
+            self._is_sleeping = False
+            dev = self.detect_device()
         if dev:
             self._start_sync_loop()
 

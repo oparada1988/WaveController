@@ -620,6 +620,9 @@ class MultiChannelPeakMonitor:
         sink_l, sink_r = 0.0, 0.0
 
         while self.running:
+            if getattr(self, "_is_sleeping", False):
+                time.sleep(0.1)
+                continue
             try:
                 with self._lock:
                     m_proc = self.mic_proc
@@ -633,7 +636,7 @@ class MultiChannelPeakMonitor:
                 # Query hardware DSP meter telemetry from attached Elgato device
                 try:
                     from wavecontroller.engine.elgato_wave import elgato_manager
-                    dev = elgato_manager.get_device()
+                    dev = getattr(elgato_manager, "active_device", None)
                     if dev and dev.is_connected():
                         hw_l, hw_r = dev.get_meter()
                         if hw_l > raw_ml:
@@ -896,7 +899,12 @@ class MultiChannelPeakMonitor:
         with self._lock:
             return dict(self.peaks)
 
+    def on_system_suspend(self):
+        """Pauses peak monitor operations during system sleep."""
+        self._is_sleeping = True
+
     def on_system_resume(self):
         """Refreshes peak monitor processes and re-links VU monitor streams after system wake."""
+        self._is_sleeping = False
         self._refresh_event.set()
 

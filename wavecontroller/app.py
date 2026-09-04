@@ -183,6 +183,8 @@ class WaveControllerApp(Adw.Application):
                 self.hardware_mgr.on_system_suspend()
             if hasattr(self, "pipewire_mgr") and self.pipewire_mgr:
                 self.pipewire_mgr.on_system_suspend()
+            if hasattr(self, "peak_monitor") and self.peak_monitor:
+                self.peak_monitor.on_system_suspend()
         else:
             log.info("[WaveController.Power] System resumed from sleep/suspend. Triggering immediate restoration...")
             # 1. Hardware restore starts IMMEDIATELY upon wake signal with fast-polling (no 1.2s delay)
