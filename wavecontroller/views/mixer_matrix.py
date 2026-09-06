@@ -1232,7 +1232,7 @@ class MixerMatrixView(Gtk.Box):
                 if cell:
                     cell.update_ui_state()
 
-    def _on_external_sync(self, target_type: str = None, target_id: str = None):
+    def _on_external_sync(self, target_type: str = None, target_id: str = None, value = None):
         if target_type == "channel" and target_id:
             if target_id in self.channel_cards:
                 self.channel_cards[target_id].update_ui_state()
@@ -1241,8 +1241,19 @@ class MixerMatrixView(Gtk.Box):
                     cell.update_ui_state()
             return
         elif target_type == "mix" and target_id:
-            if target_id in self.mix_headers:
-                self.mix_headers[target_id].update_ui_state()
+            header = self.mix_headers.get(target_id)
+            if not header:
+                t_low = str(target_id).lower()
+                for m_id, h in self.mix_headers.items():
+                    if m_id.lower() == t_low or t_low in m_id.lower() or m_id.lower() in t_low:
+                        header = h
+                        break
+            log.info(f"[WaveController.Matrix] _on_external_sync mix target_header={header.mix_info.get('name') if header else None} (target_id={target_id}, value={value})")
+            if header:
+                if value is not None:
+                    header.set_volume(value)
+                else:
+                    header.update_ui_state()
             for (ch, m), cell in self.matrix_cells.items():
                 if m == target_id:
                     cell.update_ui_state()

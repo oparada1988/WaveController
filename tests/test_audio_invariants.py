@@ -85,9 +85,6 @@ class TestPipeWireTopologyInvariants(unittest.TestCase):
 
     def setUp(self):
         try:
-            from wavecontroller.engine.pipewire_manager import PipeWireManager
-            pwm = PipeWireManager()
-            pwm._reconcile_app_streams_fast()
             out = subprocess.check_output(["pw-link", "-l"], text=True, stderr=subprocess.DEVNULL)
             self.links_out = out
         except Exception:
@@ -267,6 +264,8 @@ class TestTokenMatchingInvariants(unittest.TestCase):
         self.pwm.mixes = []
         self.pwm.assigned_apps = {}
         self.pwm.mix_states = {}
+        self.pwm._is_sleeping = False
+        self.pwm._resume_mute_shield = False
         self.pwm.config_path = "/tmp/fake_config.json"
         self.pwm._save_state_to_config = lambda *a, **k: None
         self.pwm._ensure_virtual_mix_nodes = lambda *a, **k: None
@@ -687,6 +686,76 @@ class TestTokenMatchingInvariants(unittest.TestCase):
         self.assertTrue(callable(getattr(elgato_manager, "detect_device", None)), "ElgatoWaveManager missing detect_device()")
         self.assertTrue(callable(getattr(elgato_manager, "on_system_suspend", None)), "ElgatoWaveManager missing on_system_suspend()")
         self.assertTrue(callable(getattr(elgato_manager, "on_system_resume", None)), "ElgatoWaveManager missing on_system_resume()")
+
+    def test_elgato_suspend_led_extinguish_contract(self):
+        """Invariant: ElgatoWaveDevice must provide turn_off_leds_for_suspend() that zeros out RGB mute, ring, mode selection, and 48V LEDs."""
+        from wavecontroller.engine.elgato_wave import ElgatoWaveDevice, PROFILE_WAVE_XLR
+        dev = ElgatoWaveDevice(PROFILE_WAVE_XLR)
+        self.assertTrue(callable(getattr(dev, "turn_off_leds_for_suspend", None)), "ElgatoWaveDevice missing turn_off_leds_for_suspend()")
+
+        # Create mock 34-byte config with illuminated LEDs and active phantom power
+        mock_cfg = bytearray(34)
+        mock_cfg[PROFILE_WAVE_XLR.off_mute] = 0x00
+        mock_cfg[PROFILE_WAVE_XLR.off_phantom] = 0x01
+        mock_cfg[PROFILE_WAVE_XLR.off_vol_select] = 0x01  # Gain mode
+        # Set red mute color
+        mock_cfg[PROFILE_WAVE_XLR.off_rgb_mute] = 0xFF
+        mock_cfg[PROFILE_WAVE_XLR.off_rgb_mute + 1] = 0x00
+        mock_cfg[PROFILE_WAVE_XLR.off_rgb_mute + 2] = 0x00
+        # Set white ring color
+        for off in [PROFILE_WAVE_XLR.off_rgb_ring, PROFILE_WAVE_XLR.off_rgb_ring + 3, PROFILE_WAVE_XLR.off_rgb_ring + 6]:
+            mock_cfg[off] = 0xFF
+            mock_cfg[off + 1] = 0xFF
+            mock_cfg[off + 2] = 0xFF
+
+        written_packets = []
+        dev.read_config = lambda: bytearray(mock_cfg)
+        dev.write_config = lambda c: written_packets.append(bytearray(c))
+
+        dev.turn_off_leds_for_suspend()
+
+        self.assertEqual(len(written_packets), 1, "turn_off_leds_for_suspend failed to write sleep config")
+        res = written_packets[0]
+
+        # Invariant 1: RGB Mute LEDs must be 0x00, 0x00, 0x00 (dark)
+        self.assertEqual(res[PROFILE_WAVE_XLR.off_rgb_mute:PROFILE_WAVE_XLR.off_rgb_mute + 3], bytearray([0, 0, 0]))
+
+        # Invariant 2: RGB Ring LEDs must be all 0x00 across all 9 bytes (dark)
+        self.assertEqual(res[PROFILE_WAVE_XLR.off_rgb_ring:PROFILE_WAVE_XLR.off_rgb_ring + 9], bytearray([0] * 9))
+
+        # Invariant 3: Mode selection icons must be 0x00 (all mode icons extinguished)
+        self.assertEqual(res[PROFILE_WAVE_XLR.off_vol_select], 0x00)
+
+        # Invariant 4: 48V Phantom LED must be 0x00 (dark)
+        self.assertEqual(res[PROFILE_WAVE_XLR.off_phantom], 0x00)
+
+        # Invariant 5: Hardware mute byte must be 0x01 (analog relay open, pop protection)
+        self.assertEqual(res[PROFILE_WAVE_XLR.off_mute], 0x01)
+
+    def test_resume_mute_shield_contract_and_guard_isolation(self):
+        """Invariant: PipeWireManager must export engage_resume_mute_shield and release_resume_mute_shield; volume guards must be isolated."""
+        self.assertTrue(hasattr(self.pwm, "_resume_mute_shield"), "PipeWireManager missing _resume_mute_shield attribute")
+        self.assertTrue(callable(getattr(self.pwm, "engage_resume_mute_shield", None)), "PipeWireManager missing engage_resume_mute_shield()")
+        self.assertTrue(callable(getattr(self.pwm, "release_resume_mute_shield", None)), "PipeWireManager missing release_resume_mute_shield()")
+
+        from unittest.mock import patch
+        with patch("subprocess.run"), patch("subprocess.check_output", return_value="[]"):
+            # Engage shield
+            self.pwm.engage_resume_mute_shield()
+            self.assertTrue(self.pwm._resume_mute_shield, "engage_resume_mute_shield() failed to set _resume_mute_shield to True")
+
+            # Invariant: Guards must return early when shield is engaged without exceptions
+            self.pwm._enforce_exclusive_volume_guard()
+            self.pwm._ensure_mix_sinks_unmuted()
+
+            # Release shield
+            self.pwm.release_resume_mute_shield()
+            self.assertFalse(self.pwm._resume_mute_shield, "release_resume_mute_shield() failed to reset _resume_mute_shield to False")
+
+            # Invariant: Suspend must engage shield
+            self.pwm.on_system_suspend()
+            self.assertTrue(self.pwm._resume_mute_shield, "on_system_suspend() failed to engage _resume_mute_shield")
+            self.pwm.release_resume_mute_shield()
 
     def test_elgato_hardware_state_key_parity_and_event_diff(self):
         """Invariant: ElgatoWaveDevice _last_state, get_all_state, and elgato_manager MUST share identical canonical key names."""
@@ -1643,6 +1712,8 @@ class TestRoutingSubManagersInvariants(unittest.TestCase):
         from wavecontroller.engine.pipewire_manager import PipeWireManager
         from wavecontroller.engine.usb_hardware import USBHardwareManager
 
+        from unittest.mock import MagicMock, patch
+
         pwm = PipeWireManager()
         pwm.channels = [
             {"id": "mic", "name": "Elgato Wave XLR", "type": "source"},
@@ -1657,15 +1728,26 @@ class TestRoutingSubManagersInvariants(unittest.TestCase):
             "test_group": ["Spotify", "Discord"]
         }
 
-        hw = USBHardwareManager()
+        hw = USBHardwareManager.__new__(USBHardwareManager)
+        hw.discovered_devices = {}
+        hw.device_name = ""
         hw.pipewire_mgr = pwm
         pwm.hardware_mgr = hw
 
         # Verify is_default_device detects Elgato Wave XLR
         self.assertTrue(hw.is_default_device("usb-Elgato_Systems_Elgato_Wave_XLR_DS16M2A01160-00"))
 
+        # Isolate from live system modification
+        pwm._save_state_to_config = MagicMock()
+        pwm.remove_channel = MagicMock(side_effect=lambda ch_id: setattr(pwm, "channels", [c for c in pwm.channels if c["id"] != ch_id]))
+        pwm.remove_mix = MagicMock(side_effect=lambda m_id: setattr(pwm, "mixes", [m for m in pwm.mixes if m["id"] != m_id]))
+        pwm._ensure_virtual_mix_nodes = MagicMock()
+        pwm._refresh_node_cache = MagicMock()
+        pwm._sync_channel_audio_routing = MagicMock()
+
         # Trigger device associated channel and mix removal
-        pwm.remove_device_associated_channels_and_mixes("usb-Elgato_Systems_Elgato_Wave_XLR_DS16M2A01160-00")
+        with patch("threading.Thread"):
+            pwm.remove_device_associated_channels_and_mixes("usb-Elgato_Systems_Elgato_Wave_XLR_DS16M2A01160-00")
 
         # Verify Elgato Wave XLR mic and personal mix were removed
         remaining_ch_ids = [c["id"] for c in pwm.channels]

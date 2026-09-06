@@ -212,8 +212,12 @@ class MixHeaderCard(Gtk.Box):
     def set_volume(self, volume: int):
         vol = max(0, min(100, int(volume)))
         with blocked_handler(self.scale, getattr(self, "_scale_handler_id", None)):
+            adj = self.scale.get_adjustment()
+            if adj:
+                adj.set_value(vol)
             self.scale.set_value(vol)
         self.vol_lbl.set_text(f"{vol}%")
+        self.scale.queue_allocate()
         self.scale.queue_draw()
 
     def update_ui_state(self):
@@ -222,10 +226,7 @@ class MixHeaderCard(Gtk.Box):
         vol = self.pipewire_mgr.get_mix_master_volume(self.mix_info["id"])
         muted = self.pipewire_mgr.get_mix_master_mute(self.mix_info["id"])
 
-        with blocked_handler(self.scale, getattr(self, "_scale_handler_id", None)):
-            self.scale.set_value(vol)
-
-        self.vol_lbl.set_text(f"{int(vol)}%")
+        self.set_volume(vol)
 
         if muted:
             self.mute_btn.set_icon_name("audio-volume-muted-symbolic")

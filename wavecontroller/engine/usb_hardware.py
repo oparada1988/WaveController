@@ -504,6 +504,17 @@ class USBHardwareManager:
         log.info("[WaveController.Hardware] System going to sleep: marking hardware as suspended...")
         self._is_sleeping = True
         self._elgato_initialized = False
+        try:
+            dev = elgato_manager.get_device()
+            if dev and dev.is_connected():
+                log.info("[WaveController.Hardware] Pre-muting hardware channels, extinguishing LEDs, and zeroing mic monitor mix before sleep...")
+                dev.set_mode_mute("gain", True)
+                dev.set_mode_mute("hp", True)
+                dev.set_monitor_mix(100)  # 100% PC, 0% direct mic monitoring
+                if hasattr(dev, "turn_off_leds_for_suspend"):
+                    dev.turn_off_leds_for_suspend()
+        except Exception as e:
+            log.warning(f"[WaveController.Hardware] Error pre-muting hardware and turning off LEDs before sleep: {e}")
         elgato_manager.on_system_suspend()
 
     def on_system_resume(self):
@@ -531,6 +542,10 @@ class USBHardwareManager:
                     self.apply_saved_hardware_settings(dev)
                     self._elgato_initialized = True
                     log.info(f"[WaveController.Hardware] Successfully fast-restored settings to {dev.profile.display_name} on attempt {attempt + 1}")
+
+                    # Release Resume Mute Shield now that hardware registers are safe
+                    if getattr(self, "pipewire_mgr", None) and hasattr(self.pipewire_mgr, "release_resume_mute_shield"):
+                        self.pipewire_mgr.release_resume_mute_shield()
 
                     # Notify listeners of current hardware state
                     try:

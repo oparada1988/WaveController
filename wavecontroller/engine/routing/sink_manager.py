@@ -212,7 +212,7 @@ class SubmixSinkManager:
             for linked_dest in list(clean_fr_links):
                 if linked_dest.startswith("alsa_output.") and linked_dest not in desired_fr:
                     try:
-                        subprocess.run(["pw-link", mon_fr, linked_dest], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                        subprocess.run(["pw-link", "-d", mon_fr, linked_dest], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                     except Exception:
                         pass
             if mon_fr in clean_out_ports:

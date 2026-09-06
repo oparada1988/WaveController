@@ -2,6 +2,9 @@ import os
 import json
 import socket
 import threading
+from ..utils.logger import get_logger
+
+log = get_logger("IPCServer")
 
 CONFIG_SOCKET_PATH = os.path.expanduser("~/.config/WaveController/wavecontroller.sock")
 USER_RUNTIME_DIR = os.environ.get("XDG_RUNTIME_DIR", "/tmp")
@@ -231,6 +234,7 @@ class IPCServer:
             mx = self._match_mix_id(req.get("mix_id"))
             vol = req.get("volume")
             muted = req.get("muted")
+            log.info(f"[WaveController.IPC] set_mix_master_volume mix={mx} volume={vol} muted={muted}")
             if vol is not None:
                 self.pipewire_mgr.set_mix_master_volume(mx, int(vol))
                 if self._is_wave_mix(mx):
@@ -243,7 +247,8 @@ class IPCServer:
             res["muted"] = self.pipewire_mgr.get_mix_master_mute(mx)
             if self.pipewire_mgr.on_external_change_callback:
                 from gi.repository import GLib
-                GLib.idle_add(self.pipewire_mgr.on_external_change_callback, "mix", mx)
+                val_arg = int(vol) if vol is not None else None
+                GLib.idle_add(self.pipewire_mgr.on_external_change_callback, "mix", mx, val_arg)
         elif cmd in ["toggle_mix_mute", "toggle_mix_master_mute"]:
             mx = self._match_mix_id(req.get("mix_id"))
             is_muted = self.pipewire_mgr.toggle_mix_master_mute(mx)
@@ -252,7 +257,7 @@ class IPCServer:
             res["muted"] = is_muted
             if self.pipewire_mgr.on_external_change_callback:
                 from gi.repository import GLib
-                GLib.idle_add(self.pipewire_mgr.on_external_change_callback, "mix", mx)
+                GLib.idle_add(self.pipewire_mgr.on_external_change_callback, "mix", mx, None)
         elif cmd == "toggle_mute":
             raw_target = req.get("channel_id") or req.get("target") or "mic"
             ch = self._match_channel_id(raw_target)
@@ -394,8 +399,12 @@ class IPCServer:
                         req = json.loads(line)
                         res = self._process_command(req)
                         conn.sendall((json.dumps(res) + "\n").encode('utf-8'))
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        log.error(f"[WaveController.IPC] Command processing error: {e}", exc_info=True)
+                        try:
+                            conn.sendall(json.dumps({"status": "error", "error": str(e)}).encode('utf-8') + b"\n")
+                        except Exception:
+                            pass
 
                 # Handle one-shot payloads without newline
                 if buffer and "{" in buffer and "}" in buffer:

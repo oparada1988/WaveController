@@ -831,6 +831,58 @@ class ElgatoWaveDevice:
         self._is_peeking = False
         self._peek_mode = None
 
+    def turn_off_leds_for_suspend(self):
+        """
+        Extinguishes all hardware LEDs (RGB dial ring, mute ring, mode selection icons, and 48V phantom LED)
+        before system suspend so the device remains dark during sleep when USB standby power is active.
+        """
+        self._cancel_revert_timer()
+        timer = getattr(self, "_interaction_timer", None)
+        if timer and timer.is_alive():
+            timer.cancel()
+        self._interaction_timer = None
+        self._user_interacting = False
+        self._is_peeking = False
+
+        try:
+            cfg = self.read_config()
+            if not cfg or len(cfg) < self.profile.config_len:
+                return
+
+            p = self.profile
+
+            # 1. Extinguish RGB mute ring (set to 0, 0, 0)
+            if p.off_rgb_mute is not None:
+                cfg[p.off_rgb_mute] = 0x00
+                cfg[p.off_rgb_mute + 1] = 0x00
+                cfg[p.off_rgb_mute + 2] = 0x00
+
+            # 2. Extinguish RGB dial ring / meter zones (all 9 bytes to 0)
+            if p.off_rgb_ring is not None:
+                for off in [p.off_rgb_ring, p.off_rgb_ring + 3, p.off_rgb_ring + 6]:
+                    if off + 2 < len(cfg):
+                        cfg[off] = 0x00
+                        cfg[off + 1] = 0x00
+                        cfg[off + 2] = 0x00
+
+            # 3. Extinguish mode indicator icons (Gain, Headphone, Mix Balance)
+            if p.off_vol_select is not None:
+                cfg[p.off_vol_select] = 0x00
+
+            # 4. Extinguish 48V phantom power LED
+            if p.off_phantom is not None:
+                cfg[p.off_phantom] = 0x00
+
+            # 5. Ensure physical analog mute relay is engaged (open/muted to protect against pops)
+            if p.off_mute is not None:
+                cfg[p.off_mute] = 0x01
+                self._last_raw_hw_mute = True
+
+            self.write_config(cfg)
+            log.info(f"[WaveController.ElgatoWave] Extinguished all LEDs and engaged sleep mute on {p.display_name}.")
+        except Exception as e:
+            log.warning(f"[WaveController.ElgatoWave] Failed to turn off LEDs for suspend: {e}")
+
     # --- Hardware RGB LED Ring Customization ---
     def set_led_colors(self, colors: Dict[str, str]):
         """Sets RGB hex colors for 'gain', 'hp', 'mix', 'mute'."""
@@ -1132,7 +1184,7 @@ class ElgatoManager:
         return self.detect_device()
 
     def on_system_suspend(self):
-        """Cleanly stops background sync thread and releases USB interface before suspend."""
+        """Cleanly stops background sync thread, extinguishes LEDs, and releases USB interface before suspend."""
         self._is_sleeping = True
         self._stop_poll = True
         if self._poll_thread and self._poll_thread.is_alive():
@@ -1143,6 +1195,11 @@ class ElgatoManager:
         self._poll_thread = None
         with self._detect_lock:
             if self.active_device:
+                try:
+                    if hasattr(self.active_device, "turn_off_leds_for_suspend"):
+                        self.active_device.turn_off_leds_for_suspend()
+                except Exception as e:
+                    log.warning(f"Error extinguishing LEDs in on_system_suspend: {e}")
                 try:
                     self.active_device.disconnect()
                 except Exception:

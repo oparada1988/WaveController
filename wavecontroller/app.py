@@ -199,6 +199,8 @@ class WaveControllerApp(Adw.Application):
             log.info("[WaveController.Power] Restoring audio routing and UI following resume...")
             if hasattr(self, "pipewire_mgr") and self.pipewire_mgr:
                 self.pipewire_mgr.on_system_resume()
+                if hasattr(self.pipewire_mgr, "release_resume_mute_shield"):
+                    self.pipewire_mgr.release_resume_mute_shield()
             if hasattr(self, "peak_monitor") and self.peak_monitor:
                 self.peak_monitor.on_system_resume()
 

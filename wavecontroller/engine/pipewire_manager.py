@@ -39,6 +39,9 @@ class PipeWireManager:
         "mic": ["System capture"]
     }
 
+    _resume_mute_shield: bool = False
+    _is_sleeping: bool = False
+
     def __init__(self, hardware_mgr=None):
         self.hardware_mgr = hardware_mgr
         saved_channels = config_manager.get("channels", None)
@@ -97,6 +100,7 @@ class PipeWireManager:
         self._bound_unassigned_nodes = set()   # tracks unassigned streams bound to physical fallback
         self.on_external_change_callback = None
         self._is_sleeping = False
+        self._resume_mute_shield = False
         self.peak_monitor = None
 
         # Dedicated Isolated Routing Sub-Managers
@@ -447,10 +451,116 @@ class PipeWireManager:
         except Exception:
             pass
 
+    def engage_resume_mute_shield(self):
+        """
+        Engages the Resume Mute Shield before system suspend.
+        Mutes PipeWire virtual mix sinks, physical hardware audio endpoints,
+        and ALSA controls to prevent feedback bursts and 100% volume squeals on wake.
+        """
+        log.info("[WaveController.PipeWire] Engaging Resume Mute Shield...")
+        self._resume_mute_shield = True
+
+        # Pre-mute ALSA hardware controls if present
+        for card in ("XLR", "Wave:3", "Wave:1", "Neo", "2", "3"):
+            try:
+                subprocess.run(["amixer", "-c", card, "sset", "Mic", "mute"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                subprocess.run(["amixer", "-c", card, "sset", "PCM", "mute"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            except Exception:
+                pass
+
+        try:
+            out_raw = subprocess.check_output(["pw-dump"], text=True, stderr=subprocess.DEVNULL)
+            data = json.loads(out_raw)
+            for obj in data:
+                if obj.get("type") != "PipeWire:Interface:Node":
+                    continue
+                props = obj.get("info", {}).get("props", {})
+                n_name = props.get("node.name", "")
+                media_class = props.get("media.class", "")
+                obj_id = obj.get("id")
+                if not obj_id:
+                    continue
+
+                # Mute virtual mix sinks
+                if n_name.startswith("WaveController_") and n_name.endswith("_Sink"):
+                    try:
+                        subprocess.run(["wpctl", "set-mute", str(obj_id), "1"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    except Exception:
+                        pass
+
+                # Mute physical Elgato audio endpoints or ALSA sinks/sources
+                is_alsa = props.get("device.api") == "alsa" or n_name.startswith("alsa_")
+                is_elgato = is_alsa and ("elgato" in n_name.lower() or "0fd9" in n_name.lower() or any(k in n_name.lower() for k in ("wave_xlr", "wave:3", "wave:1", "wave_neo")))
+                if is_elgato or (is_alsa and media_class in ("Audio/Sink", "Audio/Source")):
+                    try:
+                        subprocess.run(["wpctl", "set-mute", str(obj_id), "1"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    except Exception:
+                        pass
+        except Exception as e:
+            log.warning(f"[WaveController.PipeWire] Error engaging resume mute shield: {e}")
+
+    def release_resume_mute_shield(self):
+        """
+        Releases the Resume Mute Shield once hardware registers and routing are safely restored.
+        Unmutes virtual mix sinks and physical endpoints back to their user-configured state.
+        """
+        if not getattr(self, "_resume_mute_shield", False):
+            return
+        log.info("[WaveController.PipeWire] Releasing Resume Mute Shield: restoring audio endpoints...")
+        self._resume_mute_shield = False
+
+        # Unmute ALSA hardware controls
+        for card in ("XLR", "Wave:3", "Wave:1", "Neo", "2", "3"):
+            try:
+                subprocess.run(["amixer", "-c", card, "sset", "Mic", "unmute"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                subprocess.run(["amixer", "-c", card, "sset", "PCM", "unmute"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            except Exception:
+                pass
+
+        try:
+            out_raw = subprocess.check_output(["pw-dump"], text=True, stderr=subprocess.DEVNULL)
+            data = json.loads(out_raw)
+            for obj in data:
+                if obj.get("type") != "PipeWire:Interface:Node":
+                    continue
+                props = obj.get("info", {}).get("props", {})
+                n_name = props.get("node.name", "")
+                media_class = props.get("media.class", "")
+                obj_id = obj.get("id")
+                if not obj_id:
+                    continue
+
+                if n_name.startswith("WaveController_") and n_name.endswith("_Sink"):
+                    m_id = n_name.replace("WaveController_", "").replace("_Sink", "")
+                    mix_muted = self.mix_states.get(m_id, {}).get("muted", False)
+                    try:
+                        subprocess.run(["wpctl", "set-mute", str(obj_id), "1" if mix_muted else "0"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    except Exception:
+                        pass
+
+                is_alsa = props.get("device.api") == "alsa" or n_name.startswith("alsa_")
+                if is_alsa and media_class in ("Audio/Sink", "Audio/Source"):
+                    try:
+                        subprocess.run(["wpctl", "set-mute", str(obj_id), "0"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    except Exception:
+                        pass
+        except Exception as e:
+            log.warning(f"[WaveController.PipeWire] Error releasing resume mute shield: {e}")
+
+        # Queue re-assertion of mix master volumes and unmuted states
+        with self._lock:
+            for m_id, m_st in self.mix_states.items():
+                self._mix_volume_queue[m_id] = (m_st.get("volume", 100), m_st.get("muted", False))
+            self._volume_event.set()
+
+        self._ensure_mix_sinks_unmuted()
+        self._enforce_exclusive_volume_guard()
+
     def on_system_suspend(self):
         """Prepares PipeWire manager for system sleep/suspend."""
-        log.info("[WaveController.PipeWire] System going to sleep: pausing volume guards...")
+        log.info("[WaveController.PipeWire] System going to sleep: pausing volume guards & engaging resume mute shield...")
         self._is_sleeping = True
+        self.engage_resume_mute_shield()
 
     def on_system_resume(self):
         """Restores all virtual nodes, channel master volumes, submix faders, and audio routing after system resume."""
@@ -576,8 +686,9 @@ class PipeWireManager:
                 if sync_tick % 4 == 0:
                     self._reconcile_app_streams_fast()
                 if sync_tick % 20 == 0:
-                    self._enforce_exclusive_volume_guard()
-                    self._ensure_mix_sinks_unmuted()
+                    if not getattr(self, "_resume_mute_shield", False) and not getattr(self, "_is_sleeping", False):
+                        self._enforce_exclusive_volume_guard()
+                        self._ensure_mix_sinks_unmuted()
                     self._sync_channel_audio_routing()
             except Exception:
                 pass
@@ -593,10 +704,10 @@ class PipeWireManager:
           - Locks physical ALSA input source capture volume to 100% (1.0) in PipeWire
             so external apps (Discord AGC, WebRTC, pavucontrol) cannot override analog preamp gain.
         """
-        if not self.hardware_mgr:
+        if getattr(self, "_is_sleeping", False) or getattr(self, "_resume_mute_shield", False):
             return
 
-        if getattr(self, "_is_sleeping", False):
+        if not getattr(self, "hardware_mgr", None):
             return
 
         excl_out = getattr(self.hardware_mgr, "exclusive_output_lock", True)
@@ -675,6 +786,8 @@ class PipeWireManager:
 
     def _ensure_mix_sinks_unmuted(self):
         """Enforces unmuted state on PipeWire virtual null-sinks so audio always passes to physical outputs."""
+        if getattr(self, "_is_sleeping", False) or getattr(self, "_resume_mute_shield", False):
+            return
         try:
             out = subprocess.check_output(["pw-dump"], text=True, stderr=subprocess.DEVNULL)
             data = json.loads(out)
@@ -2237,8 +2350,9 @@ class PipeWireManager:
             for mix_id, (volume_pct, is_muted) in pending_mix.items():
                 mix_gain = self._pct_to_pipewire_gain(volume_pct)
                 node_ids = self._get_mix_node_ids(mix_id)
+                effective_mute = True if getattr(self, "_resume_mute_shield", False) else is_muted
                 for n_id in node_ids:
-                    self._dispatch_node_volume(str(n_id), mix_gain, is_muted)
+                    self._dispatch_node_volume(str(n_id), mix_gain, effective_mute)
 
     def toggle_channel_link(self, channel_id: str, mix_id: str) -> bool:
         with self._lock:
