@@ -1292,13 +1292,18 @@ class MixerMatrixView(Gtk.Box):
                 # Setting 2 (LED 2): Headphone Output Mix only
                 elgato_mix_id = "personal_mix"
                 if self.hardware_mgr and hasattr(self.hardware_mgr, "_get_elgato_output_mix_id"):
-                    elgato_mix_id = self.hardware_mgr._get_elgato_output_mix_id()
+                    elgato_mix_id = self.hardware_mgr._get_elgato_output_mix_id() or "personal_mix"
                 target_header = self.mix_headers.get(elgato_mix_id)
                 if not target_header:
                     for m_id, header in self.mix_headers.items():
-                        if m_id in (elgato_mix_id, "personal", "personal_mix"):
+                        h_name = str(header.mix_info.get("name", "")).lower()
+                        h_target = str(header.mix_info.get("target_device", "")).lower()
+                        if m_id in (elgato_mix_id, "personal", "personal_mix", "personal_mic") or "personal" in h_name or "wave" in h_name or "elgato" in h_target:
                             target_header = header
                             break
+                if not target_header and self.mix_headers:
+                    target_header = list(self.mix_headers.values())[0]
+                log.info(f"[WaveController.Matrix] _on_hardware_sync hp mute target_header={target_header.mix_info.get('name') if target_header else None} is_muted={is_muted}")
                 if target_header:
                     target_header.update_ui_state()
 
@@ -1318,13 +1323,18 @@ class MixerMatrixView(Gtk.Box):
 
                 elgato_mix_id = "personal_mix"
                 if self.hardware_mgr and hasattr(self.hardware_mgr, "_get_elgato_output_mix_id"):
-                    elgato_mix_id = self.hardware_mgr._get_elgato_output_mix_id()
+                    elgato_mix_id = self.hardware_mgr._get_elgato_output_mix_id() or "personal_mix"
                 target_header = self.mix_headers.get(elgato_mix_id)
                 if not target_header:
                     for m_id, header in self.mix_headers.items():
-                        if m_id in (elgato_mix_id, "personal", "personal_mix"):
+                        h_name = str(header.mix_info.get("name", "")).lower()
+                        h_target = str(header.mix_info.get("target_device", "")).lower()
+                        if m_id in (elgato_mix_id, "personal", "personal_mix", "personal_mic") or "personal" in h_name or "wave" in h_name or "elgato" in h_target:
                             target_header = header
                             break
+                if not target_header and self.mix_headers:
+                    target_header = list(self.mix_headers.values())[0]
+                log.info(f"[WaveController.Matrix] _on_hardware_sync mix mode mute target_header={target_header.mix_info.get('name') if target_header else None} is_muted={is_muted}")
                 if target_header:
                     target_header.update_ui_state()
 

@@ -237,6 +237,19 @@ class MixHeaderCard(Gtk.Box):
             self.mute_btn.remove_css_class("muted")
             self.remove_css_class("muted")
 
+        self.mute_btn.queue_draw()
+        self.queue_draw()
+
+        if self.mix_info.get("id") in ("personal", "personal_mix", "personal_mic") or "personal" in str(self.mix_info.get("name", "")).lower():
+            if hasattr(self, "subtitle_lbl") and self.subtitle_lbl:
+                self.subtitle_lbl.set_text(self._resolve_subtitle())
+        if hasattr(self, "_refresh_default_badge"):
+            self._refresh_default_badge()
+        if hasattr(self, "def_switch") and self.def_switch:
+            is_active = self.pipewire_mgr.is_mix_system_default(self.mix_info["id"]) if self.pipewire_mgr else False
+            with blocked_handler(self.def_switch, getattr(self, "_def_switch_handler_id", None)):
+                self.def_switch.set_active(is_active)
+
     def _on_mute_clicked(self, btn):
         if self.pipewire_mgr:
             new_mute = self.pipewire_mgr.toggle_mix_master_mute(self.mix_info["id"])
@@ -655,12 +668,3 @@ class MixHeaderCard(Gtk.Box):
         if hasattr(self, "_refresh_header_targets"):
             self._refresh_header_targets()
         self._refresh_default_badge()
-
-    def update_ui_state(self):
-        if self.mix_info.get("id") in ("personal", "personal_mix"):
-            self.subtitle_lbl.set_text(self._resolve_subtitle())
-        self._refresh_default_badge()
-        if hasattr(self, "def_switch") and self.def_switch:
-            is_active = self.pipewire_mgr.is_mix_system_default(self.mix_info["id"]) if self.pipewire_mgr else False
-            with blocked_handler(self.def_switch, getattr(self, "_def_switch_handler_id", None)):
-                self.def_switch.set_active(is_active)
