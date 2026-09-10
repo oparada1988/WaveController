@@ -872,8 +872,9 @@ class TestTokenMatchingInvariants(unittest.TestCase):
         # Test SetupWizardDialog instantiation
         parent_win = MagicMock()
         wiz = SetupWizardDialog(parent_win, mock_hw, self.pwm)
-        self.assertEqual(wiz.mic_combo.get_selected(), 0)
-        self.assertEqual(wiz.output_combo.get_selected(), 0)
+        self.assertEqual(wiz._auto_mic_idx, 0)
+        self.assertEqual(wiz._auto_output_idx, 0)
+        self.assertIsNotNone(wiz.system_defaults_switch)
 
     def test_personal_mix_header_omits_target_device_dropdown(self):
         """Invariant: Personal Mix header edit popup must omit target device dropdown while secondary mixes retain it."""
@@ -1757,6 +1758,7 @@ class TestRoutingSubManagersInvariants(unittest.TestCase):
         self.assertIn("test_group", remaining_ch_ids, "REGRESSION: Secondary group channel was unexpectedly deleted!")
         self.assertNotIn("personal", remaining_mix_ids, "REGRESSION: Tied personal mix was not removed when target device was removed!")
         self.assertIn("chat_mix", remaining_mix_ids, "REGRESSION: Independent chat mix was unexpectedly deleted!")
+        pwm.stop()
 
     def test_mix_system_default_setting_and_gating(self):
         """Invariant: set_mix_system_default sets is_default mutually exclusively among mixes of same type."""
@@ -1785,10 +1787,20 @@ class TestRoutingSubManagersInvariants(unittest.TestCase):
         pwm.set_mix_system_default("record_mix", True)
         self.assertFalse(pwm.is_mix_system_default("chat_mix"))
         self.assertTrue(pwm.is_mix_system_default("record_mix"))
+        pwm.stop()
+
+
+def tearDownModule():
+    try:
+        from wavecontroller.engine.plugins.fx_chain import fx_manager
+        fx_manager.stop_all()
+    except Exception:
+        pass
 
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
 
 
 

@@ -24,7 +24,7 @@ class MicrophoneSourceManager:
     def get_system_source_status(self) -> tuple:
         """Queries system default audio source volume and mute status via wpctl."""
         try:
-            out = subprocess.check_output(["wpctl", "get-volume", "@DEFAULT_AUDIO_SOURCE@"], text=True, stderr=subprocess.DEVNULL).strip()
+            out = subprocess.check_output(["wpctl", "get-volume", "@DEFAULT_AUDIO_SOURCE@"], text=True, stderr=subprocess.DEVNULL, timeout=3).strip()
             parts = out.split()
             if len(parts) >= 2:
                 vol = int(round(float(parts[1]) * 100))
@@ -69,49 +69,3 @@ class MicrophoneSourceManager:
                 if port_matches_tokens(clean_p, tokens, port_meta):
                     matched.append(p)
         return matched
-
-    def sync_source_to_mixes(self, ch_id: str, ch_out_ports: list, in_ports: list, links_map: dict, mixes: list, 
-                             is_channel_mix_enabled_fn, get_channel_state_fn, 
-                             ensure_submix_loopback_fn, stop_submix_loopback_fn, link_stereo_ports_fn):
-        """
-        Synchronizes microphone audio feeding into active Sink/Source mixes via dedicated attenuated loopbacks.
-        """
-        for m in mixes:
-            m_id = m["id"]
-            target_prefixes = [
-                f"WaveController_{m_id}_Sink:playback_",
-                f"WaveController_{m_id}_Source:playback_",
-                f"WaveController_{m_id}_Source:input_",
-            ]
-            target_in_ports = []
-            for p in in_ports:
-                p_clean = re.sub(r"^\d+\s+", "", p).strip()
-                for pref in target_prefixes:
-                    if p_clean.startswith(pref):
-                        target_in_ports.append(p)
-
-            is_enabled = is_channel_mix_enabled_fn(ch_id, m_id)
-            st = get_channel_state_fn(ch_id, m_id) if callable(get_channel_state_fn) else {}
-            vol_pct = st.get("volume", 80)
-            is_muted = st.get("muted", False)
-
-            # Sever any unattenuated direct links
-            link_stereo_ports_fn(ch_out_ports, target_in_ports, unlink=True)
-
-            if is_enabled and not is_muted:
-                ensure_submix_loopback_fn(ch_id, m_id, vol_pct, is_muted=False)
-                loopback_in_prefix = f"input.WaveController_submix_{ch_id}_{m_id}:input_"
-                loopback_out_prefix = f"output.WaveController_submix_{ch_id}_{m_id}:output_"
-                
-                lb_in = [p for p in in_ports if re.sub(r"^\d+\s+", "", p).strip().startswith(loopback_in_prefix)]
-                lb_out = [p for p in out_ports if re.sub(r"^\d+\s+", "", p).strip().startswith(loopback_out_prefix)]
-
-                if ch_out_ports:
-                    link_stereo_ports_fn(ch_out_ports, lb_in, unlink=False)
-                else:
-                    link_stereo_ports_fn(ch_out_ports, lb_in, unlink=True)
-
-                link_stereo_ports_fn(lb_out, target_in_ports, unlink=False)
-            else:
-                stop_submix_loopback_fn(ch_id, m_id)
-                link_stereo_ports_fn(ch_out_ports, target_in_ports, unlink=True)

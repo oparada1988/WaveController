@@ -207,14 +207,16 @@ class SettingsView(Gtk.Box):
         grp_audio.add(rate_row)
 
         buffer_row = Adw.ComboRow(title="Buffer Size / Latency", subtitle="Lower values reduce monitoring latency")
-        buffer_values = [256, 512, 1024]
+        buffer_values = [64, 128, 256, 512, 1024]
         buffer_row.set_model(Gtk.StringList.new([
+            "64 frames (1.3 ms - Ultra-fast / Live monitoring)",
+            "128 frames (2.7 ms - Ultra-low latency)",
             "256 frames (5.3 ms - Low latency)",
             "512 frames (10.7 ms - Recommended)",
             "1024 frames (21.3 ms - Maximum stability)",
         ]))
         configured_quantum = config_manager.get("pipewire_quantum", 512)
-        buffer_row.set_selected(buffer_values.index(configured_quantum) if configured_quantum in buffer_values else 1)
+        buffer_row.set_selected(buffer_values.index(configured_quantum) if configured_quantum in buffer_values else 3)
 
         def _on_buffer_changed(row, param):
             quantum = buffer_values[row.get_selected()]

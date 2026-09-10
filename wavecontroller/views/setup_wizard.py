@@ -61,6 +61,10 @@ class SetupWizardDialog(Gtk.Window):
         self._build_page_6_github()
         self._build_page_7_done()
 
+        # Compute initial primary input/output device keys immediately so they're
+        # available even if the user jumps straight to "Done" without revisiting Page 5.
+        self._refresh_page_5_device_options()
+
         self.main_box.append(self.carousel)
 
         # Bottom Page Indicator Dots
@@ -337,10 +341,10 @@ class SetupWizardDialog(Gtk.Window):
         self.carousel.append(box)
 
     def _refresh_page_5_device_options(self):
-        """Dynamically populates Page 5 dropdowns strictly based on devices selected on Page 4."""
-        if not hasattr(self, "mic_combo") or not hasattr(self, "output_combo"):
-            return
-
+        """Auto-derives the primary input/output device keys from the hardware
+        selected on Page 4. No user-facing selector here — the mic channel and
+        Personal Mix are always auto-provisioned from that selection; this page
+        only decides whether WaveController is allowed to touch OS-wide defaults."""
         selected_keys = getattr(self, "_selected_hw_keys", set())
 
         # 1. Inputs
@@ -361,14 +365,12 @@ class SetupWizardDialog(Gtk.Window):
                 input_opts = [("default", "Default Microphone (System)")]
 
         self._input_dev_keys = [opt[0] for opt in input_opts]
-        self.mic_combo.set_model(Gtk.StringList.new([opt[1] for opt in input_opts]))
-        
         sel_in_idx = 0
         for idx, (k, name) in enumerate(input_opts):
             if "wave" in name.lower() or "elgato" in name.lower() or "wave" in k.lower():
                 sel_in_idx = idx
                 break
-        self.mic_combo.set_selected(sel_in_idx)
+        self._auto_mic_idx = sel_in_idx
 
         # 2. Outputs
         output_opts = []
@@ -388,17 +390,21 @@ class SetupWizardDialog(Gtk.Window):
                 output_opts = [("default", "Default Output (System)")]
 
         self._output_dev_keys = [opt[0] for opt in output_opts]
-        self.output_combo.set_model(Gtk.StringList.new([opt[1] for opt in output_opts]))
-        
         sel_out_idx = 0
         for idx, (k, name) in enumerate(output_opts):
             if "wave" in name.lower() or "elgato" in name.lower() or "wave" in k.lower():
                 sel_out_idx = idx
                 break
-        self.output_combo.set_selected(sel_out_idx)
+        self._auto_output_idx = sel_out_idx
 
     def _build_page_5_device_setup(self):
-        """Page 5: Primary Device Configuration."""
+        """Page 5: System Defaults Opt-In.
+
+        The primary mic channel and Personal Mix are always auto-provisioned
+        from whatever hardware was selected on Page 4 — no separate device
+        picker needed here. The only decision left to the user is whether
+        WaveController is allowed to also override the OS-wide default input
+        and output devices."""
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
         box.add_css_class("oobe-page")
         box.set_valign(Gtk.Align.CENTER)
@@ -421,19 +427,22 @@ class SetupWizardDialog(Gtk.Window):
         icon_box.append(spk_icon)
         box.append(icon_box)
 
-        # Preference Rows Group
+        # System Defaults Opt-In Switch (mirrors Settings > System Default)
         pref_group = Adw.PreferencesGroup()
         pref_group.add_css_class("oobe-pref-group")
         pref_group.set_margin_top(4)
         pref_group.set_margin_bottom(4)
 
-        self.mic_combo = Adw.ComboRow(title="Primary Input Device")
-        self.output_combo = Adw.ComboRow(title="Primary Output Device")
-
-        self._refresh_page_5_device_options()
-
-        pref_group.add(self.mic_combo)
-        pref_group.add(self.output_combo)
+        self.system_defaults_switch = Adw.SwitchRow(
+            title="Allow WaveController to set system input and output defaults?",
+            subtitle="When disabled, WaveController leaves system defaults unchanged"
+        )
+        self.system_defaults_switch.set_active(config_manager.get("system_defaults_enabled", False))
+        self.system_defaults_switch.connect(
+            "notify::active",
+            lambda r, *a: config_manager.set("system_defaults_enabled", r.get_active(), immediate=True)
+        )
+        pref_group.add(self.system_defaults_switch)
 
         pref_box = Gtk.Box()
         pref_box.set_size_request(510, -1)
@@ -442,7 +451,7 @@ class SetupWizardDialog(Gtk.Window):
         box.append(pref_box)
 
         # Description
-        desc = Gtk.Label(label="And works best when setting up default devices for it to manage.")
+        desc = Gtk.Label(label="Your microphone channel and Personal Mix are set up automatically from the devices you selected.")
         desc.add_css_class("oobe-description")
         desc.set_wrap(True)
         desc.set_max_width_chars(38)
@@ -532,8 +541,9 @@ class SetupWizardDialog(Gtk.Window):
         self.carousel.append(box)
 
     def _on_finish_clicked(self, btn):
-        in_idx = self.mic_combo.get_selected()
-        out_idx = self.output_combo.get_selected()
+        self._refresh_page_5_device_options()
+        in_idx = getattr(self, "_auto_mic_idx", 0)
+        out_idx = getattr(self, "_auto_output_idx", 0)
 
         sel_mic_key = self._input_dev_keys[in_idx] if 0 <= in_idx < len(self._input_dev_keys) else "default"
         sel_out_key = self._output_dev_keys[out_idx] if 0 <= out_idx < len(self._output_dev_keys) else "default"

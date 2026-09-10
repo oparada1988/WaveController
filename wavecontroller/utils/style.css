@@ -367,6 +367,38 @@ window.theme-midnight .matrix-cell-card.matrix-cell-placeholder {
     color: @error_color;
 }
 
+/* Multi-Mix Volume Link Button */
+.wave-link-btn {
+    border-radius: 6px;
+    padding: 4px;
+    color: rgba(255, 255, 255, 0.45);
+    background: transparent;
+    border: none;
+    box-shadow: none;
+    transition: all 150ms ease;
+}
+
+.wave-link-btn:hover {
+    background-color: rgba(255, 255, 255, 0.08);
+    color: #ffffff;
+}
+
+button.wave-link-btn.active-link,
+button.wave-link-btn.active {
+    color: #a970ff;
+    background: transparent;
+    border: none;
+    box-shadow: none;
+}
+
+button.wave-link-btn.active-link:hover,
+button.wave-link-btn.active:hover {
+    color: #c09bf8;
+    background-color: rgba(145, 70, 255, 0.15);
+    border: none;
+    box-shadow: none;
+}
+
 .create-channel-btn {
     background-color: alpha(@card_bg_color, 0.6);
     border: 1px dashed @borders;
@@ -535,6 +567,61 @@ popover.wave-popover entry:focus {
     color: #fef08a;
     border-color: #fbbf24;
     box-shadow: 0 0 14px rgba(245, 158, 11, 0.55);
+}
+
+/* Audio Effects (FX) Badge Button (Matching 48V badge height & geometry) */
+menubutton.wave-fx-badge {
+    padding: 0;
+    margin: 0;
+    min-height: 22px;
+    border: none;
+    background: transparent;
+    box-shadow: none;
+}
+
+menubutton.wave-fx-badge > button {
+    font-size: 10px;
+    font-weight: 800;
+    letter-spacing: 0.5px;
+    border-radius: 6px;
+    padding: 2px 6px;
+    min-height: 22px;
+    min-width: 32px;
+    transition: all 150ms cubic-bezier(0.2, 0, 0, 1);
+}
+
+menubutton.wave-fx-badge > button arrow {
+    min-height: 8px;
+    min-width: 8px;
+    margin-left: 2px;
+}
+
+/* Dimmed / Bypassed State */
+menubutton.wave-fx-badge.dimmed-fx > button {
+    background-color: rgba(255, 255, 255, 0.06);
+    color: rgba(255, 255, 255, 0.45);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+menubutton.wave-fx-badge.dimmed-fx > button:hover {
+    background-color: rgba(255, 255, 255, 0.12);
+    color: rgba(255, 255, 255, 0.85);
+    border-color: rgba(255, 255, 255, 0.25);
+}
+
+/* Active / Processing State */
+menubutton.wave-fx-badge.active-fx > button {
+    background-color: rgba(145, 70, 255, 0.25);
+    color: #a970ff;
+    border: 1px solid rgba(145, 70, 255, 0.6);
+    box-shadow: 0 0 10px rgba(145, 70, 255, 0.35);
+}
+
+menubutton.wave-fx-badge.active-fx > button:hover {
+    background-color: rgba(145, 70, 255, 0.35);
+    color: #c09bf8;
+    border-color: #a970ff;
+    box-shadow: 0 0 14px rgba(145, 70, 255, 0.55);
 }
 
 /* Balance Fader & Hardware LED Picker Styling */

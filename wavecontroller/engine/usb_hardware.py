@@ -34,9 +34,7 @@ class USBHardwareManager:
         self.exclusive_mic_lock: bool = bool(config_manager.get("hardware_settings", {}).get("exclusive_mic_lock", True))
         self.exclusive_output_lock: bool = bool(config_manager.get("hardware_settings", {}).get("exclusive_output_lock", True))
         self.discovered_devices: dict[str, dict] = {} # {device_key: dev_info_dict}
-        self.input_devices = [] # Legacy compatibility
-        self.output_devices = [] # Legacy compatibility
-        self.connected_audio_devices = [] # Legacy compatibility
+        self.input_devices = [] # Legacy compatibility (read by mixer_matrix.py)
         
         # Load saved hardware settings from ConfigManager
         hw_settings = config_manager.get("hardware_settings", {})
@@ -388,16 +386,11 @@ class USBHardwareManager:
 
         # Legacy and direct list access
         inputs = []
-        outputs = []
         for k, d in hw_map.items():
             if d.get("type") in ["duplex", "input"] or d.get("sources"):
                 inputs.append(d)
-            if d.get("type") in ["duplex", "output"] or d.get("sinks"):
-                outputs.append(d)
-        
+
         self.input_devices = inputs
-        self.output_devices = outputs
-        self.connected_audio_devices = list(hw_map.values())
 
         # Determine primary device & try connecting Elgato USB protocol
         has_elgato = False

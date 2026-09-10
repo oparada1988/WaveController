@@ -106,7 +106,10 @@ class WaveMainWindow(Adw.ApplicationWindow):
         )
         self.stack.add_named(self.mixer_view, "mixes")
 
-        self.effects_view = EffectsView()
+        self.effects_view = EffectsView(
+            pipewire_mgr=self.pipewire_mgr,
+            on_global_fx_changed_callback=self._on_global_fx_changed
+        )
         self.stack.add_named(self.effects_view, "effects")
 
         self.settings_view = SettingsView(
@@ -213,7 +216,7 @@ class WaveMainWindow(Adw.ApplicationWindow):
         fx_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
         fx_icon = Gtk.Image.new_from_icon_name("system-run-symbolic")
         fx_icon.set_pixel_size(24)
-        fx_lbl = Gtk.Label(label="Audio Effects (DSP)")
+        fx_lbl = Gtk.Label(label="Effects Manager")
         self._register_sidebar_text(fx_lbl)
         fx_lbl.set_halign(Gtk.Align.START)
         fx_lbl.set_hexpand(True)
@@ -721,6 +724,14 @@ class WaveMainWindow(Adw.ApplicationWindow):
     def _on_mix_list_changed(self):
         if hasattr(self, "settings_view") and hasattr(self.settings_view, "refresh_mix_defaults"):
             self.settings_view.refresh_mix_defaults()
+
+    def _on_global_fx_changed(self):
+        """Live-refreshes every open per-channel FX popover's row visibility after an
+        Effects Manager global toggle, without recreating channels or restarting."""
+        if hasattr(self, "mixer_view") and self.mixer_view:
+            for card in self.mixer_view.channel_cards.values():
+                if hasattr(card, "refresh_fx_effect_visibility"):
+                    card.refresh_fx_effect_visibility()
 
     def _on_device_renamed(self, *a):
         self._refresh_sidebar_device_names()

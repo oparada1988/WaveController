@@ -124,36 +124,3 @@ def resolve_physical_device_ports(target_device: str, in_ports: list = None) -> 
                 desired_fr.add(p)
 
     return desired_fl, desired_fr
-
-def reconcile_meter_ports(meter_node_name: str, src_stream_ports: list, existing_meter_links: dict = None):
-    """
-    Idempotently patches all active stream numeric ports to the target meter node (e.g. wave_meter_<ch_id>).
-    Allows multi-stream summing for Chromium/Electron so audio peaks are immediately visible on frame 1.
-    """
-    if not meter_node_name or not src_stream_ports:
-        return
-
-    dest_fl = f"{meter_node_name}:input_FL"
-    dest_fr = f"{meter_node_name}:input_FR"
-    dest_mono = f"{meter_node_name}:input_MONO"
-
-    fl_links = existing_meter_links.get(dest_fl, set()) if existing_meter_links else set()
-    fr_links = existing_meter_links.get(dest_fr, set()) if existing_meter_links else set()
-    mono_links = existing_meter_links.get(dest_mono, set()) if existing_meter_links else set()
-
-    for item in src_stream_ports:
-        p_id = item["port_id"]
-        p_name = item["port_name"]
-        chan = item["channel"]
-
-        if chan == "MONO":
-            if p_name not in mono_links and p_id not in mono_links:
-                subprocess.run(["pw-link", str(p_id), dest_mono], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                subprocess.run(["pw-link", str(p_id), dest_fl], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                subprocess.run(["pw-link", str(p_id), dest_fr], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        elif chan == "FL":
-            if p_name not in fl_links and p_id not in fl_links:
-                subprocess.run(["pw-link", str(p_id), dest_fl], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        elif chan == "FR":
-            if p_name not in fr_links and p_id not in fr_links:
-                subprocess.run(["pw-link", str(p_id), dest_fr], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)

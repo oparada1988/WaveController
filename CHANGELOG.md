@@ -2,6 +2,31 @@
 
 All notable changes to WaveController are documented in this file.
 
+## [0.0.3.2] - 2026-09-10
+
+### Added
+- **Per-effect intensity dial**: each DSP effect in the channel FX popover now has its own rotary dial (drag vertically, scroll wheel to nudge, double-click to reset) controlling how aggressively that effect is applied, in addition to its existing on/off toggle. Includes a 50% neutral-position marker and dims visually when its effect is disabled.
+- **Plugin management ("Install Effect")**: Effects Manager can now install external VST3/LV2 plugin bundles via a folder picker or drag-and-drop. Installed plugins are symlinked into `~/.vst3`/`~/.lv2` and tracked in a manifest so they can be safely removed later — built-in effects, system-found plugins, and pre-existing user-directory plugins are never removable, only ones the app itself installed.
+- **Custom plugin scan paths**: Effects Manager can now scan additional user-specified directories for VST3/LV2 bundles (e.g. Flatpak-sandboxed or DAW-bundled plugin folders).
+
+### Changed
+- **OOBE Page 5 redesigned**: replaced the redundant "Primary Input/Output Device" dropdowns with the same "Allow WaveController to set system input/output defaults?" toggle used in Settings. Primary device selection is now derived automatically from the hardware chosen on Page 4 instead of asking twice.
+- **"Indexed Plugins Library" now hides internal duplicates**: Built-in effects (already shown as toggles in the DSP Chain section) and the raw LADSPA re-discovery of WaveController's own bundled engine files no longer clutter the plugin list — only genuinely external/user plugins are shown.
+
+### Fixed
+- **FX master enable/disable toggle didn't reliably stop the DSP chain.** `reload_channel_fx()` treated the literal channel id `"mic"` as a "no specific channel" sentinel and always re-derived the channel list via heuristics instead of trusting a real, currently-registered channel id — made the toggle's effective behavior fragile and hard to diagnose. Now resolves a known channel id directly.
+- **Effects Manager's global per-effect toggles didn't actually disable effects for channels with a stale per-channel override.** An effect turned off globally could still run if a channel's saved FX record had that effect explicitly enabled. The global toggle is now a hard kill-switch (`enabled = global AND per-channel`), and per-channel FX popovers hide rows for globally-disabled effects, refreshing live the instant a global toggle changes (no restart or channel recreation needed).
+- **Mic silence / audio routing drift after extended sessions**, root-caused to config state (mix/channel ids, per-channel FX flags) drifting out of sync with the live PipeWire graph over long-running sessions with lots of manual reconfiguration. Documented the recurring symptom and the reliable fix (full config wipe + reinstall) in repo memory for faster recovery; a lighter in-app "Reset Audio Routing" action was identified as a good follow-up but not built this session.
+
+### Internal / Maintenance
+- Removed 3 confirmed-dead functions with zero call sites anywhere in the repo: `reconcile_meter_ports()` (`stream_resolver.py`), `bind_app_to_target_sink()`/`unbind_app_from_target_sink()` (`app_tracker.py`), `sync_source_to_mixes()` (`source_manager.py`) — all abandoned duplicate/experimental routing paths superseded by the logic actually running in `pipewire_manager.py`.
+- Removed unused legacy attributes `output_devices`/`connected_audio_devices` from `usb_hardware.py` (written but never read anywhere).
+- Added timeouts to the hot-path PipeWire routing sync subprocess calls (`pw-link`, `pw-dump`, `wpctl`) so a hung call can no longer freeze the background sync thread indefinitely.
+- Hoisted a redundant per-channel×mix `pw-dump` call in `_sync_channel_audio_routing()`'s link-verification step to run once per sync pass instead of once per channel/mix combination.
+- Fixed two test-isolation bugs in `tests/test_fx_chain.py` that depended on the real, mutable `~/.config/WaveController/config.json` instead of mocking `config_manager` — these were exposed (not caused) by the FX kill-switch fix above.
+- Updated `WaveController_PipeWire_Node_Reference.txt`: added the pre-fader FX chain node/routing section, live-verified the Group Channel contract against a real capture, documented the Discord-reports-as-"Chromium" PipeWire naming quirk, and recorded both bug fixes above.
+- Full test suite passes (86/86) after every change this session.
+
 ## [0.0.3.1] - 2026-09-03
 
 ### Fixed

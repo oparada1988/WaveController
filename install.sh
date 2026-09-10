@@ -114,6 +114,12 @@ install_core_files() {
             "${REPO_DIR}/assets" \
             "${REPO_DIR}/data" \
             "${INSTALL_DIR}/"
+
+        # Install bundled core audio DSP plugins to ~/.ladspa
+        mkdir -p "${HOME}/.ladspa"
+        if [ -d "${REPO_DIR}/wavecontroller/assets/plugins" ]; then
+            cp -n "${REPO_DIR}/wavecontroller/assets/plugins"/*.so "${HOME}/.ladspa/" 2>/dev/null || true
+        fi
     else
         echo -e "${RED}Error: Repository source directory not found.${NC}"
         exit 1

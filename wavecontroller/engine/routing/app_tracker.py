@@ -80,36 +80,3 @@ class AppStreamTracker:
                     if p_id not in app_out_ports:
                         app_out_ports.append(p_id)
         return app_out_ports
-
-    def bind_app_to_target_sink(self, app_name: str, channel_id: str):
-        """Directs WirePlumber metadata to route an application into its dedicated channel sink."""
-        try:
-            target_sink = f"WaveController_Channel_{channel_id}" if not channel_id.startswith("WaveController_") else channel_id
-            tokens = get_match_tokens(app_name)
-            out = subprocess.check_output(["pw-dump"], text=True, stderr=subprocess.DEVNULL)
-            for obj in json.loads(out):
-                if obj.get("type") == "PipeWire:Interface:Node":
-                    props = obj.get("info", {}).get("props", {})
-                    if props.get("media.class") == "Stream/Output/Audio":
-                        if any(t in str(props.get("application.name", "")).lower() or t in str(props.get("application.process.binary", "")).lower() for t in tokens if len(t) >= 3):
-                            node_id = str(obj["id"])
-                            subprocess.run(["wpctl", "set-sink", node_id, target_sink], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                            self._bound_stream_nodes.add(node_id)
-        except Exception:
-            pass
-
-    def unbind_app_from_target_sink(self, app_name: str):
-        """Releases application stream back to default system sink."""
-        try:
-            tokens = get_match_tokens(app_name)
-            out = subprocess.check_output(["pw-dump"], text=True, stderr=subprocess.DEVNULL)
-            for obj in json.loads(out):
-                if obj.get("type") == "PipeWire:Interface:Node":
-                    props = obj.get("info", {}).get("props", {})
-                    if props.get("media.class") == "Stream/Output/Audio":
-                        if any(t in str(props.get("application.name", "")).lower() or t in str(props.get("application.process.binary", "")).lower() for t in tokens if len(t) >= 3):
-                            node_id = str(obj["id"])
-                            subprocess.run(["wpctl", "set-sink", node_id, "WaveController_personal_Sink"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                            self._bound_stream_nodes.discard(node_id)
-        except Exception:
-            pass

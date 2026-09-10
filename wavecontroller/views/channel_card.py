@@ -1,9 +1,15 @@
 import gi
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
+from typing import Optional, Any
 from gi.repository import Gtk, Gdk, GObject, Adw, GLib
 
 from .stereo_slider import StereoSlider
+from .rotary_dial import RotaryDial
+from ..engine.config_manager import config_manager
+from ..utils.logger import get_logger
+
+log = get_logger("ChannelCard")
 
 class ChannelCard(Gtk.Box):
     """
@@ -132,6 +138,19 @@ class ChannelCard(Gtk.Box):
             self.update_phantom_state(self.hardware_mgr.phantom_power_48v)
             self.header_box.append(self.phantom_btn)
 
+        # 4b. Audio Effects (FX) Badge & Popover Menu (Present at all times on mic/input channels)
+        if self.is_mic_channel:
+            self.fx_btn = Gtk.MenuButton()
+            self.fx_btn.set_label("FX")
+            self.fx_btn.add_css_class("flat")
+            self.fx_btn.add_css_class("wave-fx-badge")
+            self.fx_btn.set_valign(Gtk.Align.CENTER)
+            self.fx_btn.set_tooltip_text(f"Audio Effects for '{display_name}'")
+            self._setup_fx_popover()
+            self.header_box.append(self.fx_btn)
+        else:
+            self.fx_btn = None
+
         # 5. Channel settings gear popover button
         self.settings_btn = Gtk.MenuButton()
         self.settings_btn.set_icon_name("emblem-system-symbolic")
@@ -187,6 +206,7 @@ class ChannelCard(Gtk.Box):
         self.link_btn = Gtk.Button.new_from_icon_name("insert-link-symbolic")
         self.link_btn.add_css_class("flat")
         self.link_btn.add_css_class("wave-icon-btn")
+        self.link_btn.add_css_class("wave-link-btn")
         self.link_btn.set_tooltip_text("Link volume across mixes")
         self.link_btn.connect("clicked", self._on_link_clicked)
         self.header_box.append(self.link_btn)
@@ -283,6 +303,9 @@ class ChannelCard(Gtk.Box):
         self.drop_target.connect("leave", on_drop_leave)
         self.drop_target.connect("drop", on_drop)
         self.add_controller(self.drop_target)
+
+        # Synchronize UI state on initialization (volume, link button, mute, FX badge)
+        self.update_ui_state()
 
     def _is_channel_offline(self) -> bool:
         ch_id = str(self.channel_info.get("id", "")).lower()
@@ -385,6 +408,212 @@ class ChannelCard(Gtk.Box):
                 self.phantom_btn.add_css_class("dimmed-48v")
                 self.phantom_btn.remove_css_class("active-48v")
                 self.phantom_btn.set_tooltip_text("Enable 48V Phantom Power for Condenser Mics")
+
+    def update_fx_state(self, is_active: Optional[bool] = None):
+        """Updates the FX badge button visuals to reflect active vs bypassed processing."""
+        if hasattr(self, "fx_btn") and self.fx_btn:
+            ch_id = self.channel_info.get("id", "")
+            if is_active is None:
+                if hasattr(self.pipewire_mgr, "fx_manager"):
+                    is_active = self.pipewire_mgr.fx_manager.is_fx_enabled(ch_id)
+                else:
+                    is_active = False
+
+            if is_active:
+                self.fx_btn.set_label("FX")
+                self.fx_btn.add_css_class("active-fx")
+                self.fx_btn.remove_css_class("dimmed-fx")
+                self.fx_btn.set_tooltip_text(f"Audio Effects Active for '{self.channel_info.get('name')}' (Click to configure)")
+            else:
+                self.fx_btn.set_label("FX")
+                self.fx_btn.add_css_class("dimmed-fx")
+                self.fx_btn.remove_css_class("active-fx")
+                self.fx_btn.set_tooltip_text(f"Audio Effects Bypassed for '{self.channel_info.get('name')}' (Click to configure)")
+
+    def refresh_fx_effect_visibility(self):
+        """Shows/hides per-channel FX popover rows to match the current global Effects Manager toggles."""
+        if not hasattr(self, "_fx_effect_rows"):
+            return
+        for fx_key, row in self._fx_effect_rows.items():
+            default_val = self._fx_effect_defaults.get(fx_key, True)
+            row.set_visible(config_manager.get(fx_key, default_val))
+
+    def _setup_fx_popover(self):
+        """Builds the per-channel Audio Effects popover with master switch and processor suite."""
+        popover = Gtk.Popover()
+        popover.set_autohide(True)
+        popover.set_cascade_popdown(True)
+        popover.add_css_class("wave-popover")
+
+        vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        vbox.set_margin_top(12)
+        vbox.set_margin_bottom(12)
+        vbox.set_margin_start(14)
+        vbox.set_margin_end(14)
+        vbox.set_size_request(300, -1)
+
+        # Header Title
+        title_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        title_lbl = Gtk.Label(label="Audio Effects")
+        title_lbl.add_css_class("heading")
+        title_lbl.set_halign(Gtk.Align.START)
+        title_lbl.set_hexpand(True)
+        title_box.append(title_lbl)
+        vbox.append(title_box)
+
+        # Channel name subtitle
+        ch_id = self.channel_info.get("id", "")
+        ch_name = self.channel_info.get("name", "Microphone")
+        sub_lbl = Gtk.Label(label=f"Channel: {ch_name}")
+        sub_lbl.add_css_class("dim-label")
+        sub_lbl.set_halign(Gtk.Align.START)
+        vbox.append(sub_lbl)
+
+        # Separator
+        sep1 = Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL)
+        vbox.append(sep1)
+
+        # Load channel FX config
+        all_ch_fx = config_manager.get("channel_fx", {})
+        ch_fx = all_ch_fx.get(ch_id, {})
+        master_enabled = ch_fx.get("enabled", True) if "enabled" in ch_fx else True
+
+        # Master Enable / Disable Toggle Row
+        master_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+        master_lbl_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        master_lbl = Gtk.Label(label="Enable Audio Effects")
+        master_lbl.add_css_class("bold")
+        master_lbl.set_halign(Gtk.Align.START)
+        master_desc = Gtk.Label(label="Master toggle for all processors on this channel")
+        master_desc.add_css_class("dim-label")
+        master_desc.add_css_class("caption")
+        master_desc.set_halign(Gtk.Align.START)
+        master_lbl_box.append(master_lbl)
+        master_lbl_box.append(master_desc)
+        master_lbl_box.set_hexpand(True)
+        master_row.append(master_lbl_box)
+
+        master_switch = Gtk.Switch(active=master_enabled)
+        master_switch.set_valign(Gtk.Align.CENTER)
+        master_row.append(master_switch)
+        vbox.append(master_row)
+
+        # Separator before child effects list
+        sep2 = Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL)
+        vbox.append(sep2)
+
+        # Child FX Box (Dims and disables when master is OFF)
+        fx_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        fx_box.set_sensitive(master_enabled)
+        vbox.append(fx_box)
+
+        effects_meta = [
+            ("dsp_noise_suppression", "AI Noise Suppression", "Neural background noise removal (RNNoise)", True),
+            ("dsp_noise_gate", "Noise Gate", "Eliminates room hiss and breath bleed", False),
+            ("dsp_equalizer", "Parametric Equalizer", "3-band vocal tone shaping (Low, Mid, High)", True),
+            ("dsp_compressor", "Vocal Compressor", "Smooth broadcast leveling and dynamic presence", True),
+            ("dsp_deesser", "Vocal De-Esser", "Harsh sibilance and treble smoothing", False),
+            ("dsp_limiter", "Peak Limiter", "Brickwall output guard against clipping", True),
+            ("dsp_highpass", "Low-Cut Filter", "80 Hz high-pass rumble guard", True),
+        ]
+
+        def _save_channel_fx(key: str, val: Any):
+            cfg = dict(config_manager.get("channel_fx", {}))
+            if ch_id not in cfg:
+                cfg[ch_id] = {
+                    "enabled": True,
+                    "dsp_noise_suppression": config_manager.get("dsp_noise_suppression", True),
+                    "dsp_noise_gate": config_manager.get("dsp_noise_gate", False),
+                    "dsp_equalizer": config_manager.get("dsp_equalizer", True),
+                    "dsp_compressor": config_manager.get("dsp_compressor", True),
+                    "dsp_deesser": config_manager.get("dsp_deesser", False),
+                    "dsp_limiter": config_manager.get("dsp_limiter", True),
+                    "dsp_highpass": config_manager.get("dsp_highpass", True),
+                }
+            else:
+                cfg[ch_id] = dict(cfg[ch_id])
+            cfg[ch_id][key] = val
+            config_manager.set("channel_fx", cfg, immediate=True)
+            self.update_fx_state()
+            if self.pipewire_mgr:
+                self.pipewire_mgr.reload_channel_fx(ch_id)
+
+        def _on_master_toggled(sw, gparam):
+            try:
+                active = sw.get_active()
+                fx_box.set_sensitive(active)
+                _save_channel_fx("enabled", active)
+            except Exception:
+                log.exception(f"Failed to apply FX master toggle for channel '{ch_id}'")
+
+        master_switch.connect("notify::active", _on_master_toggled)
+
+        self._fx_effect_rows = {}
+        self._fx_effect_defaults = {k: d for k, _, _, d in effects_meta}
+
+        for fx_key, fx_title, fx_desc, default_val in effects_meta:
+            row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+            # Effects turned off globally in the Effects Manager are hard-disabled
+            # app-wide; don't offer a (non-functional) per-channel toggle for them.
+            row.set_visible(config_manager.get(fx_key, default_val))
+            self._fx_effect_rows[fx_key] = row
+            
+            lbl_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+            lbl = Gtk.Label(label=fx_title)
+            lbl.set_halign(Gtk.Align.START)
+            lbl.add_css_class("body")
+            desc = Gtk.Label(label=fx_desc)
+            desc.set_halign(Gtk.Align.START)
+            desc.add_css_class("dim-label")
+            desc.add_css_class("caption")
+            lbl_box.append(lbl)
+            lbl_box.append(desc)
+            lbl_box.set_hexpand(True)
+            row.append(lbl_box)
+
+            current_val = ch_fx.get(fx_key, config_manager.get(fx_key, default_val))
+            sw = Gtk.Switch(active=bool(current_val))
+            sw.set_valign(Gtk.Align.CENTER)
+
+            intensity_key = f"{fx_key}_intensity"
+            intensity_val = ch_fx.get(intensity_key, 50)
+            dial = RotaryDial(value=intensity_val, default_value=50)
+            dial.set_sensitive(bool(current_val))
+            dial.set_tooltip_text(f"{fx_title} Intensity: {intensity_val}% (drag or scroll to adjust, double-click to reset)")
+
+            def _make_toggle_handler(k, d):
+                def _handler(s, gp):
+                    d.set_sensitive(s.get_active())
+                    d.queue_draw()
+                    _save_channel_fx(k, s.get_active())
+                return _handler
+
+            sw.connect("notify::active", _make_toggle_handler(fx_key, dial))
+
+            debounce_holder = {"id": None}
+
+            def _make_intensity_handler(k):
+                def _on_changed(new_val: int):
+                    def _commit():
+                        debounce_holder["id"] = None
+                        try:
+                            _save_channel_fx(k, new_val)
+                        except Exception:
+                            log.exception(f"Failed to apply FX intensity '{k}' for channel '{ch_id}'")
+                        return False
+                    if debounce_holder["id"] is not None:
+                        GLib.source_remove(debounce_holder["id"])
+                    debounce_holder["id"] = GLib.timeout_add(120, _commit)
+                return _on_changed
+
+            dial.on_value_changed = _make_intensity_handler(intensity_key)
+
+            row.append(dial)
+            row.append(sw)
+            fx_box.append(row)
+
+        popover.set_child(vbox)
+        self.fx_btn.set_popover(popover)
 
     def _setup_channel_popover(self):
         popover = Gtk.Popover()
@@ -750,16 +979,9 @@ class ChannelCard(Gtk.Box):
 
     def _on_link_clicked(self, btn):
         ch_id = self.channel_info["id"]
-        curr_linked = any(s.get("linked", True) for s in self.pipewire_mgr.channel_states.get(ch_id, {}).values())
+        curr_linked = self.pipewire_mgr.is_channel_linked(ch_id)
         new_val = not curr_linked
-        master_vol = self.pipewire_mgr.get_channel_master_volume(ch_id)
-        master_muted = self.pipewire_mgr.get_channel_master_mute(ch_id)
-        for m_id, s in self.pipewire_mgr.channel_states.get(ch_id, {}).items():
-            s["linked"] = new_val
-            if new_val:
-                s["volume"] = master_vol
-                s["muted"] = master_muted
-        self.pipewire_mgr._save_state_to_config(immediate=True)
+        self.pipewire_mgr.set_channel_linked(ch_id, new_val)
         self.update_ui_state()
         if self.on_link_toggle_callback:
             self.on_link_toggle_callback(ch_id, new_val)
@@ -768,7 +990,7 @@ class ChannelCard(Gtk.Box):
         ch_id = self.channel_info["id"]
         vol = self.pipewire_mgr.get_channel_master_volume(ch_id)
         muted = self.pipewire_mgr.get_channel_master_mute(ch_id)
-        linked = any(s.get("linked", True) for s in self.pipewire_mgr.channel_states.get(ch_id, {}).values())
+        linked = self.pipewire_mgr.is_channel_linked(ch_id)
 
         self.slider.set_volume(vol, muted)
 
@@ -785,13 +1007,20 @@ class ChannelCard(Gtk.Box):
 
         if linked:
             self.link_btn.set_icon_name("insert-link-symbolic")
+            self.link_btn.add_css_class("active-link")
             self.link_btn.add_css_class("active")
+            self.link_btn.set_tooltip_text("Volume linked across mixes (Click to unlink)")
         else:
             self.link_btn.set_icon_name("mail-attachment-symbolic")
+            self.link_btn.remove_css_class("active-link")
             self.link_btn.remove_css_class("active")
+            self.link_btn.set_tooltip_text("Volume unlinked across mixes (Click to link)")
 
         if self.is_wave_channel and self.hardware_mgr:
             self.update_phantom_state(self.hardware_mgr.phantom_power_48v)
+
+        if hasattr(self, "fx_btn") and self.fx_btn:
+            self.update_fx_state()
 
     def _on_hardware_synced(self, curr: dict, changed: dict):
         if not (getattr(self, "is_mic_channel", False) or getattr(self, "is_wave_channel", False)):

@@ -16,6 +16,7 @@ from wavecontroller.engine.graph.process_classifier import (
 from wavecontroller.engine.routing.source_manager import MicrophoneSourceManager
 from wavecontroller.engine.routing.sink_manager import SubmixSinkManager
 from wavecontroller.engine.routing.app_tracker import AppStreamTracker
+from wavecontroller.engine.plugins.fx_chain import fx_manager
 from wavecontroller.utils.logger import get_logger
 
 log = get_logger("PipeWireManager")
@@ -41,6 +42,7 @@ class PipeWireManager:
 
     _resume_mute_shield: bool = False
     _is_sleeping: bool = False
+    fx_manager = fx_manager
 
     def __init__(self, hardware_mgr=None):
         self.hardware_mgr = hardware_mgr
@@ -81,6 +83,7 @@ class PipeWireManager:
                     break
         self.running = False
         self._lock = threading.RLock()
+        self.fx_manager = fx_manager
         
         # High-Performance Node Cache & Volume Dispatch Queue
         self._node_cache = {} # {app_name_lower: [node_id, ...]}
@@ -174,7 +177,7 @@ class PipeWireManager:
         if hasattr(self, "source_manager") and self.source_manager:
             return self.source_manager.get_system_source_status()
         try:
-            out = subprocess.check_output(["wpctl", "get-volume", "@DEFAULT_AUDIO_SOURCE@"], text=True, stderr=subprocess.DEVNULL).strip()
+            out = subprocess.check_output(["wpctl", "get-volume", "@DEFAULT_AUDIO_SOURCE@"], text=True, stderr=subprocess.DEVNULL, timeout=3).strip()
             parts = out.split()
             if len(parts) >= 2:
                 vol = int(round(float(parts[1]) * 100))
@@ -215,17 +218,20 @@ class PipeWireManager:
             quantum = int(quantum)
         except (TypeError, ValueError):
             return False
-        if quantum not in (256, 512, 1024):
+        if quantum not in (64, 128, 256, 512, 1024):
             return False
 
+        min_q = min(128, quantum)
+        subprocess.run(["pw-metadata", "-n", "settings", "0", "clock.min-quantum", str(min_q)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         result = subprocess.run(
             ["pw-metadata", "-n", "settings", "0", "clock.quantum", str(quantum)],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL
         )
+        subprocess.run(["pw-metadata", "-n", "settings", "0", "clock.force-quantum", str(quantum)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         if result.returncode == 0:
             config_manager.set("pipewire_quantum", quantum, immediate=True)
-            log.info(f"[WaveController.PipeWire] Set global quantum to {quantum} frames")
+            log.info(f"[WaveController.PipeWire] Set global quantum to {quantum} frames (force-quantum locked)")
             return True
         log.warning(f"[WaveController.PipeWire] Failed to set global quantum to {quantum} frames")
         return False
@@ -312,15 +318,45 @@ class PipeWireManager:
             desc = node_tuple[0]
             media_class = node_tuple[1]
             if node_name not in existing_active_names:
+                cmd = f'{{ factory.name=support.null-audio-sink node.name="{node_name}" node.description="{desc}" media.class={media_class} object.linger=true }}'
                 try:
-                    cmd = f'{{ factory.name=support.null-audio-sink node.name="{node_name}" node.description="{desc}" media.class={media_class} object.linger=true }}'
-                    subprocess.run(["pw-cli", "create-node", "adapter", cmd], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                    nodes_created = True
-                except Exception:
-                    pass
+                    result = subprocess.run(
+                        ["pw-cli", "create-node", "adapter", cmd],
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        text=True,
+                    )
+                except OSError as exc:
+                    log.error(f"[WaveController.PipeWire] Could not create node '{node_name}': {exc}")
+                    continue
+
+                if result.returncode != 0:
+                    detail = (result.stderr or result.stdout or "").strip()
+                    log.error(f"[WaveController.PipeWire] Failed to create node '{node_name}' (exit {result.returncode}): {detail}")
+                    continue
+                nodes_created = True
 
         if nodes_created:
-            time.sleep(0.08)
+            # PipeWire registers adapter ports asynchronously. Verify the nodes
+            # before synchronizing links, otherwise the first sync silently sees
+            # no Personal/Chat targets and leaves the submixes disconnected.
+            registered = set()
+            for _ in range(10):
+                try:
+                    data = json.loads(subprocess.check_output(["pw-dump"], text=True, stderr=subprocess.DEVNULL))
+                    registered = {
+                        obj.get("info", {}).get("props", {}).get("node.name")
+                        for obj in data
+                    }
+                    if all(name in registered for name in needed_nodes):
+                        break
+                except (OSError, ValueError, subprocess.CalledProcessError):
+                    pass
+                time.sleep(0.05)
+
+            missing = sorted(set(needed_nodes) - registered)
+            if missing:
+                log.error(f"[WaveController.PipeWire] Required virtual nodes did not register: {', '.join(missing)}")
 
         with self._lock:
             self._mix_node_ids_cache.clear()
@@ -409,6 +445,13 @@ class PipeWireManager:
             self._mix_node_ids_cache.clear()
             self._mix_volume_queue.clear()
 
+        # Stop any running DSP FX filter chains
+        try:
+            self.fx_manager.stop_all()
+        except Exception:
+            pass
+
+
         # 3. Destroy virtual mixing and per-channel ingestion sink nodes
         try:
             out = subprocess.check_output(["pw-dump"], text=True, stderr=subprocess.DEVNULL)
@@ -448,6 +491,12 @@ class PipeWireManager:
                         nid = str(obj["id"])
                         subprocess.run(["pw-metadata", "-n", "default", "-d", nid, "target.object"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                         subprocess.run(["pw-metadata", "-n", "default", "-d", nid, "target.node"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+            # 6. Stop all channel FX filter chains
+            try:
+                self.fx_manager.stop_all()
+            except Exception:
+                pass
         except Exception:
             pass
 
@@ -1247,7 +1296,7 @@ class PipeWireManager:
                             dp_clean = re.sub(r'^\d+\s+', '', dp).strip()
                             if not dp_clean or dp_clean.isdigit():
                                 continue
-                            is_auth = dp_clean.startswith(channel_sink_prefix) or dp_clean.startswith(submix_prefix) or dp_clean.startswith("wave_meter_") or (not has_active_sink_mix and dp_clean.startswith("alsa_output."))
+                            is_auth = dp_clean.startswith(channel_sink_prefix) or dp_clean.startswith(submix_prefix) or dp_clean.startswith("wave_meter_") or dp_clean.startswith("WaveController_fx_") or dp_clean.startswith("input.WaveController_fx_") or (not has_active_sink_mix and dp_clean.startswith("alsa_output."))
                             if not is_auth:
                                 dp_target = dp.split()[0] if dp and dp.split()[0].isdigit() else dp
                                 try:
@@ -1258,7 +1307,7 @@ class PipeWireManager:
 
                         # 2. Verify app is cleanly attached to its pre-fader channel ingestion sink or active submixes
                         if has_enabled_submixes:
-                            is_attached = any(re.sub(r'^\d+\s+', '', dp).strip().startswith(channel_sink_prefix) or re.sub(r'^\d+\s+', '', dp).strip().startswith(submix_prefix) for dp in connected_dests)
+                            is_attached = any(re.sub(r'^\d+\s+', '', dp).strip().startswith(channel_sink_prefix) or re.sub(r'^\d+\s+', '', dp).strip().startswith(submix_prefix) or re.sub(r'^\d+\s+', '', dp).strip().startswith("WaveController_fx_") or re.sub(r'^\d+\s+', '', dp).strip().startswith("input.WaveController_fx_") for dp in connected_dests)
                             if not is_attached:
                                 need_sync = True
 
@@ -1779,11 +1828,26 @@ class PipeWireManager:
     def set_channel_linked(self, channel_id: str, linked: bool):
         """Sets the linking state for a channel across all mixes."""
         with self._lock:
-            if channel_id in self.channel_states:
-                for m_id in self.channel_states[channel_id]:
-                    self.channel_states[channel_id][m_id]["linked"] = linked
-                self._save_state_to_config(immediate=True)
-                self._sync_channel_audio_routing(channel_id)
+            if channel_id not in self.channel_states:
+                self.channel_states[channel_id] = {}
+            for mx in getattr(self, "mixes", []):
+                mx_id = mx.get("id")
+                if mx_id not in self.channel_states[channel_id]:
+                    self.channel_states[channel_id][mx_id] = {
+                        "volume": 100,
+                        "muted": False,
+                        "linked": linked,
+                        "enabled": True
+                    }
+            master_vol = self.get_channel_master_volume(channel_id)
+            master_muted = self.get_channel_master_mute(channel_id)
+            for m_id in self.channel_states[channel_id]:
+                self.channel_states[channel_id][m_id]["linked"] = linked
+                if linked:
+                    self.channel_states[channel_id][m_id]["volume"] = master_vol
+                    self.channel_states[channel_id][m_id]["muted"] = master_muted
+            self._save_state_to_config(immediate=True)
+            self._sync_channel_audio_routing(channel_id)
 
     def get_channel_master_volume(self, channel_id: str) -> int:
         with self._lock:
@@ -2127,12 +2191,14 @@ class PipeWireManager:
             proc = self._submix_procs.get(key)
             if proc is None or proc.poll() is not None:
                 self._submix_node_ids.pop(key, None)
+                is_source = (ch_id in ("mic", "elgato_wave_xlr")) or any(c.get("id") == ch_id and c.get("type") == "source" for c in self.channels)
+                target_lat = "1" if is_source else "5"
                 cmd = [
                     "pw-loopback",
                     "--capture-props={ node.autoconnect=false application.id=org.PulseAudio.pavucontrol media.role=volume-control }",
                     "--playback-props={ node.autoconnect=false }",
                     "-n", node_name,
-                    "--latency=5"
+                    f"--latency={target_lat}"
                 ]
                 try:
                     p = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -2409,14 +2475,16 @@ class PipeWireManager:
         if not src_ports or not dst_ports:
             return
         for src_p in src_ports:
-            is_fl = "_fl" in src_p.lower() or "_1" in src_p or "_mono" in src_p.lower() or "_l" in src_p.lower()
-            is_fr = "_fr" in src_p.lower() or "_2" in src_p or "_r" in src_p.lower()
-            is_pure_mono = (len(src_ports) == 1) or ("_mono" in src_p.lower())
+            port_name = src_p.split(":")[-1].lower() if ":" in src_p else src_p.lower()
+            is_fl = "_fl" in port_name or port_name.endswith("_1") or "_mono" in port_name or port_name.endswith("_l") or port_name in ("playback_l", "capture_l", "input_l", "output_l")
+            is_fr = "_fr" in port_name or port_name.endswith("_2") or port_name.endswith("_r") or port_name in ("playback_r", "capture_r", "input_r", "output_r")
+            is_pure_mono = (len(src_ports) == 1) or ("_mono" in port_name) or (port_name in ("capture_mono", "playback_mono", "input_mono", "output_mono"))
             
             src_target = src_p.split()[0] if src_p and src_p.split()[0].isdigit() else src_p
             for dst_p in dst_ports:
-                dst_fl = "_fl" in dst_p.lower() or "_1" in dst_p or "_l" in dst_p.lower()
-                dst_fr = "_fr" in dst_p.lower() or "_2" in dst_p or "_r" in dst_p.lower()
+                dst_port_name = dst_p.split(":")[-1].lower() if ":" in dst_p else dst_p.lower()
+                dst_fl = "_fl" in dst_port_name or dst_port_name.endswith("_1") or "_mono" in dst_port_name or dst_port_name.endswith("_l") or dst_port_name in ("playback_l", "capture_l", "input_l", "output_l")
+                dst_fr = "_fr" in dst_port_name or dst_port_name.endswith("_2") or dst_port_name.endswith("_r") or dst_port_name in ("playback_r", "capture_r", "input_r", "output_r")
                 
                 match = False
                 if is_pure_mono:
@@ -2426,11 +2494,14 @@ class PipeWireManager:
                 elif is_fr and dst_fr:
                     match = True
 
+
                 if match:
                     dst_target = dst_p.split()[0] if dst_p and dst_p.split()[0].isdigit() else dst_p
                     cmd = ["pw-link"]
                     if unlink:
                         cmd.append("-d")
+                        if "submix_" in port_name and ("_sink:playback_" in dst_port_name or "_source:input_" in dst_port_name):
+                            log.warning(f"[WaveController.PipeWire] _link_stereo_ports UNLINKING submix output -> mix input: {src_p} -x-> {dst_p}")
                     cmd.extend([src_target, dst_target])
                     try:
                         subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -2445,22 +2516,22 @@ class PipeWireManager:
         """
         try:
             try:
-                out_ports_raw = subprocess.check_output(["pw-link", "-I", "-o"], text=True, stderr=subprocess.DEVNULL)
+                out_ports_raw = subprocess.check_output(["pw-link", "-I", "-o"], text=True, stderr=subprocess.DEVNULL, timeout=3)
             except Exception:
                 out_ports_raw = ""
             if not out_ports_raw:
-                out_ports_raw = subprocess.check_output(["pw-link", "-o"], text=True, stderr=subprocess.DEVNULL)
+                out_ports_raw = subprocess.check_output(["pw-link", "-o"], text=True, stderr=subprocess.DEVNULL, timeout=3)
             out_ports = [l.strip() for l in out_ports_raw.splitlines() if l.strip()]
         except Exception:
             out_ports = []
 
         try:
             try:
-                in_ports_raw = subprocess.check_output(["pw-link", "-I", "-i"], text=True, stderr=subprocess.DEVNULL)
+                in_ports_raw = subprocess.check_output(["pw-link", "-I", "-i"], text=True, stderr=subprocess.DEVNULL, timeout=3)
             except Exception:
                 in_ports_raw = ""
             if not in_ports_raw:
-                in_ports_raw = subprocess.check_output(["pw-link", "-i"], text=True, stderr=subprocess.DEVNULL)
+                in_ports_raw = subprocess.check_output(["pw-link", "-i"], text=True, stderr=subprocess.DEVNULL, timeout=3)
             in_ports = [l.strip() for l in in_ports_raw.splitlines() if l.strip()]
         except Exception:
             in_ports = []
@@ -2473,6 +2544,21 @@ class PipeWireManager:
         mixes_to_sync = [m for m in mixes_copy if mix_id is None or m["id"] == mix_id]
         links_map = self._get_pw_links_map()
         port_meta = self._get_active_port_metadata_map()
+
+        # Precompute the live (output-port-id, input-port-id) pairs ONCE for this whole sync
+        # pass, instead of re-querying pw-dump per channel x mix (was up to N x M redundant
+        # subprocess calls) in the Stage-2 verification/retry step below.
+        active_port_pairs = set()
+        try:
+            live_links_raw = subprocess.check_output(["pw-dump"], text=True, stderr=subprocess.DEVNULL, timeout=3)
+            live_links_data = json.loads(live_links_raw)
+            for _obj in live_links_data:
+                if _obj.get("type") == "PipeWire:Interface:Link":
+                    _info = _obj.get("info", {})
+                    if _info.get("state") in ("active", "paused", "allocating"):
+                        active_port_pairs.add((_info.get("output-port-id"), _info.get("input-port-id")))
+        except Exception:
+            pass
 
         for ch in channels_to_sync:
             ch_id = ch["id"]
@@ -2496,9 +2582,10 @@ class PipeWireManager:
 
                 matched_ports = []
                 for p in out_ports:
-                    if p.startswith("output.WaveController_") or p.startswith("WaveController_") or ":monitor_" in p:
+                    p_clean = re.sub(r'^\s*\d+\s+', '', p).strip()
+                    if p_clean.startswith("output.WaveController_") or p_clean.startswith("WaveController_") or ":monitor_" in p_clean:
                         continue
-                    if ":capture_" in p:
+                    if ":capture_" in p_clean:
                         if self._port_matches_tokens(p, input_tokens, port_meta):
                             matched_ports.append(p)
                 ch_out_ports = matched_ports
@@ -2569,6 +2656,44 @@ class PipeWireManager:
                                     except Exception:
                                         pass
 
+            # Pre-Fader FX Processing Pipeline (WaveController Real-Time DSP)
+            effective_ch_out_ports = ch_out_ports
+            fx_mgr = getattr(self, "fx_manager", fx_manager)
+            fx_chain = fx_mgr.get_chain(ch_id)
+            if is_source_channel and ch_out_ports and fx_mgr.is_fx_enabled(ch_id):
+                if fx_mgr.ensure_fx_node(ch_id):
+                    fx_in_prefix = fx_chain.input_prefix
+                    fx_out_prefix = fx_chain.output_prefix
+                    fx_in_ports = [p for p in in_ports if re.sub(r'^\d+\s+', '', p).strip().startswith(fx_in_prefix)]
+                    fx_out_ports = [p for p in out_ports if re.sub(r'^\d+\s+', '', p).strip().startswith(fx_out_prefix)]
+                    if not fx_in_ports or not fx_out_ports:
+                        for _ in range(15):
+                            time.sleep(0.02)
+                            try:
+                                o_raw = subprocess.check_output(["pw-link", "-o"], text=True, stderr=subprocess.DEVNULL)
+                                i_raw = subprocess.check_output(["pw-link", "-i"], text=True, stderr=subprocess.DEVNULL)
+                                out_ports = [l.strip() for l in o_raw.splitlines() if l.strip()]
+                                in_ports = [l.strip() for l in i_raw.splitlines() if l.strip()]
+                                fx_in_ports = [p for p in in_ports if re.sub(r'^\d+\s+', '', p).strip().startswith(fx_in_prefix)]
+                                fx_out_ports = [p for p in out_ports if re.sub(r'^\d+\s+', '', p).strip().startswith(fx_out_prefix)]
+                                if fx_in_ports and fx_out_ports:
+                                    break
+                            except Exception:
+                                pass
+                    if fx_in_ports and fx_out_ports:
+                        # Route raw channel capture into pre-fader FX processing input
+                        self._link_stereo_ports(ch_out_ports, fx_in_ports, unlink=False)
+                        # Processed FX output becomes the source feeding all submix loopbacks
+                        effective_ch_out_ports = fx_out_ports
+            else:
+                # If FX is not active for this channel, clean up any stale FX links
+                fx_in_prefix = fx_chain.input_prefix
+                fx_in_ports = [p for p in in_ports if re.sub(r'^\d+\s+', '', p).strip().startswith(fx_in_prefix)]
+                if fx_in_ports:
+                    self._link_stereo_ports(ch_out_ports, fx_in_ports, unlink=True)
+                if fx_chain.is_running:
+                    fx_mgr.stop_fx_node(ch_id)
+
             for m in mixes_to_sync:
                 m_id = m["id"]
                 target_prefixes = [
@@ -2590,7 +2715,7 @@ class PipeWireManager:
 
                 # Use dedicated submix loopback faders with real-time attenuation for all active mixes
                 # 1. Sever any direct unattenuated link between channel output and mix target
-                self._link_stereo_ports(ch_out_ports, target_in_ports, unlink=True)
+                self._link_stereo_ports(effective_ch_out_ports, target_in_ports, unlink=True)
 
                 if is_enabled and not is_muted:
                     self._ensure_submix_loopback(ch_id, m_id, vol_pct, is_muted=False)
@@ -2623,8 +2748,8 @@ class PipeWireManager:
                             except Exception:
                                 pass
 
-                    # Ingestion Audit: Sever any incoming links to lb_in_ports that are NOT in ch_out_ports
-                    clean_ch_ports = {re.sub(r'^\d+\s+', '', c).strip() for c in ch_out_ports} | {c.split()[0] for c in ch_out_ports if c} | set(ch_out_ports)
+                    # Ingestion Audit: Sever any incoming links to lb_in_ports that are NOT in effective_ch_out_ports
+                    clean_ch_ports = {re.sub(r'^\d+\s+', '', c).strip() for c in effective_ch_out_ports} | {c.split()[0] for c in effective_ch_out_ports if c} | set(effective_ch_out_ports)
                     for dest_p in lb_in_ports:
                         dest_target = dest_p.split()[0] if dest_p and dest_p.split()[0].isdigit() else dest_p
                         dest_clean = re.sub(r'^\d+\s+', '', dest_p).strip()
@@ -2639,30 +2764,21 @@ class PipeWireManager:
                                 except Exception:
                                     pass
 
-                    # Link Stage 1: Channel Output -> Loopback Input (only if ch_out_ports has items)
-                    if ch_out_ports:
-                        self._link_stereo_ports(ch_out_ports, lb_in_ports, unlink=False)
+                    # Link Stage 1: Effective Channel Output (processed FX or raw) -> Loopback Input
+                    if effective_ch_out_ports:
+                        self._link_stereo_ports(effective_ch_out_ports, lb_in_ports, unlink=False)
                     else:
-                        self._link_stereo_ports(ch_out_ports, lb_in_ports, unlink=True)
+                        self._link_stereo_ports(effective_ch_out_ports, lb_in_ports, unlink=True)
 
                     # Link Stage 2: Loopback Output -> Mix Target Input
                     self._link_stereo_ports(lb_out_ports, target_in_ports, unlink=False)
 
                     # Link Stage 2 — Verification & Retry: pw-link sometimes silently drops FR links
                     # due to port ID ordering or graph state. Verify each lb_out port has a live
-                    # link to the corresponding target_in port by checking pw-dump Link objects,
-                    # then re-issue pw-link by numeric ID if the link is missing.
+                    # link to the corresponding target_in port using the active_port_pairs snapshot
+                    # taken once at the top of this sync pass, then re-issue pw-link by numeric ID
+                    # if the link is missing.
                     try:
-                        # Build a set of (output-port-id, input-port-id) tuples from live links
-                        live_links_raw = subprocess.check_output(["pw-dump"], text=True, stderr=subprocess.DEVNULL)
-                        live_links_data = json.loads(live_links_raw)
-                        active_port_pairs = set()
-                        for _obj in live_links_data:
-                            if _obj.get("type") == "PipeWire:Interface:Link":
-                                _info = _obj.get("info", {})
-                                if _info.get("state") in ("active", "paused", "allocating"):
-                                    active_port_pairs.add((_info.get("output-port-id"), _info.get("input-port-id")))
-
                         for lb_p in lb_out_ports:
                             lb_id_str = lb_p.split()[0] if lb_p.split()[0].isdigit() else None
                             if not lb_id_str:
@@ -2690,9 +2806,9 @@ class PipeWireManager:
                                     # Link is missing — re-issue by numeric ID
                                     subprocess.run(
                                         ["pw-link", lb_id_str, tgt_id_str],
-                                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+                                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=3
                                     )
-                                    log.debug(f"[WaveController.PipeWire] Submix link re-issued: port {lb_id} -> {tgt_id} ({lb_clean} -> {tgt_clean})")
+                                    log.info(f"[WaveController.PipeWire] Submix link re-issued: port {lb_id} -> {tgt_id} ({lb_clean} -> {tgt_clean})")
                     except Exception:
                         pass
                 else:
@@ -3967,3 +4083,38 @@ class PipeWireManager:
             self._sync_channel_audio_routing()
 
         threading.Thread(target=_bg_cleanup, daemon=True).start()
+
+    def reload_channel_fx(self, channel_id: str = None):
+        """
+        Dynamically restarts or updates the pre-fader real-time PipeWire filter-chain
+        for the specified channel and reconnects its routing without dropouts.
+        """
+        target_ids = []
+        known_ids = {ch["id"] for ch in self.channels}
+        if channel_id and channel_id != "default" and channel_id in known_ids:
+            # Concrete, currently-registered channel id: always honor it directly,
+            # even if it happens to literally be named "mic".
+            target_ids.append(channel_id)
+        else:
+            # No (or unrecognized) channel_id given: auto-detect all active source/microphone channels
+            with self._lock:
+                for ch in self.channels:
+                    c_id = ch["id"]
+                    ch_type = ch.get("type", "sink")
+                    if (ch_type == "source") or any(k in c_id.lower() for k in ("mic", "elgato_wave_xlr", "microphone", "input", "capture")):
+                        target_ids.append(c_id)
+            if not target_ids:
+                target_ids = ["elgato_wave_xlr", "mic"]
+
+        def _bg_reload():
+            for c_id in target_ids:
+                try:
+                    if self.fx_manager.is_fx_enabled(c_id):
+                        self.fx_manager.get_chain(c_id).start()
+                    else:
+                        self.fx_manager.stop_fx_node(c_id)
+                    self._sync_channel_audio_routing(channel_id=c_id)
+                except Exception:
+                    log.exception(f"reload_channel_fx failed for channel '{c_id}'")
+
+        threading.Thread(target=_bg_reload, name="WaveController-ReloadFX", daemon=True).start()
