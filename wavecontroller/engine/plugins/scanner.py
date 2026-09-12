@@ -7,9 +7,10 @@ import os
 import re
 import json
 import glob
+import shutil
 import time
 import threading
-from typing import Dict, List, Optional, Callable, Any
+from typing import Dict, List, Optional, Callable, Any, Tuple
 from gi.repository import GLib
 
 from .models import AudioPlugin, PluginFormat, PluginCategory, PluginParameter
@@ -117,6 +118,15 @@ class PluginScanner:
     def _save_manifest(self):
         try:
             os.makedirs(os.path.dirname(self.MANIFEST_FILE), exist_ok=True)
+            existing = {}
+            if os.path.exists(self.MANIFEST_FILE):
+                try:
+                    with open(self.MANIFEST_FILE, "r", encoding="utf-8") as f:
+                        existing = json.load(f)
+                except Exception:
+                    existing = {}
+            existing.update(self._manifest)
+            self._manifest = existing
             tmp = f"{self.MANIFEST_FILE}.tmp"
             with open(tmp, "w", encoding="utf-8") as f:
                 json.dump(self._manifest, f, indent=2)
@@ -166,80 +176,153 @@ class PluginScanner:
             if os.path.exists(os.path.join(path, "manifest.ttl")):
                 return PluginFormat.LV2
             return None
-        # Fall back to content sniffing if the folder wasn't named with the expected extension
+        # LV2 bundles are sometimes unpacked without a .lv2 suffix, but VST3
+        # bundles must be selected by the actual .vst3 directory so package
+        # folders are not mistaken for a single installable plugin.
         if os.path.exists(os.path.join(path, "manifest.ttl")):
             return PluginFormat.LV2
-        for root, _dirs, files in os.walk(path):
-            if any(f.endswith(".so") for f in files) and "Contents" in root:
-                return PluginFormat.VST3
         return None
+
+    def _find_installable_bundles(self, source_path: str) -> List[Tuple[str, PluginFormat]]:
+        """Returns concrete plugin bundle folders to install from a selected path."""
+        fmt = self._validate_bundle(source_path)
+        if fmt is not None:
+            return [(source_path, fmt)]
+
+        bundles: List[Tuple[str, PluginFormat]] = []
+        try:
+            entries = sorted(os.listdir(source_path))
+        except Exception:
+            return bundles
+
+        for entry in entries:
+            child_path = os.path.join(source_path, entry)
+            child_fmt = self._validate_bundle(child_path)
+            if child_fmt is not None:
+                bundles.append((child_path, child_fmt))
+        return bundles
 
     def install_plugin_from_path(self, source_path: str) -> tuple:
         """
-        Installs a VST3/LV2 bundle selected by the user (via file dialog or drag-and-drop)
-        by symlinking it into the standard ~/.vst3 or ~/.lv2 directory and recording it in
-        the manifest, so it can later be safely removed via the UI.
+        Installs VST3/LV2 bundles selected by the user by copying them into the
+        standard ~/.vst3 or ~/.lv2 directory and recording ownership in the
+        manifest, so they can later be safely removed via the UI.
         Returns (success: bool, message: str).
         """
         source_path = os.path.abspath(os.path.expanduser(source_path))
         if not os.path.isdir(source_path):
             return False, "Please select the plugin's bundle folder (a .vst3 or .lv2 directory)."
 
-        fmt = self._validate_bundle(source_path)
-        if fmt is None:
-            return False, "That folder doesn't look like a valid VST3 or LV2 plugin bundle."
+        bundles = self._find_installable_bundles(source_path)
+        if not bundles:
+            return False, "Please select a .vst3/.lv2 plugin bundle or a folder containing plugin bundles."
 
-        dest_dir = os.path.expanduser("~/.vst3" if fmt == PluginFormat.VST3 else "~/.lv2")
-        os.makedirs(dest_dir, exist_ok=True)
-        bundle_name = os.path.basename(source_path.rstrip("/"))
-        dest_path = os.path.join(dest_dir, bundle_name)
+        installed = []
+        converted = []
+        skipped = []
+        errors = []
 
-        if os.path.lexists(dest_path):
-            if os.path.islink(dest_path) and os.path.realpath(dest_path) == os.path.realpath(source_path):
-                return False, f"'{bundle_name}' is already installed."
-            return False, f"A plugin named '{bundle_name}' already exists at {dest_path}."
+        for bundle_path, fmt in bundles:
+            dest_dir = os.path.expanduser("~/.vst3" if fmt == PluginFormat.VST3 else "~/.lv2")
+            os.makedirs(dest_dir, exist_ok=True)
+            bundle_name = os.path.basename(bundle_path.rstrip("/"))
+            dest_path = os.path.join(dest_dir, bundle_name)
 
-        try:
-            os.symlink(source_path, dest_path, target_is_directory=True)
-        except Exception as e:
-            return False, f"Failed to install plugin: {e}"
+            if os.path.lexists(dest_path):
+                manifest_entry = self._manifest.get(dest_path, {})
+                is_same_source_symlink = os.path.islink(dest_path) and os.path.realpath(dest_path) == os.path.realpath(bundle_path)
+                if manifest_entry.get("source_path") == bundle_path or is_same_source_symlink:
+                    if os.path.islink(dest_path):
+                        try:
+                            os.remove(dest_path)
+                            shutil.copytree(bundle_path, dest_path, symlinks=True)
+                            manifest_entry = dict(manifest_entry)
+                            manifest_entry["format"] = fmt.value
+                            manifest_entry["source_path"] = bundle_path
+                            manifest_entry["install_path"] = dest_path
+                            manifest_entry["install_method"] = "copy"
+                            manifest_entry["converted_at"] = time.time()
+                            manifest_entry.pop("symlink_path", None)
+                            with self._lock:
+                                self._manifest[dest_path] = manifest_entry
+                            converted.append(bundle_name)
+                        except Exception as e:
+                            errors.append(f"{bundle_name}: failed to convert symlink install to copy: {e}")
+                        continue
+                    skipped.append(bundle_name)
+                    continue
+                if not manifest_entry and os.path.isdir(dest_path) and not os.path.islink(dest_path):
+                    with self._lock:
+                        self._manifest[dest_path] = {
+                            "format": fmt.value,
+                            "source_path": bundle_path,
+                            "install_path": dest_path,
+                            "install_method": "copy",
+                            "adopted_at": time.time()
+                        }
+                    converted.append(bundle_name)
+                    continue
+                errors.append(f"'{bundle_name}' already exists at {dest_path}")
+                continue
 
-        with self._lock:
-            self._manifest[dest_path] = {
-                "format": fmt.value,
-                "source_path": source_path,
-                "symlink_path": dest_path,
-                "installed_at": time.time()
-            }
-            self._save_manifest()
+            try:
+                shutil.copytree(bundle_path, dest_path, symlinks=True)
+            except Exception as e:
+                errors.append(f"{bundle_name}: {e}")
+                continue
 
-        return True, f"Installed '{bundle_name}' ({fmt.value}). Rescanning..."
+            with self._lock:
+                self._manifest[dest_path] = {
+                    "format": fmt.value,
+                    "source_path": bundle_path,
+                    "install_path": dest_path,
+                    "install_method": "copy",
+                    "installed_at": time.time()
+                }
+            installed.append(bundle_name)
+
+        if installed or converted:
+            with self._lock:
+                self._save_manifest()
+            if converted and not installed:
+                return True, f"Converted {len(converted)} plugin bundle(s) to copied installs. Rescanning..."
+            if converted:
+                return True, f"Installed {len(installed)} and converted {len(converted)} plugin bundle(s). Rescanning..."
+            return True, f"Installed {len(installed)} plugin bundle(s). Rescanning..."
+
+        if errors:
+            return False, "; ".join(errors)
+        return False, f"{len(skipped)} plugin bundle(s) already installed."
 
     def remove_installed_plugin(self, plugin_id: str) -> tuple:
         """
         Removes a plugin previously installed via install_plugin_from_path(). Only removes
-        the symlink WaveController created (never the original source, and never anything
-        found in a system/user directory the app didn't install itself).
+        the copied bundle WaveController created (never the original source, and never
+        anything found in a system/user directory the app didn't install itself).
         Returns (success: bool, message: str).
         """
         with self._lock:
             plugin = self._plugins.get(plugin_id)
             if not plugin or not plugin.is_user_installed:
                 return False, "This plugin was not installed via WaveController and cannot be removed here."
-            symlink_path = plugin.path
-            manifest_entry = self._manifest.get(symlink_path)
+            install_path = plugin.path
+            manifest_entry = self._manifest.get(install_path)
 
         if not manifest_entry:
             return False, "No installation record found for this plugin."
 
         try:
-            if os.path.islink(symlink_path) or os.path.exists(symlink_path):
-                os.remove(symlink_path) if os.path.islink(symlink_path) else None
+            if os.path.islink(install_path):
+                os.remove(install_path)
+            elif os.path.isdir(install_path):
+                shutil.rmtree(install_path)
+            elif os.path.exists(install_path):
+                os.remove(install_path)
         except Exception as e:
             return False, f"Failed to remove plugin: {e}"
 
         with self._lock:
-            self._manifest.pop(symlink_path, None)
+            self._manifest.pop(install_path, None)
             self._save_manifest()
 
         return True, f"Removed '{plugin.name}'."
@@ -601,6 +684,9 @@ class PluginScanner:
 
             # Parse metadata from secondary ttl files
             detailed_meta = {}
+            audio_input_ports: List[str] = []
+            audio_output_ports: List[str] = []
+            control_params: List[PluginParameter] = []
             for rel_file in see_also_files:
                 ttl_path = os.path.join(bundle_path, rel_file)
                 if os.path.exists(ttl_path):
@@ -616,6 +702,10 @@ class PluginScanner:
                                 if cat_key.lower() in ttl_data.lower():
                                     detailed_meta["cat"] = cat_key
                                     break
+                            in_ports, out_ports, params = self._parse_lv2_ports(ttl_data)
+                            audio_input_ports.extend(in_ports)
+                            audio_output_ports.extend(out_ports)
+                            control_params.extend(params)
                     except Exception:
                         pass
 
@@ -635,6 +725,10 @@ class PluginScanner:
                         description=f"LV2 Audio Plugin: {name}",
                         path=bundle_path,
                         binary_path=binary_path,
+                        plugin_uri=uri,
+                        audio_input_ports=audio_input_ports,
+                        audio_output_ports=audio_output_ports,
+                        parameters=control_params,
                         is_builtin=False,
                         has_custom_gui=True
                     ))
@@ -651,6 +745,9 @@ class PluginScanner:
                     description=f"LV2 Audio Plugin: {name}",
                     path=bundle_path,
                     binary_path=binary_path,
+                    audio_input_ports=audio_input_ports,
+                    audio_output_ports=audio_output_ports,
+                    parameters=control_params,
                     is_builtin=False,
                     has_custom_gui=True
                 ))
@@ -658,6 +755,57 @@ class PluginScanner:
             log.debug(f"Error reading LV2 bundle {bundle_path}: {e}")
 
         return plugins
+
+    def _parse_lv2_ports(self, ttl_data: str) -> Tuple[List[str], List[str], List[PluginParameter]]:
+        """Extracts LV2 audio port symbols and basic input controls from Turtle metadata."""
+        audio_inputs = []
+        audio_outputs = []
+        controls = []
+
+        parsed_ports = []
+        for match in re.finditer(r'\[\s*(.*?)\]\s*[,\.;]', ttl_data, re.DOTALL):
+            block = match.group(1)
+            if "lv2:AudioPort" not in block and "lv2:ControlPort" not in block:
+                continue
+            symbol_match = re.search(r'lv2:symbol\s+"([^"]+)"', block)
+            if not symbol_match:
+                continue
+            index_match = re.search(r'lv2:index\s+([0-9]+)', block)
+            name_match = re.search(r'lv2:name\s+"([^"]+)"', block)
+            default_match = re.search(r'lv2:default\s+([-+0-9.eE]+)', block)
+            min_match = re.search(r'lv2:minimum\s+([-+0-9.eE]+)', block)
+            max_match = re.search(r'lv2:maximum\s+([-+0-9.eE]+)', block)
+
+            symbol = symbol_match.group(1)
+            index = int(index_match.group(1)) if index_match else len(parsed_ports)
+            parsed_ports.append((index, block, symbol, name_match, default_match, min_match, max_match))
+
+        for _index, block, symbol, name_match, default_match, min_match, max_match in sorted(parsed_ports, key=lambda p: p[0]):
+            if "lv2:AudioPort" in block:
+                if "lv2:InputPort" in block:
+                    audio_inputs.append(symbol)
+                elif "lv2:OutputPort" in block:
+                    audio_outputs.append(symbol)
+            elif "lv2:ControlPort" in block and "lv2:InputPort" in block:
+                try:
+                    default_value = float(default_match.group(1)) if default_match else 0.0
+                    min_value = float(min_match.group(1)) if min_match else 0.0
+                    max_value = float(max_match.group(1)) if max_match else 1.0
+                except ValueError:
+                    default_value = 0.0
+                    min_value = 0.0
+                    max_value = 1.0
+                controls.append(PluginParameter(
+                    id=symbol,
+                    name=name_match.group(1) if name_match else symbol.replace("_", " ").title(),
+                    min_value=min_value,
+                    max_value=max_value,
+                    default_value=default_value,
+                    current_value=default_value,
+                    step=0.01
+                ))
+
+        return audio_inputs, audio_outputs, controls
 
     # --------------------------------------------------------------------------
     # LADSPA Scanner

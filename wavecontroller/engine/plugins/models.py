@@ -59,6 +59,9 @@ class AudioPlugin:
     description: str = ""
     path: str = ""                   # Path to .vst3, .lv2 bundle, or file
     binary_path: str = ""            # Path to executable binary (.so)
+    plugin_uri: str = ""             # LV2 plugin URI when applicable
+    audio_input_ports: List[str] = field(default_factory=list)
+    audio_output_ports: List[str] = field(default_factory=list)
     is_builtin: bool = False
     is_user_installed: bool = False  # True only if installed via WaveController's Install Effect flow (removable)
     inputs: int = 2                  # Number of audio input channels

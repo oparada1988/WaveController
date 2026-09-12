@@ -726,8 +726,7 @@ class WaveMainWindow(Adw.ApplicationWindow):
             self.settings_view.refresh_mix_defaults()
 
     def _on_global_fx_changed(self):
-        """Live-refreshes every open per-channel FX popover's row visibility after an
-        Effects Manager global toggle, without recreating channels or restarting."""
+        """Live-refreshes per-channel FX popovers after global DSP or plugin library changes."""
         if hasattr(self, "mixer_view") and self.mixer_view:
             for card in self.mixer_view.channel_cards.values():
                 if hasattr(card, "refresh_fx_effect_visibility"):

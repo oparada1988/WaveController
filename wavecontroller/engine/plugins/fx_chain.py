@@ -4,6 +4,8 @@ Manages pre-fader real-time PipeWire filter-chain nodes for audio channels.
 """
 
 import os
+import re
+import json
 import subprocess
 import threading
 import signal
@@ -11,6 +13,8 @@ import time
 from typing import Dict, List, Optional, Any
 
 from ..config_manager import config_manager
+from .models import PluginFormat
+from .scanner import plugin_scanner
 from wavecontroller.utils.logger import get_logger
 
 log = get_logger("FXChainManager")
@@ -128,6 +132,165 @@ class ChannelFXChain:
         """Locates librnnoise_ladspa.so on the system or in bundled assets."""
         return self._find_plugin("librnnoise_ladspa.so")
 
+    def _get_enabled_external_lv2_plugins(self, settings: Dict[str, Any]) -> List[tuple]:
+        enabled = settings.get("external_plugins", {})
+        if not isinstance(enabled, dict):
+            return []
+
+        globally_enabled = config_manager.get("external_plugin_enabled", {})
+        if not isinstance(globally_enabled, dict):
+            globally_enabled = {}
+
+        intensity_map = settings.get("external_plugin_intensity", {})
+        if not isinstance(intensity_map, dict):
+            intensity_map = {}
+
+        plugins = []
+        for plugin_id, active in enabled.items():
+            if not active:
+                continue
+            if not globally_enabled.get(plugin_id, True):
+                continue
+            plugin = plugin_scanner.get_plugin(plugin_id)
+            if not plugin or plugin.format != PluginFormat.LV2:
+                continue
+            if not plugin.plugin_uri or len(plugin.audio_input_ports) < 2 or len(plugin.audio_output_ports) < 2:
+                log.warning(f"LV2 plugin '{plugin_id}' cannot be hosted: missing URI or stereo audio ports.")
+                continue
+            intensity = self._normalize_intensity(intensity_map.get(plugin_id, 50))
+            plugins.append((plugin, intensity))
+        return plugins
+
+    def _external_stage_name(self, plugin_id: str) -> str:
+        safe = re.sub(r'[^a-zA-Z0-9_]+', '_', plugin_id).strip('_').lower()
+        return f"fx_ext_{safe[:48]}"
+
+    def _normalize_intensity(self, raw: Any) -> int:
+        try:
+            return max(0, min(100, int(float(raw))))
+        except (TypeError, ValueError):
+            return 50
+
+    def _live_control_node_id(self) -> Optional[int]:
+        try:
+            data = json.loads(subprocess.check_output(["pw-dump"], text=True, stderr=subprocess.DEVNULL, timeout=2))
+        except Exception:
+            return None
+        target_name = f"input.{self.node_tag}"
+        fallback_id = None
+        for obj in data:
+            if obj.get("type") != "PipeWire:Interface:Node":
+                continue
+            props = obj.get("info", {}).get("props", {})
+            if props.get("node.name") == target_name:
+                return obj.get("id")
+            if props.get("media.name") == self.node_tag:
+                fallback_id = obj.get("id")
+        return fallback_id
+
+    def _set_live_controls(self, controls: Dict[str, float]) -> bool:
+        if not controls or not self.is_running:
+            return False
+        node_id = self._live_control_node_id()
+        if node_id is None:
+            return False
+        params = []
+        for name, value in controls.items():
+            params.append(name)
+            params.append(float(value))
+        payload = json.dumps({"params": params})
+        try:
+            proc = subprocess.run(
+                ["pw-cli", "set-param", str(node_id), "Props", payload],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=1.5,
+            )
+            return proc.returncode == 0
+        except Exception:
+            return False
+
+    def _clamp_control(self, plugin, symbol: str, value: float) -> float:
+        for param in plugin.parameters:
+            if param.id == symbol:
+                return max(param.min_value, min(param.max_value, value))
+        return value
+
+    def _param_default(self, plugin, symbol: str, fallback: float) -> float:
+        for param in plugin.parameters:
+            if param.id == symbol:
+                return param.default_value
+        return fallback
+
+    def _interpolate_intensity(self, intensity: int, gentle: float, default: float, strong: float) -> float:
+        if intensity <= 50:
+            return gentle + (default - gentle) * (intensity / 50.0)
+        return default + (strong - default) * ((intensity - 50.0) / 50.0)
+
+    def _builtin_intensity_controls(self, dsp_key: str, intensity: int) -> Dict[str, float]:
+        def stereo(node: str, control: str, value: float) -> Dict[str, float]:
+            return {f"{node}_l:{control}": value, f"{node}_r:{control}": value}
+
+        if dsp_key == "dsp_highpass":
+            return stereo("fx_highpass", "Freq", self._interpolate_intensity(intensity, 40.0, 80.0, 120.0))
+        if dsp_key == "dsp_noise_suppression":
+            return stereo("fx_rnnoise", "VAD Threshold (%)", self._interpolate_intensity(intensity, 20.0, 50.0, 80.0))
+        if dsp_key == "dsp_noise_gate":
+            return stereo("fx_gate", "Threshold (dB)", self._interpolate_intensity(intensity, -55.0, -45.0, -30.0))
+        if dsp_key == "dsp_equalizer":
+            controls = {}
+            controls.update(stereo("fx_eq_bass", "Gain", self._interpolate_intensity(intensity, 1.5, 3.5, 6.0)))
+            controls.update(stereo("fx_eq_presence", "Gain", self._interpolate_intensity(intensity, 2.0, 4.0, 6.5)))
+            controls.update(stereo("fx_eq_air", "Gain", self._interpolate_intensity(intensity, 1.5, 3.0, 5.0)))
+            return controls
+        if dsp_key == "dsp_compressor":
+            controls = {}
+            controls.update(stereo("fx_comp", "Threshold level (dB)", self._interpolate_intensity(intensity, -24.0, -18.0, -10.0)))
+            controls.update(stereo("fx_comp", "Ratio (1:n)", self._interpolate_intensity(intensity, 2.0, 3.5, 6.0)))
+            controls.update(stereo("fx_comp", "Makeup gain (dB)", self._interpolate_intensity(intensity, 1.0, 2.5, 4.5)))
+            controls.update(stereo("fx_comp_presence", "Gain", self._interpolate_intensity(intensity, 1.5, 3.0, 5.0)))
+            return controls
+        if dsp_key == "dsp_deesser":
+            return stereo("fx_deesser", "Gain", self._interpolate_intensity(intensity, -2.0, -4.0, -7.0))
+        if dsp_key == "dsp_limiter":
+            return stereo("fx_limiter", "Gain", self._interpolate_intensity(intensity, -0.2, -0.5, -1.2))
+        return {}
+
+    def update_builtin_intensity_live(self, dsp_key: str, intensity: int) -> bool:
+        return self._set_live_controls(self._builtin_intensity_controls(dsp_key, self._normalize_intensity(intensity)))
+
+    def update_external_lv2_intensity_live(self, plugin_id: str, intensity: int) -> bool:
+        plugin = plugin_scanner.get_plugin(plugin_id)
+        if not plugin or plugin.format != PluginFormat.LV2:
+            return False
+        stage_name = self._external_stage_name(plugin.id)
+        controls = {
+            f"{stage_name}:{symbol}": value
+            for symbol, value in self._build_external_lv2_controls(plugin, self._normalize_intensity(intensity)).items()
+        }
+        return self._set_live_controls(controls)
+
+    def _build_external_lv2_controls(self, plugin, intensity: int) -> Dict[str, float]:
+        name = f"{plugin.name} {plugin.plugin_uri}".lower()
+        if "dragonfly" in name:
+            controls = {
+                "dry_level": self._interpolate_intensity(intensity, 95.0, self._param_default(plugin, "dry_level", 80.0), 65.0),
+                "early_level": self._interpolate_intensity(intensity, 0.0, self._param_default(plugin, "early_level", 10.0), 25.0),
+                "late_level": self._interpolate_intensity(intensity, 5.0, self._param_default(plugin, "late_level", 20.0), 45.0),
+                "decay": self._interpolate_intensity(intensity, self._param_default(plugin, "decay", 20.0), self._param_default(plugin, "decay", 20.0), self._param_default(plugin, "decay", 20.0) * 1.35),
+                "size": self._interpolate_intensity(intensity, self._param_default(plugin, "size", 24.0), self._param_default(plugin, "size", 24.0), self._param_default(plugin, "size", 24.0) * 1.2),
+            }
+            return {symbol: self._clamp_control(plugin, symbol, value) for symbol, value in controls.items()}
+
+        controls = {}
+        preferred_tokens = ("wet", "mix", "amount", "depth")
+        for param in plugin.parameters:
+            symbol = param.id.lower()
+            label = param.name.lower()
+            if any(token in symbol or token in label for token in preferred_tokens):
+                controls[param.id] = self._interpolate_intensity(intensity, param.min_value, param.default_value, param.max_value)
+        return controls
+
     def _generate_config(self, dsp_settings: Optional[Dict[str, Any]] = None) -> Optional[str]:
         """Generates a PipeWire filter-chain configuration file based on active DSP settings."""
         # Read channel-specific config if available, fallback to provided or global settings
@@ -153,6 +316,7 @@ class ChannelFXChain:
         enable_comp = _is_enabled("dsp_compressor", True)
         enable_deesser = _is_enabled("dsp_deesser", False)
         enable_limiter = _is_enabled("dsp_limiter", True)
+        external_lv2_plugins = self._get_enabled_external_lv2_plugins(settings)
 
         # Per-effect intensity dials (0-100, 50 = original default tuning): each active
         # effect scales independently, piecewise-linear around the 50 midpoint so the
@@ -284,6 +448,18 @@ class ChannelFXChain:
                 "control": { "Freq": 18000.0, "Q": 0.707, "Gain": _scale("dsp_limiter", -0.2, -0.5, -1.2) }
             })
 
+        for plugin, intensity in external_lv2_plugins:
+            stages.append({
+                "name": self._external_stage_name(plugin.id),
+                "type": "lv2",
+                "plugin": plugin.plugin_uri,
+                "label": "unused",
+                "control": self._build_external_lv2_controls(plugin, intensity),
+                "channels": "stereo",
+                "in_ports": plugin.audio_input_ports[:2],
+                "out_ports": plugin.audio_output_ports[:2],
+            })
+
         if not stages:
             return None
 
@@ -295,12 +471,28 @@ class ChannelFXChain:
         first_in_r = None
 
         for st in stages:
-            name_l = f"{st['name']}_l"
-            name_r = f"{st['name']}_r"
             ctrl = st.get("control", {})
             plugin = st.get("plugin")
             st_type = st.get("type", "builtin")
             label = st.get("label")
+
+            if st.get("channels") == "stereo":
+                node_name = st["name"]
+                in_l, in_r = st["in_ports"][:2]
+                out_l, out_r = st["out_ports"][:2]
+                nodes.append({"type": st_type, "name": node_name, "label": label, "control": ctrl, **({"plugin": plugin} if plugin else {})})
+                if not first_in_l:
+                    first_in_l = f"{node_name}:{in_l}"
+                    first_in_r = f"{node_name}:{in_r}"
+                if last_out_l:
+                    node_links.append({"output": last_out_l, "input": f"{node_name}:{in_l}"})
+                    node_links.append({"output": last_out_r, "input": f"{node_name}:{in_r}"})
+                last_out_l = f"{node_name}:{out_l}"
+                last_out_r = f"{node_name}:{out_r}"
+                continue
+
+            name_l = f"{st['name']}_l"
+            name_r = f"{st['name']}_r"
             in_port = st.get("in_port", "In")
             out_port = st.get("out_port", "Out")
 
@@ -410,12 +602,13 @@ class FXChainManager:
 
     def is_fx_enabled(self, channel_id: str) -> bool:
         """Determines if the FX chain should be active for this channel."""
-        # Check channel-specific config first
         ch_fx = config_manager.get("channel_fx", {}).get(channel_id)
         if ch_fx is not None:
             if not ch_fx.get("enabled", True):
                 return False
-            return any(ch_fx.get(k, False) for k in (
+            external_plugins = ch_fx.get("external_plugins", {})
+            external_active = isinstance(external_plugins, dict) and any(external_plugins.values())
+            return external_active or any(ch_fx.get(k, False) for k in (
                 "dsp_highpass", "dsp_noise_suppression", "dsp_noise_gate",
                 "dsp_equalizer", "dsp_compressor", "dsp_deesser", "dsp_limiter"
             ))

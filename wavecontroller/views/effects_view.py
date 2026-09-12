@@ -23,6 +23,19 @@ _BUNDLED_INTERNAL_LADSPA_FILES = {
 }
 
 
+def _is_hostable_lv2_plugin(plugin: AudioPlugin) -> bool:
+    return (
+        plugin.format == PluginFormat.LV2 and
+        bool(plugin.plugin_uri) and
+        len(plugin.audio_input_ports) >= 2 and
+        len(plugin.audio_output_ports) >= 2
+    )
+
+
+def _plugin_display_key(plugin: AudioPlugin) -> str:
+    return "".join(ch for ch in plugin.name.lower() if ch.isalnum())
+
+
 class EffectsView(Gtk.Box):
     """
     Audio Effects & VST/LV2 Plugin Rack for WaveController.
@@ -207,7 +220,7 @@ class EffectsView(Gtk.Box):
         # Group 3: Discovered Plugins List
         self.grp_plugins_list = Adw.PreferencesGroup(
             title="Indexed Plugins Library",
-            description="Plugins available for audio processing racks. Drag & drop a .vst3/.lv2 folder here to install it."
+            description="Installed stereo LV2 plugins can be enabled per channel from the FX popover. VST3/CLAP plugins are indexed for library management only."
         )
         pref_page.add(self.grp_plugins_list)
 
@@ -288,6 +301,15 @@ class EffectsView(Gtk.Box):
         if success:
             self._on_install_effect_rescan()
 
+    def _on_external_plugin_enabled_toggled(self, row, _gparam, plugin_id: str):
+        states = dict(config_manager.get("external_plugin_enabled", {}))
+        states[plugin_id] = row.get_active()
+        config_manager.set("external_plugin_enabled", states, immediate=True)
+        if self.pipewire_mgr:
+            self.pipewire_mgr.reload_channel_fx()
+        if self.on_global_fx_changed_callback:
+            GLib.idle_add(self.on_global_fx_changed_callback)
+
     def _on_add_custom_path_clicked(self, _btn):
         dialog = Gtk.FileChooserNative.new(
             "Select an additional plugin scan directory",
@@ -352,6 +374,8 @@ class EffectsView(Gtk.Box):
         status_msg = f"Indexed {total} plugins ({vst_count} VST3, {lv2_count} LV2, {builtin_count} Built-in)"
         self.vst_scan_row.set_subtitle(status_msg)
         self._refresh_plugins_display()
+        if self.on_global_fx_changed_callback:
+            GLib.idle_add(self.on_global_fx_changed_callback)
 
     def _refresh_plugins_display(self):
         # Clear existing rows
@@ -386,7 +410,17 @@ class EffectsView(Gtk.Box):
                     return True
             return False
 
-        sorted_plugins = sorted([p for p in plugins if not _is_internal(p)], key=_sort_key)
+        visible_candidates = [p for p in plugins if not _is_internal(p)]
+        hostable_keys = {_plugin_display_key(p) for p in visible_candidates if _is_hostable_lv2_plugin(p)}
+
+        def _should_show(p: AudioPlugin) -> bool:
+            if _is_hostable_lv2_plugin(p):
+                return True
+            if not p.is_user_installed:
+                return False
+            return _plugin_display_key(p) not in hostable_keys
+
+        sorted_plugins = sorted([p for p in visible_candidates if _should_show(p)], key=_sort_key)
 
         for p in sorted_plugins:
             # Filter match
@@ -399,6 +433,14 @@ class EffectsView(Gtk.Box):
                 sub += f" ({os.path.basename(p.path)})"
 
             row = Adw.ActionRow(title=p.name, subtitle=sub)
+
+            if _is_hostable_lv2_plugin(p):
+                states = config_manager.get("external_plugin_enabled", {})
+                if not isinstance(states, dict):
+                    states = {}
+                row = Adw.SwitchRow(title=p.name, subtitle=sub)
+                row.set_active(states.get(p.id, True))
+                row.connect("notify::active", self._on_external_plugin_enabled_toggled, p.id)
 
             # Badges box
             badge_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)

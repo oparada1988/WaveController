@@ -7,6 +7,7 @@ from gi.repository import Gtk, Gdk, GObject, Adw, GLib
 from .stereo_slider import StereoSlider
 from .rotary_dial import RotaryDial
 from ..engine.config_manager import config_manager
+from ..engine.plugins import plugin_scanner, PluginFormat
 from ..utils.logger import get_logger
 
 log = get_logger("ChannelCard")
@@ -431,7 +432,10 @@ class ChannelCard(Gtk.Box):
                 self.fx_btn.set_tooltip_text(f"Audio Effects Bypassed for '{self.channel_info.get('name')}' (Click to configure)")
 
     def refresh_fx_effect_visibility(self):
-        """Shows/hides per-channel FX popover rows to match the current global Effects Manager toggles."""
+        """Refreshes per-channel FX popover rows after global DSP or plugin library changes."""
+        if hasattr(self, "fx_btn") and self.fx_btn:
+            self._setup_fx_popover()
+            return
         if not hasattr(self, "_fx_effect_rows"):
             return
         for fx_key, row in self._fx_effect_rows.items():
@@ -450,7 +454,7 @@ class ChannelCard(Gtk.Box):
         vbox.set_margin_bottom(12)
         vbox.set_margin_start(14)
         vbox.set_margin_end(14)
-        vbox.set_size_request(300, -1)
+        vbox.set_size_request(420, -1)
 
         # Header Title
         title_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
@@ -505,7 +509,12 @@ class ChannelCard(Gtk.Box):
         # Child FX Box (Dims and disables when master is OFF)
         fx_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
         fx_box.set_sensitive(master_enabled)
-        vbox.append(fx_box)
+        fx_scroll = Gtk.ScrolledWindow()
+        fx_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        fx_scroll.set_min_content_height(360)
+        fx_scroll.set_max_content_height(420)
+        fx_scroll.set_child(fx_box)
+        vbox.append(fx_scroll)
 
         effects_meta = [
             ("dsp_noise_suppression", "AI Noise Suppression", "Neural background noise removal (RNNoise)", True),
@@ -517,7 +526,22 @@ class ChannelCard(Gtk.Box):
             ("dsp_highpass", "Low-Cut Filter", "80 Hz high-pass rumble guard", True),
         ]
 
-        def _save_channel_fx(key: str, val: Any):
+        def _hostable_external_plugins():
+            plugins = []
+            globally_enabled = config_manager.get("external_plugin_enabled", {})
+            if not isinstance(globally_enabled, dict):
+                globally_enabled = {}
+            for plugin in plugin_scanner.get_all_plugins():
+                if plugin.format != PluginFormat.LV2:
+                    continue
+                if not plugin.plugin_uri or len(plugin.audio_input_ports) < 2 or len(plugin.audio_output_ports) < 2:
+                    continue
+                if not globally_enabled.get(plugin.id, True):
+                    continue
+                plugins.append(plugin)
+            return sorted(plugins, key=lambda p: p.name.lower())
+
+        def _save_channel_fx(key: str, val: Any, reload_chain: bool = True):
             cfg = dict(config_manager.get("channel_fx", {}))
             if ch_id not in cfg:
                 cfg[ch_id] = {
@@ -535,7 +559,60 @@ class ChannelCard(Gtk.Box):
             cfg[ch_id][key] = val
             config_manager.set("channel_fx", cfg, immediate=True)
             self.update_fx_state()
+            if reload_chain and self.pipewire_mgr:
+                self.pipewire_mgr.reload_channel_fx(ch_id)
+
+        def _save_external_plugin(plugin_id: str, val: bool):
+            cfg = dict(config_manager.get("channel_fx", {}))
+            if ch_id not in cfg:
+                cfg[ch_id] = {
+                    "enabled": True,
+                    "dsp_noise_suppression": config_manager.get("dsp_noise_suppression", True),
+                    "dsp_noise_gate": config_manager.get("dsp_noise_gate", False),
+                    "dsp_equalizer": config_manager.get("dsp_equalizer", True),
+                    "dsp_compressor": config_manager.get("dsp_compressor", True),
+                    "dsp_deesser": config_manager.get("dsp_deesser", False),
+                    "dsp_limiter": config_manager.get("dsp_limiter", True),
+                    "dsp_highpass": config_manager.get("dsp_highpass", True),
+                }
+            else:
+                cfg[ch_id] = dict(cfg[ch_id])
+            external_plugins = dict(cfg[ch_id].get("external_plugins", {}))
+            external_plugins[plugin_id] = bool(val)
+            cfg[ch_id]["external_plugins"] = external_plugins
+            config_manager.set("channel_fx", cfg, immediate=True)
+            self.update_fx_state()
             if self.pipewire_mgr:
+                self.pipewire_mgr.reload_channel_fx(ch_id)
+
+        def _save_external_intensity(plugin_id: str, val: int):
+            cfg = dict(config_manager.get("channel_fx", {}))
+            cfg[ch_id] = dict(cfg.get(ch_id, {}))
+            intensity_map = dict(cfg[ch_id].get("external_plugin_intensity", {}))
+            intensity_map[plugin_id] = int(val)
+            cfg[ch_id]["external_plugin_intensity"] = intensity_map
+            config_manager.set("channel_fx", cfg, immediate=True)
+
+        def _apply_builtin_intensity_live(fx_key: str, val: int):
+            if not self.pipewire_mgr or not hasattr(self.pipewire_mgr, "fx_manager"):
+                return
+            try:
+                chain = self.pipewire_mgr.fx_manager.get_chain(ch_id)
+                if not chain.update_builtin_intensity_live(fx_key, val):
+                    self.pipewire_mgr.reload_channel_fx(ch_id)
+            except Exception:
+                log.exception(f"Failed to apply live FX intensity '{fx_key}' for channel '{ch_id}'")
+                self.pipewire_mgr.reload_channel_fx(ch_id)
+
+        def _apply_external_intensity_live(plugin_id: str, val: int):
+            if not self.pipewire_mgr or not hasattr(self.pipewire_mgr, "fx_manager"):
+                return
+            try:
+                chain = self.pipewire_mgr.fx_manager.get_chain(ch_id)
+                if not chain.update_external_lv2_intensity_live(plugin_id, val):
+                    self.pipewire_mgr.reload_channel_fx(ch_id)
+            except Exception:
+                log.exception(f"Failed to apply live external plugin intensity '{plugin_id}' for channel '{ch_id}'")
                 self.pipewire_mgr.reload_channel_fx(ch_id)
 
         def _on_master_toggled(sw, gparam):
@@ -597,7 +674,8 @@ class ChannelCard(Gtk.Box):
                     def _commit():
                         debounce_holder["id"] = None
                         try:
-                            _save_channel_fx(k, new_val)
+                            _save_channel_fx(k, new_val, reload_chain=False)
+                            _apply_builtin_intensity_live(k.replace("_intensity", ""), new_val)
                         except Exception:
                             log.exception(f"Failed to apply FX intensity '{k}' for channel '{ch_id}'")
                         return False
@@ -611,6 +689,72 @@ class ChannelCard(Gtk.Box):
             row.append(dial)
             row.append(sw)
             fx_box.append(row)
+
+        external_plugins = _hostable_external_plugins()
+        if external_plugins:
+            sep3 = Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL)
+            fx_box.append(sep3)
+
+            ext_title = Gtk.Label(label="External LV2 Plugins")
+            ext_title.add_css_class("caption")
+            ext_title.add_css_class("dim-label")
+            ext_title.set_halign(Gtk.Align.START)
+            fx_box.append(ext_title)
+
+            enabled_external = ch_fx.get("external_plugins", {}) if isinstance(ch_fx.get("external_plugins", {}), dict) else {}
+            external_intensity = ch_fx.get("external_plugin_intensity", {}) if isinstance(ch_fx.get("external_plugin_intensity", {}), dict) else {}
+            for plugin in external_plugins:
+                row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+                lbl_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+                lbl = Gtk.Label(label=plugin.name)
+                lbl.set_halign(Gtk.Align.START)
+                lbl.add_css_class("body")
+                desc = Gtk.Label(label=f"{plugin.category.value} - LV2")
+                desc.set_halign(Gtk.Align.START)
+                desc.add_css_class("dim-label")
+                desc.add_css_class("caption")
+                lbl_box.append(lbl)
+                lbl_box.append(desc)
+                lbl_box.set_hexpand(True)
+                row.append(lbl_box)
+
+                sw = Gtk.Switch(active=bool(enabled_external.get(plugin.id, False)))
+                sw.set_valign(Gtk.Align.CENTER)
+
+                intensity_val = external_intensity.get(plugin.id, 50)
+                dial = RotaryDial(value=intensity_val, default_value=50)
+                dial.set_sensitive(sw.get_active())
+                dial.set_tooltip_text(f"{plugin.name} Intensity: {intensity_val}%")
+
+                def _make_external_handler(pid, d):
+                    def _handler(s, gp):
+                        d.set_sensitive(s.get_active())
+                        d.queue_draw()
+                        _save_external_plugin(pid, s.get_active())
+                    return _handler
+
+                debounce_holder = {"id": None}
+
+                def _make_external_intensity_handler(pid):
+                    def _on_changed(new_val: int):
+                        def _commit():
+                            debounce_holder["id"] = None
+                            try:
+                                _save_external_intensity(pid, new_val)
+                                _apply_external_intensity_live(pid, new_val)
+                            except Exception:
+                                log.exception(f"Failed to apply external plugin intensity '{pid}' for channel '{ch_id}'")
+                            return False
+                        if debounce_holder["id"] is not None:
+                            GLib.source_remove(debounce_holder["id"])
+                        debounce_holder["id"] = GLib.timeout_add(120, _commit)
+                    return _on_changed
+
+                dial.on_value_changed = _make_external_intensity_handler(plugin.id)
+                sw.connect("notify::active", _make_external_handler(plugin.id, dial))
+                row.append(dial)
+                row.append(sw)
+                fx_box.append(row)
 
         popover.set_child(vbox)
         self.fx_btn.set_popover(popover)
