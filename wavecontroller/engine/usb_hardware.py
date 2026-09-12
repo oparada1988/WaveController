@@ -664,6 +664,15 @@ class USBHardwareManager:
             del self._device_missing_since[key]
         return stable_keys
 
+    def _is_live_elgato_device(self, device_key: str) -> bool:
+        """Keep a live Wave device connected while its PipeWire profile recovers."""
+        metadata = (config_manager.get("tracked_device_metadata", {}) or {}).get(device_key, {})
+        is_elgato = metadata.get("is_elgato", False) or "elgato" in str(device_key).lower()
+        if not is_elgato:
+            return False
+        device = elgato_manager.get_device()
+        return bool(device and device.is_connected())
+
     def _start_hotplug_monitor(self):
         """Background worker checking for newly attached or detached hardware devices via kernel uevents."""
         def _monitor_loop():
@@ -715,7 +724,8 @@ class USBHardwareManager:
                                         self.on_new_device_detected_callback(dev)
                         if stably_removed_keys and self.on_device_disconnected_callback:
                             for removed_key in stably_removed_keys:
-                                if removed_key in config_manager.get("tracked_devices", []):
+                                if (removed_key in config_manager.get("tracked_devices", [])
+                                        and not self._is_live_elgato_device(removed_key)):
                                     self.on_device_disconnected_callback(removed_key)
                         known_keys = curr_keys
                         if self.on_devices_changed_callback:
@@ -730,7 +740,8 @@ class USBHardwareManager:
                         stably_removed_keys = self._get_stably_removed_keys(known_keys, curr_keys)
                         if stably_removed_keys and self.on_device_disconnected_callback:
                             for removed_key in stably_removed_keys:
-                                if removed_key in config_manager.get("tracked_devices", []):
+                                if (removed_key in config_manager.get("tracked_devices", [])
+                                        and not self._is_live_elgato_device(removed_key)):
                                     self.on_device_disconnected_callback(removed_key)
                 except Exception:
                     pass
@@ -847,10 +858,11 @@ class USBHardwareManager:
                     inferred_type = "duplex"
                     badge_text = "In / Out"
 
+                live_elgato = self._is_live_elgato_device(key)
                 dev = {
                     "device_key": key,
                     "name": aliases.get(key, saved_name),
-                    "description": "Hardware Disconnected",
+                    "description": "Audio profile reconnecting" if live_elgato else "Hardware Disconnected",
                     "type": inferred_type,
                     "badge": badge_text,
                     "icon": self.get_device_icon(key) or saved.get("icon", "audio-headset-symbolic"),
@@ -858,7 +870,7 @@ class USBHardwareManager:
                     "sinks": [],
                     "primary_source_id": None,
                     "primary_sink_id": None,
-                    "connected": False,
+                    "connected": live_elgato,
                     "is_elgato": saved.get("is_elgato", False)
                 }
             

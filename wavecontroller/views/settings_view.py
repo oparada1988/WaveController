@@ -425,9 +425,8 @@ class SettingsView(Gtk.Box):
 
         pref_page.add(grp_backup)
 
-        self.append(pref_page)
-
         # Center-Aligned About Footer (Zero emojis, clean typography & links)
+        grp_about = Adw.PreferencesGroup()
         about_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
         about_box.set_halign(Gtk.Align.CENTER)
         about_box.set_margin_top(12)
@@ -454,7 +453,14 @@ class SettingsView(Gtk.Box):
         issues_link.set_halign(Gtk.Align.CENTER)
         about_box.append(issues_link)
 
-        self.append(about_box)
+        grp_about.add(about_box)
+        pref_page.add(grp_about)
+
+        scrolled = Gtk.ScrolledWindow()
+        scrolled.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        scrolled.set_vexpand(True)
+        scrolled.set_child(pref_page)
+        self.append(scrolled)
 
     def _update_log_info(self):
         self.log_info_row.set_subtitle(f"{get_log_file_path()} ({get_log_size_str()})")

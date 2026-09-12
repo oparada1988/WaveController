@@ -255,6 +255,22 @@ class TestHardwareDisconnectProtection(unittest.TestCase):
         self.assertEqual(self.manager._get_stably_removed_keys(set(), set(), now=103.0), {"wave"})
         self.assertEqual(self.manager._get_stably_removed_keys(set(), set(), now=106.0), set())
 
+    def test_live_elgato_is_not_treated_as_disconnected_during_profile_recovery(self):
+        from wavecontroller.engine.usb_hardware import elgato_manager
+
+        config_manager.set("tracked_device_metadata", {
+            "usb-Elgato_Wave_XLR": {"is_elgato": True}
+        })
+        live_device = MagicMock()
+        live_device.is_connected.return_value = True
+        with patch.object(elgato_manager, "get_device", return_value=live_device):
+            self.assertTrue(self.manager._is_live_elgato_device("usb-Elgato_Wave_XLR"))
+
+    def test_non_elgato_device_is_not_marked_live_by_wave_fallback(self):
+        with patch("wavecontroller.engine.usb_hardware.elgato_manager.get_device") as get_device:
+            self.assertFalse(self.manager._is_live_elgato_device("usb-Other_Interface"))
+            get_device.assert_not_called()
+
 
 class TestIPCLiveInvariants(unittest.TestCase):
     """Verifies live daemon socket contracts if the daemon is currently active."""
