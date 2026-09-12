@@ -29,6 +29,8 @@ class MultiChannelPeakMonitor:
         self._channel_procs = {}  # {channel_id: subprocess.Popen}
         self._channel_proc_channels = {}  # {channel_id: int}
         self._channel_peaks = {}  # {channel_id: {"left": float, "right": float}}
+        self._mic_mismatch_since = None
+        self._last_mic_recovery = 0.0
 
     def set_pipewire_manager(self, pw_mgr):
         self.pipewire_mgr = pw_mgr
@@ -633,18 +635,32 @@ class MultiChannelPeakMonitor:
                 raw_ml, raw_mr = self._drain_and_calc_peaks(m_proc, channels=m_ch)
                 raw_sl, raw_sr = self._drain_and_calc_peaks(s_proc, channels=2)
 
-                # Query hardware DSP meter telemetry from attached Elgato device
+                # Compare the hardware meter with PipeWire capture. A device can remain
+                # enumerated while its USB audio endpoint stops delivering samples.
+                hw_l, hw_r = 0.0, 0.0
                 try:
                     from wavecontroller.engine.elgato_wave import elgato_manager
                     dev = getattr(elgato_manager, "active_device", None)
                     if dev and dev.is_connected():
                         hw_l, hw_r = dev.get_meter()
-                        if hw_l > raw_ml:
-                            raw_ml = hw_l
-                        if hw_r > raw_mr:
-                            raw_mr = hw_r
                 except Exception:
                     pass
+
+                if max(hw_l, hw_r) >= 0.05 and max(raw_ml, raw_mr) < 0.002:
+                    if self._mic_mismatch_since is None:
+                        self._mic_mismatch_since = time.monotonic()
+                    elif time.monotonic() - self._mic_mismatch_since >= 0.75 and time.monotonic() - self._last_mic_recovery >= 10.0:
+                        self._last_mic_recovery = time.monotonic()
+                        recovery = getattr(self.hardware_mgr, "recover_audio_capture", None)
+                        if recovery:
+                            threading.Thread(target=recovery, daemon=True).start()
+                else:
+                    self._mic_mismatch_since = None
+
+                if hw_l > raw_ml:
+                    raw_ml = hw_l
+                if hw_r > raw_mr:
+                    raw_mr = hw_r
 
                 # Read per-channel monitor peaks for all active channel sinks
                 for target_node, proc in ch_items:

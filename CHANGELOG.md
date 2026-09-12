@@ -2,6 +2,21 @@
 
 All notable changes to WaveController are documented in this file.
 
+## [0.0.3.4] - 2026-09-12
+
+### Fixed
+- **Application picker no longer shows stale browser / renderer noise.** The app list now filters to running audio-capable applications and excludes background Chrome renderer/GPU helpers, which previously made Chrome appear even when it was not producing audio.
+- **Signal no longer appears as an available app.** The background non-audio utility filter removes Signal and similar non-audio helpers from the app picker while keeping real audio apps visible.
+- **Idle audio-capable apps remain discoverable.** Spotify and similar apps can now be listed while they are running but not currently playing, without reintroducing the stale browser false positives.
+
+### Changed
+- Simplified the PipeWire app discovery hot path to reduce unnecessary process scanning and tighten the app filter for better responsiveness and snappier UI behavior.
+- Trimmed dead variables and unnecessary work in the app list refresh path to keep the channel creation UI feeling lighter during app discovery.
+
+### Internal / Maintenance
+- Reduced redundant work in the app discovery and refresh pipeline.
+- Removed leftover logic from the previous broad app-listing approach that had drifted away from the intended audio-only behavior.
+
 ## [0.0.3.3] - 2026-09-12
 
 ### Fixed

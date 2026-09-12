@@ -11,11 +11,12 @@ Enforces strict audio contracts to prevent regressions:
 import os
 import sys
 import math
+import io
 import json
 import socket
 import subprocess
 import unittest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 # Ensure wavecontroller module is in sys.path
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -171,6 +172,69 @@ class TestPipeWireTopologyInvariants(unittest.TestCase):
         self.assertIn("--latency=20ms", src, "REGRESSION: open_pw_record is missing low latency flag")
         self.assertIn("media.role=volume-control", src, "REGRESSION: open_pw_record is missing volume-control role")
         self.assertIn("--target", src, "REGRESSION: open_pw_record is missing --target flag")
+
+
+class TestApplicationDiscoveryInvariants(unittest.TestCase):
+    """Verifies app discovery shows running audio-capable apps while excluding Signal and renderer-only processes."""
+
+    def test_chrome_renderer_without_active_audio_stream_is_not_listed(self):
+        from wavecontroller.engine.pipewire_manager import PipeWireManager
+
+        pwm = PipeWireManager.__new__(PipeWireManager)
+        pwm.resolve_icon_for_app = lambda app: "google-chrome"
+
+        def fake_open(path, mode="r", *args, **kwargs):
+            if path.endswith("/comm"):
+                return io.StringIO("chrome\n")
+            if path.endswith("/cmdline"):
+                return io.BytesIO(b"/usr/bin/google-chrome --type=renderer --user-data-dir=/tmp/chrome")
+            raise FileNotFoundError(path)
+
+        with patch("wavecontroller.engine.pipewire_manager.subprocess.check_output", return_value="[]"), \
+             patch("wavecontroller.engine.pipewire_manager.os.listdir", return_value=["101"]), \
+             patch("wavecontroller.engine.pipewire_manager.os.path.exists", return_value=True), \
+             patch("builtins.open", side_effect=fake_open):
+            self.assertEqual(pwm.get_active_application_streams(), [])
+
+    def test_idle_spotify_is_listed_as_running_audio_capable_app(self):
+        from wavecontroller.engine.pipewire_manager import PipeWireManager
+
+        pwm = PipeWireManager.__new__(PipeWireManager)
+        pwm.resolve_icon_for_app = lambda app: "spotify"
+
+        def fake_open(path, mode="r", *args, **kwargs):
+            if path.endswith("/comm"):
+                return io.StringIO("spotify\n")
+            if path.endswith("/cmdline"):
+                return io.BytesIO(b"/usr/share/spotify/spotify --no-startup-window")
+            raise FileNotFoundError(path)
+
+        with patch("wavecontroller.engine.pipewire_manager.subprocess.check_output", return_value="[]"), \
+             patch("wavecontroller.engine.pipewire_manager.os.listdir", return_value=["202"]), \
+             patch("wavecontroller.engine.pipewire_manager.os.path.exists", return_value=True), \
+             patch("builtins.open", side_effect=fake_open):
+            apps = pwm.get_active_application_streams()
+            self.assertTrue(any(app["name"] == "Spotify" for app in apps))
+
+    def test_signal_not_listed_even_when_running(self):
+        from wavecontroller.engine.pipewire_manager import PipeWireManager
+
+        pwm = PipeWireManager.__new__(PipeWireManager)
+        pwm.resolve_icon_for_app = lambda app: "signal"
+
+        def fake_open(path, mode="r", *args, **kwargs):
+            if path.endswith("/comm"):
+                return io.StringIO("signal-desktop\n")
+            if path.endswith("/cmdline"):
+                return io.BytesIO(b"/opt/Signal/signal-desktop --no-sandbox")
+            raise FileNotFoundError(path)
+
+        with patch("wavecontroller.engine.pipewire_manager.subprocess.check_output", return_value="[]"), \
+             patch("wavecontroller.engine.pipewire_manager.os.listdir", return_value=["303"]), \
+             patch("wavecontroller.engine.pipewire_manager.os.path.exists", return_value=True), \
+             patch("builtins.open", side_effect=fake_open):
+            apps = pwm.get_active_application_streams()
+            self.assertFalse(any(app["name"] == "Signal" for app in apps))
 
 
 class TestHardwareDisconnectProtection(unittest.TestCase):
@@ -455,6 +519,52 @@ class TestTokenMatchingInvariants(unittest.TestCase):
         import inspect
         src = inspect.getsource(self.pwm._ensure_virtual_mix_nodes)
         self.assertNotIn("pkill", src, "REGRESSION: Blanket pkill found in _ensure_virtual_mix_nodes")
+
+    def test_virtual_node_provisioning_is_single_flight(self):
+        """Concurrent recovery calls must create each virtual mix node only once."""
+        import threading
+        from unittest.mock import MagicMock, patch
+        from wavecontroller.engine.pipewire_manager import PipeWireManager
+
+        pwm = PipeWireManager.__new__(PipeWireManager)
+        pwm._lock = threading.RLock()
+        pwm._virtual_nodes_lock = threading.RLock()
+        pwm.channels = []
+        pwm.mixes = [{"id": "personal", "name": "Personal Mix", "type": "sink"}]
+        pwm.channel_states = {}
+        pwm.mix_states = {}
+        pwm._mix_node_ids_cache = {}
+        pwm._submix_volume_queue = {}
+        pwm._mix_volume_queue = {}
+        pwm._volume_event = threading.Event()
+        pwm._sync_channel_audio_routing = MagicMock()
+        pwm._apply_configured_system_defaults = MagicMock()
+
+        nodes = []
+        created = []
+
+        def mock_check_output(command, **kwargs):
+            if command == ["pw-dump"]:
+                return json.dumps(nodes)
+            return ""
+
+        def mock_run(command, **kwargs):
+            if command[:3] == ["pw-cli", "create-node", "adapter"]:
+                node_name = command[3].split('node.name="', 1)[1].split('"', 1)[0]
+                created.append(node_name)
+                nodes.append({"id": len(nodes) + 1, "info": {"props": {"node.name": node_name, "media.class": "Audio/Sink"}}})
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        with patch("subprocess.check_output", side_effect=mock_check_output), \
+             patch("subprocess.run", side_effect=mock_run):
+            first = threading.Thread(target=pwm._ensure_virtual_mix_nodes)
+            second = threading.Thread(target=pwm._ensure_virtual_mix_nodes)
+            first.start()
+            second.start()
+            first.join()
+            second.join()
+
+        self.assertEqual(created, ["WaveController_personal_Sink"])
 
     def test_granular_channel_lifecycle_isolation(self):
         """Invariant: Deleting channel A must never terminate or unlink channel B's processes."""

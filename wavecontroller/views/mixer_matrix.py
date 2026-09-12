@@ -809,11 +809,6 @@ class MixerMatrixView(Gtk.Box):
             available_apps = []
             if running_apps:
                 for app_info in running_apps:
-                    app_name = app_info["name"]
-                    app_bin = app_info.get("binary", "")
-                    name_low = app_name.lower().strip()
-                    bin_low = app_bin.lower().strip()
-
                     is_already_added = app_is_configured(app_info, configured_apps)
                     if not is_already_added:
                         available_apps.append(app_info)

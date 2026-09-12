@@ -74,6 +74,9 @@ def _init_libusb():
             if hasattr(_lib, "libusb_exit"):
                 _lib.libusb_exit.argtypes = [ctypes.c_void_p]
                 _lib.libusb_exit.restype = None
+            if hasattr(_lib, "libusb_reset_device"):
+                _lib.libusb_reset_device.argtypes = [ctypes.c_void_p]
+                _lib.libusb_reset_device.restype = ctypes.c_int
             _lib_ctx = ctypes.c_void_p()
             ret = _lib.libusb_init(ctypes.byref(_lib_ctx))
             if ret != 0:
@@ -355,6 +358,17 @@ class ElgatoWaveDevice:
                 self._handle = None
                 self._consecutive_errors = 0
                 self._backoff_until = 0.0
+
+    def reset_usb(self) -> bool:
+        """Resets the USB device so its kernel audio endpoints are reopened."""
+        with self._lock:
+            if not self._handle or not _lib or not hasattr(_lib, "libusb_reset_device"):
+                return False
+            try:
+                return _lib.libusb_reset_device(self._handle) == 0
+            except Exception as e:
+                log.warning(f"Failed to reset Elgato USB device: {e}")
+                return False
 
     def _ctrl_read(self, wValue: int, length: int, is_probing: bool = False) -> bytearray:
         if not self._handle or not _lib:
@@ -1159,6 +1173,7 @@ class ElgatoManager:
         # post-resume USB hotplug storm segfault natively inside libusb. RLock so
         # on_system_resume() can hold it across reinit + detect_device() as one unit.
         self._detect_lock = threading.RLock()
+        self._last_audio_recovery = 0.0
 
     def detect_device(self) -> Optional[ElgatoWaveDevice]:
         if self._is_sleeping:
@@ -1182,6 +1197,26 @@ class ElgatoManager:
         if self.active_device and self.active_device.is_connected():
             return self.active_device
         return self.detect_device()
+
+    def recover_audio_capture(self) -> bool:
+        """Recovers a connected device whose USB audio capture endpoint is stuck."""
+        now = time.monotonic()
+        with self._detect_lock:
+            if now - self._last_audio_recovery < 10.0:
+                return False
+            self._last_audio_recovery = now
+            dev = self.active_device
+            if self._is_sleeping or not dev or not dev.is_connected():
+                return False
+
+            log.warning("Elgato USB audio capture appears stuck; resetting device endpoint")
+            dev.reset_usb()
+            dev.disconnect()
+            self.active_device = None
+            time.sleep(0.25)
+            _reinit_libusb_after_resume()
+            restored = self.detect_device()
+            return bool(restored and restored.is_connected())
 
     def on_system_suspend(self):
         """Cleanly stops background sync thread, extinguishes LEDs, and releases USB interface before suspend."""

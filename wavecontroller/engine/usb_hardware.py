@@ -60,15 +60,17 @@ class USBHardwareManager:
         self._restoring_hardware = False
         self._device_missing_since = {}
         self.on_device_disconnected_callback = None
+        self._startup_capture_recovery_done = False
 
     def _ensure_elgato_card_profile(self, card_id: int):
         """Ensures the ALSA device profile is locked to 'Analog Stereo Output + Mono Input'."""
         try:
-            out = subprocess.check_output(["pw-dump", str(card_id)], text=True, stderr=subprocess.DEVNULL)
+            out = subprocess.check_output(["pw-dump"], text=True, stderr=subprocess.DEVNULL)
             data = json.loads(out)
-            if not data:
+            card = next((obj for obj in data if obj.get("id") == card_id), None)
+            if not card:
                 return
-            params = data[0].get("info", {}).get("params", {})
+            params = card.get("info", {}).get("params", {})
             active_list = params.get("Profile", [])
             if active_list and active_list[0].get("name") == "output:analog-stereo+input:mono-fallback":
                 return
@@ -90,8 +92,83 @@ class USBHardwareManager:
         elgato_manager.on_state_changed = self._on_elgato_hardware_sync
 
         self.detect_connected_hardware()
+        threading.Thread(target=self._reset_elgato_capture_profile_after_startup, daemon=True).start()
         self._ensure_default_tracked_devices()
         self._start_hotplug_monitor()
+
+    def _reset_elgato_capture_profile_after_startup(self):
+        """Waits for WirePlumber profile restoration, then repairs the capture profile."""
+        time.sleep(1.0)
+        self._reset_elgato_capture_profile_once()
+        try:
+            if self.pipewire_mgr:
+                self.detect_connected_hardware()
+                self.pipewire_mgr._ensure_virtual_mix_nodes()
+                self.pipewire_mgr._notify_peak_monitor_refresh()
+        except Exception as e:
+            log.warning(f"[WaveController.Hardware] Post-startup audio graph refresh failed: {e}")
+
+    def _reset_elgato_capture_profile_once(self):
+        """Reopens the Wave XLR capture endpoint once during application startup."""
+        if self._startup_capture_recovery_done:
+            return
+        self._startup_capture_recovery_done = True
+
+        card_id = next(
+            (
+                device.get("device_id")
+                for device in self.discovered_devices.values()
+                if device.get("is_elgato") and device.get("device_id") is not None
+            ),
+            None,
+        )
+        if card_id is None:
+            return
+
+        try:
+            profiles = json.loads(
+                subprocess.check_output(["pw-dump"], text=True, stderr=subprocess.DEVNULL)
+            )
+            card = next((obj for obj in profiles if obj.get("id") == card_id), None)
+            if not card:
+                return
+            profiles = card.get("info", {}).get("params", {}).get("EnumProfile", [])
+            preferred = next(
+                (profile.get("index") for profile in profiles if profile.get("name") == "output:analog-stereo+input:mono-fallback"),
+                None,
+            )
+            if preferred is None:
+                return
+
+            subprocess.run(["wpctl", "set-profile", str(card_id), "0"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            time.sleep(0.1)
+            result = subprocess.run(
+                ["wpctl", "set-profile", str(card_id), str(preferred)],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            if result.returncode == 0:
+                log.info("[WaveController.Hardware] Reopened Elgato capture profile during startup")
+        except Exception as e:
+            log.warning(f"[WaveController.Hardware] Startup capture profile recovery failed: {e}")
+
+    def recover_audio_capture(self) -> bool:
+        """Resets a stuck Elgato USB capture endpoint and reattaches audio monitors."""
+        restored = elgato_manager.recover_audio_capture()
+        if not restored:
+            return False
+
+        try:
+            self.detect_connected_hardware()
+            if self.pipewire_mgr:
+                self.pipewire_mgr.refresh_devices()
+                self.pipewire_mgr._ensure_virtual_mix_nodes()
+                self.pipewire_mgr._refresh_node_cache()
+                self.pipewire_mgr._sync_channel_audio_routing()
+                self.pipewire_mgr._notify_peak_monitor_refresh()
+        except Exception as e:
+            log.warning(f"Elgato USB recovery succeeded but audio graph refresh failed: {e}")
+        return True
 
     def add_hardware_listener(self, callback):
         """Registers a listener callback (curr, changed) for physical hardware events."""

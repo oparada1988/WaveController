@@ -83,6 +83,7 @@ class PipeWireManager:
                     break
         self.running = False
         self._lock = threading.RLock()
+        self._virtual_nodes_lock = threading.RLock()
         self.fx_manager = fx_manager
         
         # High-Performance Node Cache & Volume Dispatch Queue
@@ -244,6 +245,11 @@ class PipeWireManager:
         return False
 
     def _ensure_virtual_mix_nodes(self):
+        """Runs virtual-node reconciliation as a single PipeWire transaction."""
+        with self._virtual_nodes_lock:
+            self._synchronize_virtual_mix_nodes()
+
+    def _synchronize_virtual_mix_nodes(self):
         """
         Synchronizes PipeWire virtual audio nodes strictly with currently configured mixes.
         Prunes any stale/orphan WaveController virtual devices and provisions only active Source/Sink nodes.
@@ -347,23 +353,30 @@ class PipeWireManager:
             # PipeWire registers adapter ports asynchronously. Verify the nodes
             # before synchronizing links, otherwise the first sync silently sees
             # no Personal/Chat targets and leaves the submixes disconnected.
-            registered = set()
+            registered = {}
             for _ in range(10):
                 try:
                     data = json.loads(subprocess.check_output(["pw-dump"], text=True, stderr=subprocess.DEVNULL))
-                    registered = {
-                        obj.get("info", {}).get("props", {}).get("node.name")
-                        for obj in data
-                    }
-                    if all(name in registered for name in needed_nodes):
+                    registered = {}
+                    for obj in data:
+                        name = obj.get("info", {}).get("props", {}).get("node.name")
+                        if name in needed_nodes:
+                            registered.setdefault(name, []).append(obj.get("id"))
+                    if all(len(registered.get(name, [])) == 1 for name in needed_nodes):
                         break
                 except (OSError, ValueError, subprocess.CalledProcessError):
                     pass
                 time.sleep(0.05)
 
-            missing = sorted(set(needed_nodes) - registered)
+            missing = sorted(name for name in needed_nodes if not registered.get(name))
             if missing:
                 log.error(f"[WaveController.PipeWire] Required virtual nodes did not register: {', '.join(missing)}")
+
+            # A stale or concurrent PipeWire registration must not leave two
+            # same-named devices for routing/default selection to disagree on.
+            for name, node_ids in registered.items():
+                for node_id in sorted(node_id for node_id in node_ids if node_id is not None)[1:]:
+                    subprocess.run(["pw-cli", "destroy", str(node_id)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
         with self._lock:
             self._mix_node_ids_cache.clear()
@@ -1539,7 +1552,6 @@ class PipeWireManager:
             for obj in data:
                 props = obj.get("info", {}).get("props", {})
                 media_class = props.get("media.class", "")
-                media_type = props.get("media.type", "")
                 node_name = props.get("node.name", "")
                 app_id = props.get("application.id", "")
                 portal_app_id = props.get("pipewire.access.portal.app_id") or props.get("application.id") or ""
@@ -1625,45 +1637,63 @@ class PipeWireManager:
         except Exception:
             pass
 
-        # 2. Running User Desktop Audio Processes (e.g. newly opened apps before playback)
+        # 2. Running desktop applications that are audio-capable, but not generic non-audio
+        # utilities such as Signal or browser renderer workers.
+        non_audio_hints = (
+            "--type=renderer", "--type=gpu-process", "--type=zygote", "gpu-process",
+            "chrome-sandbox", "crashpad", "plugin-container", "sandboxed", "renderer-process",
+            "signal-desktop", "signal"
+        )
         try:
             for proc_entry in os.listdir("/proc"):
-                if proc_entry.isdigit():
-                    try:
-                        comm = ""
-                        comm_file = os.path.join("/proc", proc_entry, "comm")
-                        if os.path.exists(comm_file):
-                            with open(comm_file, "r") as f:
-                                comm = f.read().strip().lower()
+                if not proc_entry.isdigit():
+                    continue
+                try:
+                    comm_file = os.path.join("/proc", proc_entry, "comm")
+                    cmd_file = os.path.join("/proc", proc_entry, "cmdline")
+                    if not os.path.exists(comm_file) or not os.path.exists(cmd_file):
+                        continue
 
-                        cmdline = ""
-                        cmd_file = os.path.join("/proc", proc_entry, "cmdline")
-                        if os.path.exists(cmd_file):
-                            with open(cmd_file, "rb") as f:
-                                cmdline = f.read().replace(b'\x00', b' ').decode('utf-8', errors='ignore').lower()
+                    with open(comm_file, "r", encoding="utf-8", errors="ignore") as f:
+                        comm = f.read().strip().lower()
+                    with open(cmd_file, "rb") as f:
+                        cmdline = f.read().replace(b'\x00', b' ').decode('utf-8', errors='ignore').lower()
 
-                        matched_key = None
-                        if comm in KNOWN_AUDIO_BINARIES:
-                            matched_key = comm
-                        else:
-                            for k in KNOWN_AUDIO_BINARIES:
-                                if len(k) >= 4 and (f"/{k}" in cmdline or f"app/{k}" in cmdline or f"bin/{k}" in cmdline or k in comm):
-                                    matched_key = k
-                                    break
+                    if not comm and not cmdline:
+                        continue
 
-                        if matched_key:
-                            app_title, app_icon = KNOWN_AUDIO_BINARIES[matched_key]
-                            if app_title not in seen and app_title.lower() not in seen:
-                                seen.add(app_title)
-                                seen.add(app_title.lower())
-                                apps.append({
-                                    "id": None,
-                                    "name": app_title,
-                                    "binary": comm or matched_key,
-                                    "icon": app_icon or self.resolve_icon_for_app(app_title)
-                                })
-                    except Exception:
-                        pass
+                    if any(token in cmdline for token in non_audio_hints):
+                        continue
+
+                    matched_key = None
+                    if comm in KNOWN_AUDIO_BINARIES:
+                        matched_key = comm
+                    else:
+                        for k in KNOWN_AUDIO_BINARIES:
+                            if len(k) >= 4 and (
+                                f"/{k}" in cmdline or f"app/{k}" in cmdline or f"bin/{k}" in cmdline or
+                                k in comm or f" {k}" in cmdline or f"{k} " in cmdline
+                            ):
+                                matched_key = k
+                                break
+
+                    if matched_key is None:
+                        continue
+
+                    app_title, app_icon = KNOWN_AUDIO_BINARIES[matched_key]
+                    if app_title in seen or app_title.lower() in seen or app_title.lower() == "signal":
+                        continue
+
+                    seen.add(app_title)
+                    seen.add(app_title.lower())
+                    apps.append({
+                        "id": None,
+                        "name": app_title,
+                        "binary": comm or matched_key,
+                        "icon": app_icon or self.resolve_icon_for_app(app_title)
+                    })
+                except Exception:
+                    pass
         except Exception:
             pass
 
