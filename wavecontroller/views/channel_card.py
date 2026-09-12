@@ -806,8 +806,10 @@ class ChannelCard(Gtk.Box):
         sync_row.append(sync_switch)
         vbox.append(sync_row)
 
-        # Group Channels Exclusive Options: Virtual System Audio Device & Grouped Applications
-        if self.is_group_channel:
+        # Virtual System Audio Device exposure: available to Group Channels and single-app Channels alike
+        is_app_channel = str(self.channel_info.get("type", "sink")).lower() == "app"
+        show_expose_toggle = (self.is_group_channel or is_app_channel) and not self.is_mic_channel
+        if show_expose_toggle:
             vbox.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
 
             sink_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
@@ -825,6 +827,8 @@ class ChannelCard(Gtk.Box):
             sink_row.append(sink_switch)
             vbox.append(sink_row)
 
+        # Group Channels Exclusive Option: Grouped Applications List
+        if self.is_group_channel:
             # Grouped Applications List
             vbox.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
             apps_head = Gtk.Label(label="Grouped Applications:")
