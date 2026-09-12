@@ -210,6 +210,13 @@ class PipeWireManager:
         self._sync_thread = threading.Thread(target=self._external_sync_loop, daemon=True)
         self._sync_thread.start()
 
+        # 3. Real-time new-stream watcher (reacts to new app audio streams within ms,
+        # instead of waiting for the periodic poll in _external_sync_loop to notice them)
+        self._stream_watch_proc = None
+        self._stream_watch_debounce_id = None
+        self._stream_watch_thread = threading.Thread(target=self._realtime_stream_watch_loop, daemon=True)
+        self._stream_watch_thread.start()
+
     def apply_pipewire_quantum(self, quantum=None) -> bool:
         """Applies the configured system-wide PipeWire processing quantum."""
         if quantum is None:
@@ -383,6 +390,13 @@ class PipeWireManager:
     def stop(self):
         self.running = False
         self._volume_event.set()
+
+        proc = getattr(self, "_stream_watch_proc", None)
+        if proc:
+            try:
+                proc.terminate()
+            except Exception:
+                pass
 
         # 1. Gracefully reconnect all active app streams back to physical default audio sink
         try:
@@ -742,6 +756,88 @@ class PipeWireManager:
             except Exception:
                 pass
             time.sleep(0.25) # 4 Hz source-volume poller; graph work is rate-limited above
+
+    def _realtime_stream_watch_loop(self):
+        """
+        Watches the live PipeWire event stream (via `pw-mon`) for newly-created
+        Stream/Output/Audio nodes (e.g. a new Chrome tab starting playback) and
+        immediately triggers a fast reconciliation pass, instead of waiting up to
+        ~1s for the periodic poll in _external_sync_loop to notice and re-route it.
+        This is a supplementary fast-path; the periodic poll remains as a fallback.
+        """
+        backoff = 1.0
+        while self.running:
+            proc = None
+            try:
+                proc = subprocess.Popen(
+                    ["pw-mon"],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.DEVNULL,
+                    text=True,
+                    bufsize=1
+                )
+                self._stream_watch_proc = proc
+                backoff = 1.0  # reset backoff after a successful (re)connect
+
+                block_lines = []
+                block_kind = None  # "added" / "changed" / "removed" of the block being buffered
+
+                def _flush(kind, lines):
+                    if kind != "added":
+                        return
+                    text = "\n".join(lines)
+                    if "PipeWire:Interface:Node" not in text:
+                        return
+                    if 'media.class = "Stream/Output/Audio"' not in text:
+                        return
+                    m = re.search(r'node\.name\s*=\s*"([^"]*)"', text)
+                    node_name = m.group(1) if m else ""
+                    if node_name.startswith(("WaveController_", "output.WaveController_", "input.WaveController_", "wave_", "output.wave_", "input.wave_")):
+                        return
+                    self._schedule_stream_watch_reconcile()
+
+                for line in proc.stdout:
+                    stripped = line.rstrip("\n")
+                    if stripped in ("added:", "changed:", "removed:"):
+                        _flush(block_kind, block_lines)
+                        block_kind = stripped[:-1]
+                        block_lines = []
+                    else:
+                        block_lines.append(stripped)
+                    if not self.running:
+                        break
+                _flush(block_kind, block_lines)
+            except FileNotFoundError:
+                log.warning("[WaveController.PipeWire] 'pw-mon' not found; real-time stream watcher disabled, falling back to periodic poll only.")
+                return
+            except Exception:
+                pass
+            finally:
+                if proc:
+                    try:
+                        proc.terminate()
+                    except Exception:
+                        pass
+                self._stream_watch_proc = None
+
+            if not self.running:
+                break
+            time.sleep(backoff)
+            backoff = min(backoff * 2, 10.0)
+
+    def _schedule_stream_watch_reconcile(self):
+        """Debounces rapid bursts of new-stream events (e.g. a page with several audio elements) into one reconcile call."""
+        def _fire():
+            self._stream_watch_debounce_id = None
+            try:
+                self._reconcile_app_streams_fast()
+            except Exception:
+                pass
+            return False
+
+        if self._stream_watch_debounce_id is not None:
+            GLib.source_remove(self._stream_watch_debounce_id)
+        self._stream_watch_debounce_id = GLib.timeout_add(30, _fire)
 
     def _enforce_exclusive_volume_guard(self):
         """
@@ -1260,6 +1356,7 @@ class PipeWireManager:
 
             links_map = self._get_pw_links_map()
             port_meta = self._get_active_port_metadata_map()
+            in_ports = None  # fetched lazily below only if a channel actually needs a resync
 
             reconciled_any = False
             for ch in channels_copy:
@@ -1312,7 +1409,16 @@ class PipeWireManager:
                                 need_sync = True
 
                     if need_sync:
-                        self._sync_channel_audio_routing(channel_id=ch_id)
+                        if in_ports is None:
+                            try:
+                                try:
+                                    i_raw = subprocess.check_output(["pw-link", "-I", "-i"], text=True, stderr=subprocess.DEVNULL, timeout=3)
+                                except Exception:
+                                    i_raw = subprocess.check_output(["pw-link", "-i"], text=True, stderr=subprocess.DEVNULL, timeout=3)
+                                in_ports = [l.strip() for l in i_raw.splitlines() if l.strip()]
+                            except Exception:
+                                in_ports = []
+                        self._sync_channel_audio_routing(channel_id=ch_id, out_ports=out_ports, in_ports=in_ports, links_map=links_map, port_meta=port_meta)
                         self._bind_app_to_wireplumber_target(app, ch_id)
                         reconciled_any = True
 
@@ -2508,33 +2614,41 @@ class PipeWireManager:
                     except Exception:
                         pass
 
-    def _sync_channel_audio_routing(self, channel_id: str = None, mix_id: str = None):
+    def _sync_channel_audio_routing(self, channel_id: str = None, mix_id: str = None,
+                                     out_ports: list = None, in_ports: list = None,
+                                     links_map: dict = None, port_meta: dict = None):
         """
         Synchronizes real PipeWire port attachments (pw-link) for all channels and mixes.
         When a channel is enabled for a mix, creates real-time patch links visible in qpwgraph.
         When unrouted/disabled, destroys the links in real-time.
-        """
-        try:
-            try:
-                out_ports_raw = subprocess.check_output(["pw-link", "-I", "-o"], text=True, stderr=subprocess.DEVNULL, timeout=3)
-            except Exception:
-                out_ports_raw = ""
-            if not out_ports_raw:
-                out_ports_raw = subprocess.check_output(["pw-link", "-o"], text=True, stderr=subprocess.DEVNULL, timeout=3)
-            out_ports = [l.strip() for l in out_ports_raw.splitlines() if l.strip()]
-        except Exception:
-            out_ports = []
 
-        try:
+        Callers that already fetched a fresh port/link snapshot this tick (e.g. the real-time
+        stream watcher's reconcile pass) may pass it through via out_ports/in_ports/links_map/
+        port_meta to skip redundant subprocess round-trips and shave reaction latency.
+        """
+        if out_ports is None:
             try:
-                in_ports_raw = subprocess.check_output(["pw-link", "-I", "-i"], text=True, stderr=subprocess.DEVNULL, timeout=3)
+                try:
+                    out_ports_raw = subprocess.check_output(["pw-link", "-I", "-o"], text=True, stderr=subprocess.DEVNULL, timeout=3)
+                except Exception:
+                    out_ports_raw = ""
+                if not out_ports_raw:
+                    out_ports_raw = subprocess.check_output(["pw-link", "-o"], text=True, stderr=subprocess.DEVNULL, timeout=3)
+                out_ports = [l.strip() for l in out_ports_raw.splitlines() if l.strip()]
             except Exception:
-                in_ports_raw = ""
-            if not in_ports_raw:
-                in_ports_raw = subprocess.check_output(["pw-link", "-i"], text=True, stderr=subprocess.DEVNULL, timeout=3)
-            in_ports = [l.strip() for l in in_ports_raw.splitlines() if l.strip()]
-        except Exception:
-            in_ports = []
+                out_ports = []
+
+        if in_ports is None:
+            try:
+                try:
+                    in_ports_raw = subprocess.check_output(["pw-link", "-I", "-i"], text=True, stderr=subprocess.DEVNULL, timeout=3)
+                except Exception:
+                    in_ports_raw = ""
+                if not in_ports_raw:
+                    in_ports_raw = subprocess.check_output(["pw-link", "-i"], text=True, stderr=subprocess.DEVNULL, timeout=3)
+                in_ports = [l.strip() for l in in_ports_raw.splitlines() if l.strip()]
+            except Exception:
+                in_ports = []
 
         with self._lock:
             channels_copy = list(self.channels)
@@ -2542,8 +2656,10 @@ class PipeWireManager:
 
         channels_to_sync = [c for c in channels_copy if channel_id is None or c["id"] == channel_id]
         mixes_to_sync = [m for m in mixes_copy if mix_id is None or m["id"] == mix_id]
-        links_map = self._get_pw_links_map()
-        port_meta = self._get_active_port_metadata_map()
+        if links_map is None:
+            links_map = self._get_pw_links_map()
+        if port_meta is None:
+            port_meta = self._get_active_port_metadata_map()
 
         # Precompute the live (output-port-id, input-port-id) pairs ONCE for this whole sync
         # pass, instead of re-querying pw-dump per channel x mix (was up to N x M redundant

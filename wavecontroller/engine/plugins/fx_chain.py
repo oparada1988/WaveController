@@ -4,14 +4,12 @@ Manages pre-fader real-time PipeWire filter-chain nodes for audio channels.
 """
 
 import os
-import sys
 import subprocess
 import threading
 import signal
 import time
 from typing import Dict, List, Optional, Any
 
-from .models import AudioPlugin, PluginFormat, PluginCategory
 from ..config_manager import config_manager
 from wavecontroller.utils.logger import get_logger
 

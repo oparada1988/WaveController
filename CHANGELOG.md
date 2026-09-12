@@ -2,6 +2,16 @@
 
 All notable changes to WaveController are documented in this file.
 
+## [0.0.3.3] - 2026-09-12
+
+### Fixed
+- **Chrome/new-tab routing now reacts in real time.** Added a `pw-mon`-backed stream watcher that immediately reconciles new application audio streams, removing the audible delay that could happen when Chrome or YouTube created a fresh playback stream before the periodic PipeWire poll noticed it.
+
+### Internal / Maintenance
+- Reused the fast reconcile path's existing PipeWire port/link snapshots when syncing channel audio routing, avoiding redundant subprocess round-trips during new-stream handling.
+- Moved plugin bundle install validation off the GTK main thread so large VST3/LV2 folder installs do not stutter the Effects Manager UI.
+- Removed unused imports from the plugin FX chain and Effects Manager modules.
+
 ## [0.0.3.2] - 2026-09-10
 
 ### Added

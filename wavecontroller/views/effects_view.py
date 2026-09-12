@@ -1,9 +1,10 @@
 import os
 import subprocess
+import threading
 import gi
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
-from gi.repository import Gtk, Adw, GLib, Gio, Gdk
+from gi.repository import Gtk, Adw, GLib, Gdk
 
 from ..engine.config_manager import config_manager
 from ..engine.plugins import plugin_scanner, PluginFormat, PluginCategory, AudioPlugin
@@ -253,22 +254,28 @@ class EffectsView(Gtk.Box):
             files = value.get_files()
         except Exception:
             return False
-        installed_any = False
         for gfile in files:
             path = gfile.get_path()
             if path:
-                if self._install_plugin_from_path(path, silent=True):
-                    installed_any = True
-        if installed_any:
-            self._on_install_effect_rescan()
+                self._install_plugin_from_path(path, silent=True)
         return True
 
-    def _install_plugin_from_path(self, path: str, silent: bool = False) -> bool:
-        success, message = plugin_scanner.install_plugin_from_path(path)
-        self.vst_scan_row.set_subtitle(message)
-        if success and not silent:
-            self._on_install_effect_rescan()
-        return success
+    def _install_plugin_from_path(self, path: str, silent: bool = False) -> None:
+        """Validates and installs a plugin bundle off the GTK main thread (bundle
+        validation walks the folder tree, which could otherwise stutter the UI
+        on large or deeply-nested bundles), then dispatches the result back."""
+        def _bg():
+            success, message = plugin_scanner.install_plugin_from_path(path)
+
+            def _finish():
+                self.vst_scan_row.set_subtitle(message)
+                if success:
+                    self._on_install_effect_rescan()
+                return False
+
+            GLib.idle_add(_finish)
+
+        threading.Thread(target=_bg, daemon=True, name="WaveController-PluginInstall").start()
 
     def _on_install_effect_rescan(self):
         if plugin_scanner.is_scanning:
