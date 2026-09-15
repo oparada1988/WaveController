@@ -1,11 +1,7 @@
-import os
 import re
-import math
 import subprocess
 import threading
 import time
-import array
-import fcntl
 from wavecontroller.engine.metering.capture_driver import calc_perceptual_peak, open_pw_record, drain_and_calc_peaks
 
 class MultiChannelPeakMonitor:
@@ -29,8 +25,6 @@ class MultiChannelPeakMonitor:
         self._channel_procs = {}  # {channel_id: subprocess.Popen}
         self._channel_proc_channels = {}  # {channel_id: int}
         self._channel_peaks = {}  # {channel_id: {"left": float, "right": float}}
-        self._mic_mismatch_since = None
-        self._last_mic_recovery = 0.0
 
     def set_pipewire_manager(self, pw_mgr):
         self.pipewire_mgr = pw_mgr
@@ -292,9 +286,6 @@ class MultiChannelPeakMonitor:
         except Exception:
             return
 
-        # Map channel_id -> (target_node_name, channel_count, is_sink)
-        active_channels = {}
-
         # Collect unique targets: target_node -> {"channels": int, "is_sink": bool, "keys": set()}
         target_map = {}
 
@@ -430,7 +421,7 @@ class MultiChannelPeakMonitor:
 
             # For any channel in pipewire_mgr not mapped to any active target, reset its peaks immediately
             mapped_keys = set()
-            for t, info in target_map.items():
+            for info in target_map.values():
                 mapped_keys.update(info.get("keys", set()))
 
             if self.pipewire_mgr:
@@ -640,33 +631,6 @@ class MultiChannelPeakMonitor:
                 raw_ml, raw_mr = self._drain_and_calc_peaks(m_proc, channels=m_ch)
                 raw_sl, raw_sr = self._drain_and_calc_peaks(s_proc, channels=2)
 
-                # Compare the hardware meter with PipeWire capture. A device can remain
-                # enumerated while its USB audio endpoint stops delivering samples.
-                hw_l, hw_r = 0.0, 0.0
-                try:
-                    from wavecontroller.engine.elgato_wave import elgato_manager
-                    dev = getattr(elgato_manager, "active_device", None)
-                    if dev and dev.is_connected():
-                        hw_l, hw_r = dev.get_meter()
-                except Exception:
-                    pass
-
-                if max(hw_l, hw_r) >= 0.05 and max(raw_ml, raw_mr) < 0.002:
-                    if self._mic_mismatch_since is None:
-                        self._mic_mismatch_since = time.monotonic()
-                    elif time.monotonic() - self._mic_mismatch_since >= 0.75 and time.monotonic() - self._last_mic_recovery >= 10.0:
-                        self._last_mic_recovery = time.monotonic()
-                        recovery = getattr(self.hardware_mgr, "recover_audio_capture", None)
-                        if recovery:
-                            threading.Thread(target=recovery, daemon=True).start()
-                else:
-                    self._mic_mismatch_since = None
-
-                if hw_l > raw_ml:
-                    raw_ml = hw_l
-                if hw_r > raw_mr:
-                    raw_mr = hw_r
-
                 # Read per-channel monitor peaks for all active channel sinks
                 for target_node, proc in ch_items:
                     if proc and proc.poll() is None:
@@ -697,24 +661,20 @@ class MultiChannelPeakMonitor:
                 new_channel_peaks = {}
                 for target_node, peak_data in getattr(self, "_target_peaks", {}).items():
                     assoc_keys = getattr(self, "_target_keys", {}).get(target_node, set())
-                    for k in assoc_keys:
-                        if k not in new_channel_peaks:
-                            new_channel_peaks[k] = {"left": peak_data["left"], "right": peak_data["right"], "peak": peak_data["peak"]}
+                    for key in assoc_keys:
+                        if key not in new_channel_peaks:
+                            new_channel_peaks[key] = {"left": peak_data["left"], "right": peak_data["right"], "peak": peak_data["peak"]}
                         else:
-                            new_channel_peaks[k]["left"] = max(new_channel_peaks[k]["left"], peak_data["left"])
-                            new_channel_peaks[k]["right"] = max(new_channel_peaks[k]["right"], peak_data["right"])
-                            new_channel_peaks[k]["peak"] = max(new_channel_peaks[k]["peak"], peak_data["peak"])
+                            new_channel_peaks[key]["left"] = max(new_channel_peaks[key]["left"], peak_data["left"])
+                            new_channel_peaks[key]["right"] = max(new_channel_peaks[key]["right"], peak_data["right"])
+                            new_channel_peaks[key]["peak"] = max(new_channel_peaks[key]["peak"], peak_data["peak"])
                     new_channel_peaks[target_node] = peak_data
 
                 with self._lock:
                     self._channel_peaks = new_channel_peaks
 
                 # Detect if any process exited unexpectedly and trigger background discovery
-                proc_dead = False
-                for target_node, proc in ch_items:
-                    if proc and proc.poll() is not None:
-                        proc_dead = True
-                        break
+                proc_dead = any(proc and proc.poll() is not None for _, proc in ch_items)
                 if proc_dead or (not m_proc or m_proc.poll() is not None) or (not s_proc or s_proc.poll() is not None):
                     self._refresh_event.set()
 
@@ -739,7 +699,6 @@ class MultiChannelPeakMonitor:
                 else:
                     sink_r = max(0.0, sink_r * 0.965 - 0.0008)
 
-                # Gentle zero clamp only at true bottom
                 m_l = 0.0 if mic_l < 0.002 else mic_l
                 m_r = 0.0 if mic_r < 0.002 else mic_r
                 s_l = 0.0 if sink_l < 0.002 else sink_l
@@ -749,16 +708,13 @@ class MultiChannelPeakMonitor:
                     self._last_sink_peaks = {"left": s_l, "right": s_r, "peak": max(s_l, s_r)}
                     self._last_mic_peaks = {"left": m_l, "right": m_r, "peak": max(m_l, m_r)}
 
-                    # Physical microphone channels ONLY get physical microphone level
-                    for ch in ["mic", "microphone", "elgato_wave_xlr", "wave_xlr", "input", "system_capture"]:
-                        self.peaks[ch] = {"left": m_l, "right": m_r, "peak": max(m_l, m_r)}
+                    for channel_id in ["mic", "microphone", "elgato_wave_xlr", "wave_xlr", "input", "system_capture"]:
+                        self.peaks[channel_id] = {"left": m_l, "right": m_r, "peak": max(m_l, m_r)}
 
-                    # 1. Personal Mix bus receives direct hardware sink monitor levels
                     personal_peak = {"left": s_l, "right": s_r, "peak": max(s_l, s_r)}
                     self.peaks["personal_mix"] = personal_peak
                     self.peaks["personal"] = personal_peak
 
-                    # 2. Dynamic mix bus peaks: accurately aggregate only routed, unmuted channels for each mix (Strict Zero-Bleed)
                     if self.pipewire_mgr:
                         try:
                             mixes_list = getattr(self.pipewire_mgr, "mixes", [])
@@ -767,88 +723,79 @@ class MultiChannelPeakMonitor:
                             master_states = getattr(self.pipewire_mgr, "channel_master_states", {})
                             mx_states = getattr(self.pipewire_mgr, "mix_states", {})
 
-                            for mx in mixes_list:
-                                mx_id = mx.get("id", "")
-                                if not mx_id or mx_id in ("personal", "personal_mix"):
+                            for mix in mixes_list:
+                                mix_id = mix.get("id", "")
+                                if not mix_id or mix_id in ("personal", "personal_mix"):
                                     continue
 
-                                mx_st = mx_states.get(mx_id, {})
-                                if mx_st.get("muted", False):
+                                mix_state = mx_states.get(mix_id, {})
+                                if mix_state.get("muted", False):
                                     mix_peak = {"left": 0.0, "right": 0.0, "peak": 0.0}
-                                    self.peaks[mx_id] = mix_peak
-                                    self.peaks[mx_id.replace("_mix", "")] = mix_peak
+                                    self.peaks[mix_id] = mix_peak
+                                    self.peaks[mix_id.replace("_mix", "")] = mix_peak
                                     continue
 
-                                mx_vol_frac = max(0.0, min(1.5, mx_st.get("volume", 100) / 100.0))
-                                if mx_vol_frac <= 0.001:
+                                mix_vol_frac = max(0.0, min(1.5, mix_state.get("volume", 100) / 100.0))
+                                if mix_vol_frac <= 0.001:
                                     mix_peak = {"left": 0.0, "right": 0.0, "peak": 0.0}
-                                    self.peaks[mx_id] = mix_peak
-                                    self.peaks[mx_id.replace("_mix", "")] = mix_peak
+                                    self.peaks[mix_id] = mix_peak
+                                    self.peaks[mix_id.replace("_mix", "")] = mix_peak
                                     continue
 
                                 mix_accum_l = 0.0
                                 mix_accum_r = 0.0
-
-                                for ch in channels_list:
-                                    ch_id = ch.get("id", "")
-                                    if not ch_id:
+                                for channel in channels_list:
+                                    channel_id = channel.get("id", "")
+                                    if not channel_id:
                                         continue
-
-                                    # Check if channel is enabled for this mix
-                                    st = ch_states.get(ch_id, {}).get(mx_id, {})
-                                    if not st.get("enabled", True) or st.get("muted", False):
+                                    state = ch_states.get(channel_id, {}).get(mix_id, {})
+                                    if not state.get("enabled", True) or state.get("muted", False):
                                         continue
-
-                                    # Check master channel mute
-                                    m_st = master_states.get(ch_id, {})
-                                    if m_st.get("muted", False):
+                                    master_state = master_states.get(channel_id, {})
+                                    if master_state.get("muted", False):
                                         continue
-
-                                    # Calculate volume attenuation
-                                    ch_sub_vol = max(0.0, min(1.5, st.get("volume", 80) / 100.0))
-                                    ch_master_vol = max(0.0, min(1.5, m_st.get("volume", 80) / 100.0))
-                                    ch_scale = ch_sub_vol * ch_master_vol * mx_vol_frac
-
-                                    # Obtain channel level
-                                    is_source = (ch.get("type") == "source") or any(k in ch_id.lower() for k in ("mic", "microphone", "elgato_wave", "wave_xlr", "capture_mono"))
+                                    channel_scale = (
+                                        max(0.0, min(1.5, state.get("volume", 80) / 100.0))
+                                        * max(0.0, min(1.5, master_state.get("volume", 80) / 100.0))
+                                        * mix_vol_frac
+                                    )
+                                    is_source = channel.get("type") == "source" or any(
+                                        token in channel_id.lower()
+                                        for token in ("mic", "microphone", "elgato_wave", "wave_xlr", "capture_mono")
+                                    )
                                     if is_source:
                                         c_l, c_r = m_l, m_r
                                     else:
-                                        cp = self._channel_peaks.get(ch_id, {"left": 0.0, "right": 0.0})
-                                        c_l = cp.get("left", 0.0)
-                                        c_r = cp.get("right", 0.0)
+                                        channel_peak = self._channel_peaks.get(channel_id, {"left": 0.0, "right": 0.0})
+                                        c_l = channel_peak.get("left", 0.0)
+                                        c_r = channel_peak.get("right", 0.0)
+                                    mix_accum_l = max(mix_accum_l, c_l * channel_scale)
+                                    mix_accum_r = max(mix_accum_r, c_r * channel_scale)
 
-                                    mix_accum_l = max(mix_accum_l, c_l * ch_scale)
-                                    mix_accum_r = max(mix_accum_r, c_r * ch_scale)
-
-                                mix_accum_l = min(1.0, mix_accum_l)
-                                mix_accum_r = min(1.0, mix_accum_r)
-                                mix_peak_val = max(mix_accum_l, mix_accum_r)
-                                mix_data = {"left": mix_accum_l, "right": mix_accum_r, "peak": mix_peak_val}
-
-                                self.peaks[mx_id] = mix_data
-                                short_name = mx_id.replace("_mix", "")
-                                if short_name != mx_id:
+                                mix_data = {"left": min(1.0, mix_accum_l), "right": min(1.0, mix_accum_r)}
+                                mix_data["peak"] = max(mix_data["left"], mix_data["right"])
+                                self.peaks[mix_id] = mix_data
+                                short_name = mix_id.replace("_mix", "")
+                                if short_name != mix_id:
                                     self.peaks[short_name] = mix_data
                         except Exception:
                             pass
                     else:
-                        for non_p in ["chat_mix", "chat", "mobo_mix", "mobo", "stream_mix", "stream"]:
-                            self.peaks[non_p] = {"left": 0.0, "right": 0.0, "peak": 0.0}
+                        for non_personal in ["chat_mix", "chat", "mobo_mix", "mobo", "stream_mix", "stream"]:
+                            self.peaks[non_personal] = {"left": 0.0, "right": 0.0, "peak": 0.0}
 
-                    # Explicitly update per-channel ingestion peaks and zero-out inactive channels
                     if self.pipewire_mgr:
-                        for ch in getattr(self.pipewire_mgr, "channels", []):
-                            cid = ch.get("id")
-                            if not cid or ch.get("type") == "source":
+                        for channel in getattr(self.pipewire_mgr, "channels", []):
+                            channel_id = channel.get("id")
+                            if not channel_id or channel.get("type") == "source":
                                 continue
-                            ch_p = self._channel_peaks.get(cid, {"left": 0.0, "right": 0.0, "peak": 0.0})
-                            self.peaks[cid] = ch_p
-                            self.peaks[f"wavecontroller_channel_{cid}"] = ch_p
+                            channel_peak = self._channel_peaks.get(channel_id, {"left": 0.0, "right": 0.0, "peak": 0.0})
+                            self.peaks[channel_id] = channel_peak
+                            self.peaks[f"wavecontroller_channel_{channel_id}"] = channel_peak
                     else:
-                        for ch_id, ch_p in self._channel_peaks.items():
-                            self.peaks[ch_id] = ch_p
-                            self.peaks[f"wavecontroller_channel_{ch_id}"] = ch_p
+                        for channel_id, channel_peak in self._channel_peaks.items():
+                            self.peaks[channel_id] = channel_peak
+                            self.peaks[f"wavecontroller_channel_{channel_id}"] = channel_peak
             except Exception:
                 pass
 

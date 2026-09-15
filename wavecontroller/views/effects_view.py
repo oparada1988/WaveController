@@ -7,7 +7,7 @@ gi.require_version("Adw", "1")
 from gi.repository import Gtk, Adw, GLib, Gdk
 
 from ..engine.config_manager import config_manager
-from ..engine.plugins import plugin_scanner, PluginFormat, PluginCategory, AudioPlugin
+from ..engine.plugins import plugin_scanner, PluginFormat, AudioPlugin
 from ..utils.logger import get_logger
 
 log = get_logger("EffectsView")

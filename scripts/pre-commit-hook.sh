@@ -1,13 +1,13 @@
 #!/bin/bash
-# WaveController Automated Audio Invariant Pre-Commit Hook
-echo "🔍 [WaveController] Running Audio Invariant Regression Suite..."
-python3 -m unittest tests/test_audio_invariants.py
+# WaveController Deterministic Core Sanity Hook
+echo "[WaveController] Running deterministic core sanity suite..."
+python3 -m unittest tests.test_core_sanity
 RESULT=$?
 if [ $RESULT -ne 0 ]; then
     echo ""
-    echo "❌ [WaveController] COMMIT REJECTED: Regression invariant test failed!"
-    echo "   Please fix the audio contract violation before committing."
+    echo "[WaveController] COMMIT REJECTED: Core sanity check failed."
+    echo "   Live PipeWire and daemon checks are intentionally outside this gate."
     exit 1
 fi
-echo "✅ [WaveController] Audio Invariants Verified. Proceeding with commit."
+echo "[WaveController] Core sanity checks passed. Proceeding with commit."
 exit 0

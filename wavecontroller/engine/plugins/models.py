@@ -5,7 +5,7 @@ Defines data structures for VST3, LV2, LADSPA, CLAP, and Built-in DSP effects.
 
 from dataclasses import dataclass, field, asdict
 from enum import Enum
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Any
 
 
 class PluginFormat(str, Enum):

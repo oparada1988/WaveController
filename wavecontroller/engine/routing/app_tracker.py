@@ -8,7 +8,7 @@ Authoritatively isolates multi-stream child processes and handles WirePlumber ta
 import re
 import json
 import subprocess
-from wavecontroller.engine.graph.process_classifier import KNOWN_AUDIO_BINARIES, get_match_tokens, get_active_port_metadata_map, port_matches_tokens
+from wavecontroller.engine.graph.process_classifier import get_match_tokens, port_matches_tokens
 from wavecontroller.engine.graph.stream_resolver import get_multi_stream_numeric_ports
 from wavecontroller.utils.logger import get_logger
 

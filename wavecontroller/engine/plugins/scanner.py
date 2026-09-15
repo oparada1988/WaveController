@@ -168,7 +168,7 @@ class PluginScanner:
             return None
         name = os.path.basename(path.rstrip("/"))
         if name.endswith(".vst3"):
-            for root, _dirs, files in os.walk(path):
+            for _, _, files in os.walk(path):
                 if any(f.endswith(".so") for f in files):
                     return PluginFormat.VST3
             return None
@@ -780,7 +780,7 @@ class PluginScanner:
             index = int(index_match.group(1)) if index_match else len(parsed_ports)
             parsed_ports.append((index, block, symbol, name_match, default_match, min_match, max_match))
 
-        for _index, block, symbol, name_match, default_match, min_match, max_match in sorted(parsed_ports, key=lambda p: p[0]):
+        for _, block, symbol, name_match, default_match, min_match, max_match in sorted(parsed_ports, key=lambda p: p[0]):
             if "lv2:AudioPort" in block:
                 if "lv2:InputPort" in block:
                     audio_inputs.append(symbol)

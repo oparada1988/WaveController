@@ -2,7 +2,6 @@
 import time
 import sys
 import os
-import json
 import subprocess
 from datetime import datetime
 

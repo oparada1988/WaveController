@@ -3,8 +3,6 @@ import gi
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import Gtk, Adw, GLib
-import math
-from ..engine.config_manager import config_manager
 from ..utils.gtk_helpers import blocked_handler
 
 class UnifiedDeviceSettingsView(Gtk.Box):
