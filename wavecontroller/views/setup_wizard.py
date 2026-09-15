@@ -581,6 +581,9 @@ class SetupWizardDialog(Gtk.Window):
                 self.pipewire_mgr.provision_default_device_channels_and_mix(device_key=sel_mic_key, device_name=mic_name, is_input=True, is_output=False)
             elif sel_out_key != "default":
                 self.pipewire_mgr.provision_default_device_channels_and_mix(device_key=sel_out_key, device_name=mic_name, is_input=True, is_output=True)
+            self.pipewire_mgr.ensure_desktop_audio_channel(
+                select_default=config_manager.get("system_defaults_enabled", False)
+            )
 
         self._can_close = True
         self.close()

@@ -325,14 +325,11 @@ class MixHeaderCard(Gtk.Box):
             return
         is_default = self.pipewire_mgr.is_mix_system_default(self.mix_info["id"]) if self.pipewire_mgr else False
         m_type = self.mix_info.get("type", "source" if self.mix_info.get("id") != "personal" else "sink")
-        if is_default:
+        if is_default and m_type == "source":
             self.default_badge.set_visible(True)
             self.default_badge.remove_css_class("primary")
             self.default_badge.add_css_class("online")
-            if m_type == "sink" or self.mix_info.get("id") == "personal":
-                self.default_badge.set_text("Default Output")
-            else:
-                self.default_badge.set_text("Default Input")
+            self.default_badge.set_text("Default Input")
         else:
             self.default_badge.set_visible(False)
 

@@ -717,6 +717,7 @@ class WaveMainWindow(Adw.ApplicationWindow):
 
     def _on_system_defaults_changed(self):
         if hasattr(self, "mixer_view") and self.mixer_view:
+            self.mixer_view.rebuild_matrix()
             self.mixer_view.refresh_all_faders()
         if hasattr(self, "settings_view") and hasattr(self.settings_view, "refresh_mix_defaults"):
             self.settings_view.refresh_mix_defaults()
@@ -800,5 +801,7 @@ class WaveMainWindow(Adw.ApplicationWindow):
         self._rebuild_device_views()
         if hasattr(self, "mixer_view"):
             self.mixer_view.rebuild_matrix()
+        if hasattr(self, "settings_view") and hasattr(self.settings_view, "refresh_mix_defaults"):
+            self.settings_view.refresh_mix_defaults()
 
 

@@ -310,7 +310,12 @@ class MultiChannelPeakMonitor:
 
                 # 1A. Dedicated Pre-Fader Channel Virtual Ingestion Nodes (Permanent 0ms Metering)
                 sink_node = f"WaveController_Channel_{ch_id}"
-                has_mon = any(p.startswith(f"{sink_node}:monitor_") or p.startswith(f"{sink_node}:output_") for p in all_ports)
+                has_mon = any(
+                    re.sub(r'^\d+\s+', '', p).strip().startswith(
+                        (f"{sink_node}:monitor_", f"{sink_node}:output_")
+                    )
+                    for p in all_ports
+                )
                 if has_mon:
                     if sink_node not in target_map:
                         target_map[sink_node] = {"channels": 2, "is_sink": True, "keys": set()}

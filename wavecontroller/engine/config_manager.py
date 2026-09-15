@@ -20,6 +20,7 @@ class ConfigManager:
         "mixes": [],
         "assigned_apps": {},
         "system_defaults_enabled": False,
+        "default_output_channel_id": "",
         "pipewire_quantum": 512,
         "sidebar_collapsed": False,
         "channel_states": {},

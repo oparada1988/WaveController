@@ -50,7 +50,7 @@ class ChannelCard(Gtk.Box):
         assigned_apps = self.pipewire_mgr.get_assigned_apps(ch_id) if self.pipewire_mgr else []
         has_elgato_token = any("elgato" in a.lower() or "wave xlr" in a.lower() or "wave:3" in a.lower() or "wave:1" in a.lower() or "0fd9" in a.lower() for a in assigned_apps) or any(k in ch_name for k in ("elgato", "wave xlr", "wave:3", "wave:1", "wave neo"))
         is_hardware_elgato = bool(self.hardware_mgr and getattr(self.hardware_mgr, "is_elgato", False))
-        self.is_mic_channel = is_source or any(k in ch_id.lower() for k in ("mic", "fefine", "fifine", "capture", "input")) or (ch_type not in ("sink", "app", "group") and any(k in ch_name for k in ("mic", "fefine", "fifine", "capture", "input", "microphone")))
+        self.is_mic_channel = is_source or (ch_type != "virtual" and any(k in ch_id.lower() for k in ("mic", "fefine", "fifine", "capture", "input"))) or (ch_type not in ("sink", "app", "group", "virtual") and any(k in ch_name for k in ("mic", "fefine", "fifine", "capture", "input", "microphone")))
         
         # 48V Phantom Power is exclusively available on Wave XLR hardware and XLR audio interfaces
         has_xlr_token = any("wave xlr" in a.lower() or "wave_xlr" in a.lower() or "0fd9:007d" in a.lower() for a in assigned_apps) or any(k in ch_name for k in ("wave xlr", "wave_xlr", "xlr"))
@@ -117,7 +117,15 @@ class ChannelCard(Gtk.Box):
             # Application playback channel: show assigned apps subtitle
             assigned = self.pipewire_mgr.get_assigned_apps(channel_info["id"]) if self.pipewire_mgr else []
             clean_assigned = [a for a in assigned if not a.startswith("usb-") and not a.startswith("alsa_card.")]
-            sub_text = ", ".join(clean_assigned[:2]) if clean_assigned else "No apps assigned"
+            if ch_type == "virtual":
+                is_system_default = bool(
+                    self.pipewire_mgr
+                    and hasattr(self.pipewire_mgr, "is_channel_system_default")
+                    and self.pipewire_mgr.is_channel_system_default(channel_info["id"])
+                )
+                sub_text = "System Audio Device" if is_system_default else "Virtual Audio Device"
+            else:
+                sub_text = ", ".join(clean_assigned[:2]) if clean_assigned else "No apps assigned"
             self.sub_lbl = Gtk.Label(label=sub_text)
             self.sub_lbl.add_css_class("mix-header-subtitle")
             self.sub_lbl.set_halign(Gtk.Align.START)
@@ -126,6 +134,14 @@ class ChannelCard(Gtk.Box):
             self.sub_lbl.set_visible(sub_text.strip().lower() != display_name.strip().lower())
             title_box.append(self.sub_lbl)
             self.badge_lbl = None
+
+        self.default_output_badge = Gtk.Label(label="Default Output")
+        self.default_output_badge.add_css_class("device-badge")
+        self.default_output_badge.add_css_class("online")
+        self.default_output_badge.set_halign(Gtk.Align.START)
+        self.default_output_badge.set_valign(Gtk.Align.CENTER)
+        title_box.append(self.default_output_badge)
+        self.refresh_default_output_badge()
 
         self.header_box.append(title_box)
 
@@ -317,7 +333,7 @@ class ChannelCard(Gtk.Box):
             return not getattr(self.hardware_mgr, "is_connected", True)
 
         # If it's a physical source or hardware input channel
-        if ch_type == "source" or any(k in ch_id for k in ("mic", "fefine", "fifine", "capture", "input")):
+        if ch_type == "source" or (ch_type != "virtual" and any(k in ch_id for k in ("mic", "fefine", "fifine", "capture", "input"))):
             discovered = getattr(self.hardware_mgr, "discovered_devices", {})
             assigned = self.pipewire_mgr.get_assigned_apps(self.channel_info["id"]) if self.pipewire_mgr else []
 
@@ -341,6 +357,14 @@ class ChannelCard(Gtk.Box):
             if dev_icon and dev_icon not in ("audio-input-microphone-symbolic", "network-offline-symbolic"):
                 return dev_icon
             return "elgato-wave-xlr-symbolic"
+
+        if str(self.channel_info.get("type", "")).lower() == "virtual":
+            is_system_default = bool(
+                self.pipewire_mgr
+                and hasattr(self.pipewire_mgr, "is_channel_system_default")
+                and self.pipewire_mgr.is_channel_system_default(self.channel_info["id"])
+            )
+            return "computer-symbolic" if is_system_default else "audio-card-symbolic"
 
         ch_icon = self.channel_info.get("icon")
         if ch_icon and ch_icon not in ("network-offline-symbolic", "elgato-wave-xlr-symbolic"):
@@ -1170,6 +1194,19 @@ class ChannelCard(Gtk.Box):
         if hasattr(self, "fx_btn") and self.fx_btn:
             self.update_fx_state()
 
+        self.refresh_default_output_badge()
+
+    def refresh_default_output_badge(self):
+        """Shows the system output badge only on the selected virtual channel."""
+        is_default = bool(
+            self.pipewire_mgr
+            and hasattr(self.pipewire_mgr, "is_channel_system_default")
+            and self.pipewire_mgr.is_channel_system_default(self.channel_info["id"])
+        )
+        self.default_output_badge.set_visible(is_default)
+        if str(self.channel_info.get("type", "")).lower() == "virtual" and hasattr(self, "icon_img"):
+            self.icon_img.set_from_icon_name(self._resolve_icon())
+
     def _on_hardware_synced(self, curr: dict, changed: dict):
         if not (getattr(self, "is_mic_channel", False) or getattr(self, "is_wave_channel", False)):
             return
@@ -1370,8 +1407,16 @@ class ChannelCard(Gtk.Box):
             return
 
         ch_id = self.channel_info["id"]
-        all_apps = self.pipewire_mgr.get_channel_all_apps(ch_id) if self.pipewire_mgr else []
-        if all_apps:
+        ch_type = str(self.channel_info.get("type", "sink")).lower()
+        all_apps = self.pipewire_mgr.get_channel_all_apps(ch_id) if self.pipewire_mgr and ch_type != "virtual" else []
+        if ch_type == "virtual":
+            is_system_default = bool(
+                self.pipewire_mgr
+                and hasattr(self.pipewire_mgr, "is_channel_system_default")
+                and self.pipewire_mgr.is_channel_system_default(ch_id)
+            )
+            sub_text = "System Audio Device" if is_system_default else "Virtual Audio Device"
+        elif all_apps:
             app_names = [a["name"] for a in all_apps]
             if len(app_names) > 2:
                 sub_text = f"{', '.join(app_names[:2])} (+{len(app_names)-2})"

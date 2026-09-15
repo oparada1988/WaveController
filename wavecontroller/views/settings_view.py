@@ -44,10 +44,10 @@ class SettingsView(Gtk.Box):
         self.system_defaults_switch.set_active(config_manager.get("system_defaults_enabled", False))
         grp_hw.add(self.system_defaults_switch)
 
-        # System Default Output Mix (replaces per-mix toggle in mix_header)
+        # System Default Output Channel
         self.default_output_mix_combo = Adw.ComboRow(
-            title="System Default Output Mix",
-            subtitle="OS applications will route audio to this mix by default"
+            title="System Default Output Channel",
+            subtitle="Unassigned applications will route to this virtual channel"
         )
         # System Default Input Mix
         self.default_input_mix_combo = Adw.ComboRow(
@@ -55,7 +55,7 @@ class SettingsView(Gtk.Box):
             subtitle="OS applications will capture audio from this mix by default"
         )
 
-        self._output_mix_ids = []
+        self._output_channel_ids = []
         self._input_mix_ids = []
         self._refreshing_mix_combos = False
         self._output_mix_handler_id = None
@@ -69,30 +69,28 @@ class SettingsView(Gtk.Box):
                     if not self.pipewire_mgr:
                         return
 
-                    # Populate output mixes (type=sink or personal mix)
-                    output_mix_opts = []
+                    output_channel_opts = [("", "Not configured")]
                     input_mix_opts = []
                     mixes = list(self.pipewire_mgr.mixes)
 
+                    for channel in self.pipewire_mgr.channels:
+                        if channel.get("type") == "virtual" and channel.get("expose_sink", False):
+                            output_channel_opts.append((channel["id"], channel.get("name", channel["id"])))
+
                     for m in mixes:
                         m_type = m.get("type", "source" if m.get("id") != "personal" else "sink")
-                        if m_type == "sink" or m.get("id") in ("personal", "personal_mix"):
-                            output_mix_opts.append((m["id"], m.get("name", m["id"])))
-                        else:
+                        if m_type == "source":
                             input_mix_opts.append((m["id"], m.get("name", m["id"])))
 
-                    if not output_mix_opts:
-                        output_mix_opts = [("personal", "Personal Mix")]
                     if not input_mix_opts:
                         input_mix_opts = [("chat_mix", "Chat Mix")]
 
-                    self._output_mix_ids = [opt[0] for opt in output_mix_opts]
-                    self.default_output_mix_combo.set_model(Gtk.StringList.new([opt[1] for opt in output_mix_opts]))
+                    self._output_channel_ids = [opt[0] for opt in output_channel_opts]
+                    self.default_output_mix_combo.set_model(Gtk.StringList.new([opt[1] for opt in output_channel_opts]))
 
-                    # Select the current default output mix
                     sel_out = 0
-                    for idx, mid in enumerate(self._output_mix_ids):
-                        if self.pipewire_mgr.is_mix_system_default(mid):
+                    for idx, channel_id in enumerate(self._output_channel_ids):
+                        if channel_id and self.pipewire_mgr.is_channel_system_default(channel_id):
                             sel_out = idx
                             break
                     self.default_output_mix_combo.set_selected(sel_out)
@@ -117,10 +115,10 @@ class SettingsView(Gtk.Box):
             if self._refreshing_mix_combos:
                 return
             idx = row.get_selected()
-            if 0 <= idx < len(self._output_mix_ids):
-                mix_id = self._output_mix_ids[idx]
+            if 0 <= idx < len(self._output_channel_ids):
+                channel_id = self._output_channel_ids[idx]
                 if self.pipewire_mgr:
-                    self.pipewire_mgr.set_mix_system_default(mix_id, True)
+                    self.pipewire_mgr.set_channel_system_default(channel_id or None, bool(channel_id))
                 if self.on_hw_defaults_changed:
                     self.on_hw_defaults_changed()
 
@@ -149,6 +147,7 @@ class SettingsView(Gtk.Box):
             enabled = row.get_active()
             config_manager.set("system_defaults_enabled", enabled, immediate=True)
             if enabled and self.pipewire_mgr:
+                self.pipewire_mgr.ensure_desktop_audio_channel(select_default=True)
                 self.pipewire_mgr._apply_configured_system_defaults()
             if self.on_hw_defaults_changed:
                 self.on_hw_defaults_changed()

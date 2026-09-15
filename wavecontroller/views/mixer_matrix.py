@@ -705,7 +705,36 @@ class MixerMatrixView(Gtk.Box):
         group_cat_btn.set_child(group_row)
         cat_box.append(group_cat_btn)
 
-        # Category 2: Application
+        # Category 2: Virtual Channel
+        virtual_cat_btn = Gtk.Button()
+        virtual_cat_btn.add_css_class("flat")
+        virtual_cat_btn.add_css_class("wave-sidebar-row")
+
+        virtual_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+        virtual_icon = Gtk.Image.new_from_icon_name("audio-card-symbolic")
+        virtual_icon.set_pixel_size(22)
+        virtual_row.append(virtual_icon)
+
+        virtual_text_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=1)
+        virtual_text_box.set_hexpand(True)
+        virtual_title = Gtk.Label(label="Virtual Channel")
+        virtual_title.add_css_class("channel-title")
+        virtual_title.set_halign(Gtk.Align.START)
+        virtual_text_box.append(virtual_title)
+
+        virtual_desc = Gtk.Label(label="Expose a system audio output device")
+        virtual_desc.add_css_class("mix-header-subtitle")
+        virtual_desc.set_halign(Gtk.Align.START)
+        virtual_text_box.append(virtual_desc)
+        virtual_row.append(virtual_text_box)
+
+        arrow_virtual = Gtk.Image.new_from_icon_name("go-next-symbolic")
+        arrow_virtual.set_pixel_size(14)
+        virtual_row.append(arrow_virtual)
+        virtual_cat_btn.set_child(virtual_row)
+        cat_box.append(virtual_cat_btn)
+
+        # Category 3: Application
         app_cat_btn = Gtk.Button()
         app_cat_btn.add_css_class("flat")
         app_cat_btn.add_css_class("wave-sidebar-row")
@@ -734,7 +763,7 @@ class MixerMatrixView(Gtk.Box):
         app_cat_btn.set_child(app_row)
         cat_box.append(app_cat_btn)
 
-        # Category 3: Input Device
+        # Category 4: Input Device
         dev_cat_btn = Gtk.Button()
         dev_cat_btn.add_css_class("flat")
         dev_cat_btn.add_css_class("wave-sidebar-row")
@@ -846,6 +875,7 @@ class MixerMatrixView(Gtk.Box):
                             self.pipewire_mgr.add_channel(name, icon=ic, ch_type="app", assigned_apps=[name])
                             popover.popdown()
                             GLib.idle_add(self._rebuild_grid)
+                            self._notify_channel_list_changed()
                         return handler
 
                     item_btn.connect("clicked", make_app_click_handler(app_name, icon_name))
@@ -936,6 +966,7 @@ class MixerMatrixView(Gtk.Box):
                             self.pipewire_mgr.add_channel(name, icon=icon, ch_type="source", assigned_apps=assigned)
                             popover.popdown()
                             GLib.idle_add(self._rebuild_grid)
+                            self._notify_channel_list_changed()
                         return handler
 
                     dev_item_btn.connect("clicked", make_dev_click_handler(dev_name, dev_icon, dev_info))
@@ -1001,6 +1032,7 @@ class MixerMatrixView(Gtk.Box):
                 self.pipewire_mgr.add_channel(name, ch_type="app", assigned_apps=[name])
                 popover.popdown()
                 GLib.idle_add(self._rebuild_grid)
+                self._notify_channel_list_changed()
 
         cust_app_btn.connect("clicked", on_cust_app_add)
         app_entry.connect("activate", on_cust_app_add)
@@ -1052,7 +1084,74 @@ class MixerMatrixView(Gtk.Box):
         stack.add_named(dev_page_box, "device_page")
 
         # ==========================================
-        # PAGE 4: App Group Channel Creator
+        # PAGE 4: Virtual Channel Creator
+        # ==========================================
+        virtual_page_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        virtual_page_box.set_margin_top(12)
+        virtual_page_box.set_margin_bottom(12)
+        virtual_page_box.set_margin_start(12)
+        virtual_page_box.set_margin_end(12)
+        virtual_page_box.set_size_request(280, -1)
+
+        virtual_top_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        back_virtual_btn = Gtk.Button.new_from_icon_name("go-previous-symbolic")
+        back_virtual_btn.add_css_class("flat")
+        back_virtual_btn.add_css_class("wave-icon-btn")
+        back_virtual_btn.connect("clicked", lambda b: stack.set_visible_child_name("cat_page"))
+        virtual_top_box.append(back_virtual_btn)
+
+        virtual_head_lbl = Gtk.Label(label="Create Virtual Channel")
+        virtual_head_lbl.add_css_class("mix-header-title")
+        virtual_head_lbl.set_halign(Gtk.Align.START)
+        virtual_top_box.append(virtual_head_lbl)
+        virtual_page_box.append(virtual_top_box)
+
+        virtual_name_lbl = Gtk.Label(label="Channel Name:")
+        virtual_name_lbl.add_css_class("mix-header-subtitle")
+        virtual_name_lbl.set_halign(Gtk.Align.START)
+        virtual_page_box.append(virtual_name_lbl)
+
+        virtual_name_entry = Gtk.Entry(placeholder_text="e.g. Browser, Game, Music")
+        virtual_page_box.append(virtual_name_entry)
+
+        virtual_actions_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        virtual_actions_box.set_margin_top(6)
+
+        virtual_cancel_btn = Gtk.Button(label="Cancel")
+        virtual_cancel_btn.add_css_class("destructive-action")
+        virtual_cancel_btn.set_hexpand(True)
+        virtual_cancel_btn.connect("clicked", lambda b: popover.popdown())
+        virtual_actions_box.append(virtual_cancel_btn)
+
+        create_virtual_btn = Gtk.Button(label="Create Channel")
+        create_virtual_btn.add_css_class("suggested-action")
+        create_virtual_btn.set_hexpand(True)
+
+        def on_create_virtual_clicked(b=None):
+            name = virtual_name_entry.get_text().strip()
+            if not name:
+                return
+            self.pipewire_mgr.add_channel(
+                name,
+                icon="audio-card-symbolic",
+                ch_type="virtual",
+                assigned_apps=[],
+                expose_sink=True,
+            )
+            popover.popdown()
+            GLib.idle_add(self._rebuild_grid)
+            self._notify_channel_list_changed()
+
+        create_virtual_btn.connect("clicked", on_create_virtual_clicked)
+        virtual_name_entry.connect("activate", on_create_virtual_clicked)
+        virtual_actions_box.append(create_virtual_btn)
+        virtual_page_box.append(virtual_actions_box)
+
+        stack.add_named(virtual_page_box, "virtual_page")
+        virtual_cat_btn.connect("clicked", lambda b: stack.set_visible_child_name("virtual_page"))
+
+        # ==========================================
+        # PAGE 5: App Group Channel Creator
         # ==========================================
         group_page_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
         group_page_box.set_margin_top(12)
@@ -1194,6 +1293,7 @@ class MixerMatrixView(Gtk.Box):
             self.pipewire_mgr.add_channel(name, icon="folder-symbolic", ch_type="group", assigned_apps=apps_list, expose_sink=exp_sink)
             popover.popdown()
             GLib.idle_add(self._rebuild_grid)
+            self._notify_channel_list_changed()
 
         create_group_btn.connect("clicked", on_create_group_clicked)
         group_actions_box.append(create_group_btn)
@@ -1204,6 +1304,7 @@ class MixerMatrixView(Gtk.Box):
         def reset_create_channel_popover():
             stack.set_visible_child_name("cat_page")
             app_entry.set_text("")
+            virtual_name_entry.set_text("")
 
         popover.connect("closed", lambda p: reset_create_channel_popover())
 
@@ -1435,6 +1536,12 @@ class MixerMatrixView(Gtk.Box):
     def _on_channel_deleted(self, ch_id: str):
         self.pipewire_mgr.remove_channel(ch_id)
         GLib.idle_add(self._rebuild_grid)
+        self._notify_channel_list_changed()
+
+    def _notify_channel_list_changed(self):
+        """Refreshes views whose options depend on the configured channel list."""
+        if self.on_mix_list_changed:
+            self.on_mix_list_changed()
 
     def _on_link_toggled(self, channel_id: str, is_linked: bool):
         if channel_id in self.channel_cards:
@@ -1551,6 +1658,10 @@ class MixerMatrixView(Gtk.Box):
             card.set_master_volume(vol, muted)
             if hasattr(card, "refresh_hardware_state"):
                 card.refresh_hardware_state()
+            if hasattr(card, "refresh_default_output_badge"):
+                card.refresh_default_output_badge()
+            if hasattr(card, "refresh_apps"):
+                card.refresh_apps()
 
         for (channel_id, mix_id), cell in list(self.matrix_cells.items()):
             if hasattr(cell, "update_ui_state"):

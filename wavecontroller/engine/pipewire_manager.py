@@ -266,11 +266,11 @@ class PipeWireManager:
 
             if m_id == "personal" or m_type == "sink":
                 node_name = f"WaveController_{m_id}_Sink"
-                needed_nodes[node_name] = (f"WaveController {m_name} (Sink)", "Audio/Sink", False)
+                needed_nodes[node_name] = (f"WaveController {m_name} (Sink)", "Audio/Sink", True)
             else:
                 node_name = f"WaveController_{m_id}_Source"
                 # Audio/Source/Virtual (not Audio/Duplex) so GNOME/OBS list it as input-only, not also as an output
-                needed_nodes[node_name] = (f"WaveController {m_name}", "Audio/Source/Virtual")
+                needed_nodes[node_name] = (f"WaveController {m_name}", "Audio/Source/Virtual", False)
 
         # Provision dedicated pre-fader virtual ingestion nodes ONLY for exposed Group Channels
         for ch in channels_copy:
@@ -315,6 +315,10 @@ class PipeWireManager:
                         obj_id = obj.get("id")
                         if obj_id:
                             subprocess.run(["pw-cli", "destroy", str(obj_id)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    elif (str(props.get("node.hidden", False)).lower() in ("true", "1")) != needed_nodes[n_name][2]:
+                        obj_id = obj.get("id")
+                        if obj_id:
+                            subprocess.run(["pw-cli", "destroy", str(obj_id)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                     elif n_name in existing_active_names:
                         # Duplicate node with identical name already tracked! Destroy duplicate to ensure strict 1:1 node cardinality
                         obj_id = obj.get("id")
@@ -330,8 +334,10 @@ class PipeWireManager:
         for node_name, node_tuple in needed_nodes.items():
             desc = node_tuple[0]
             media_class = node_tuple[1]
+            is_hidden = node_tuple[2]
             if node_name not in existing_active_names:
-                cmd = f'{{ factory.name=support.null-audio-sink node.name="{node_name}" node.description="{desc}" media.class={media_class} object.linger=true }}'
+                hidden_value = "true" if is_hidden else "false"
+                cmd = f'{{ factory.name=support.null-audio-sink node.name="{node_name}" node.description="{desc}" media.class={media_class} node.hidden={hidden_value} object.linger=true }}'
                 try:
                     result = subprocess.run(
                         ["pw-cli", "create-node", "adapter", cmd],
@@ -1025,7 +1031,7 @@ class PipeWireManager:
             elif self.is_channel_sink_exposed(channel_id):
                 target_sink = f"WaveController_Channel_{channel_id}"
             else:
-                target_sink = "WaveController_personal_Sink"
+                target_sink = None
             out = subprocess.check_output(["pw-dump"], text=True, stderr=subprocess.DEVNULL)
             data = json.loads(out)
             tokens = self._get_match_tokens(app_name)
@@ -1036,10 +1042,20 @@ class PipeWireManager:
                         if self._node_matches_tokens(props, tokens):
                             nid = obj["id"]
                             if nid not in self._bound_stream_nodes:
-                                subprocess.run(
-                                    ["pw-metadata", "-n", "default", str(nid), "target.object", target_sink],
-                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-                                )
+                                if target_sink:
+                                    subprocess.run(
+                                        ["pw-metadata", "-n", "default", str(nid), "target.object", target_sink],
+                                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+                                    )
+                                else:
+                                    subprocess.run(
+                                        ["pw-metadata", "-n", "default", "-d", str(nid), "target.object"],
+                                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+                                    )
+                                    subprocess.run(
+                                        ["pw-metadata", "-n", "default", str(nid), "target.node", "-1"],
+                                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+                                    )
                                 self._bound_stream_nodes.add(nid)
         except Exception:
             pass
@@ -1155,14 +1171,29 @@ class PipeWireManager:
         except Exception:
             return []
 
+    def _get_selected_virtual_output_node_name(self) -> str:
+        """Returns the configured virtual output node, if system-default management is active."""
+        if not config_manager.get("system_defaults_enabled", False):
+            return ""
+        selected_id = config_manager.get("default_output_channel_id", "")
+        with self._lock:
+            channel = next(
+                (
+                    ch for ch in self.channels
+                    if ch.get("id") == selected_id
+                    and ch.get("type") == "virtual"
+                    and ch.get("expose_sink", False)
+                ),
+                None,
+            )
+        return f"WaveController_Channel_{selected_id}" if channel else ""
+
     def _sync_unassigned_app_streams(self, out_ports=None, in_ports=None, links_map=None, port_meta=None):
-        """Routes unassigned application streams to the configured physical output device (fallback).
+        """Routes unassigned application streams to the selected virtual or physical fallback.
 
         An 'unassigned' stream is any Stream/Output/Audio PipeWire node that does NOT belong
-        to any channel's assigned_apps list. WirePlumber sets target.node=-1 for such streams
-        when it cannot find a valid default sink (because WaveController_personal_Sink has
-        replaced it). This method explicitly binds those streams to the physical hardware output
-        via pw-metadata target.object and pw-link, overriding the -1 inhibitor.
+        to any channel's assigned_apps list. If a virtual channel is selected as the system
+        output, it is the fallback; otherwise streams are released to physical hardware.
         """
         try:
             # 1. Build the complete set of match tokens for ALL assigned apps across ALL channels
@@ -1173,56 +1204,45 @@ class PipeWireManager:
 
             assigned_tokens_list = [self._get_match_tokens(a) for a in all_assigned_apps]
 
-            # 2. Resolve the physical output: node name (for WirePlumber) and playback ports (for pw-link)
-            phys_ports = self._get_default_sink_playback_ports()
-            if not phys_ports:
-                return
-
-            # Determine the physical sink node name — MUST be an alsa_output.* hardware node,
-            # never a WaveController virtual sink (which would create a silent routing loop).
-            phys_node_name = None
-            for p in phys_ports:
-                clean_p = re.sub(r'^\d+\s+', '', p).strip()
-                if clean_p.startswith("alsa_output.") and ":" in clean_p:
-                    phys_node_name = clean_p.split(":")[0]
-                    break
-
-            # If _get_default_sink_playback_ports returned virtual/non-hardware ports,
-            # fall back to scanning pw-dump for the configured monitor device directly.
-            if not phys_node_name:
-                with self._lock:
-                    mon_dev = getattr(self, "selected_monitor_device", None) or ""
+            # 2. Resolve the selected virtual channel, or physical hardware when none is selected.
+            target_node_name = self._get_selected_virtual_output_node_name()
+            all_in_ports = in_ports
+            if all_in_ports is None:
                 try:
-                    fallback_data = json.loads(subprocess.check_output(["pw-dump"], text=True, stderr=subprocess.DEVNULL))
-                    for _fb_obj in fallback_data:
-                        if _fb_obj.get("type") != "PipeWire:Interface:Node":
-                            continue
-                        _fb_props = _fb_obj.get("info", {}).get("props", {})
-                        _fb_name = _fb_props.get("node.name", "")
-                        if _fb_name.startswith("alsa_output.") and _fb_props.get("media.class") == "Audio/Sink":
-                            if not mon_dev or mon_dev.replace("alsa_output.", "").split(".")[0].lower() in _fb_name.lower():
-                                phys_node_name = _fb_name
-                                break
+                    raw_ports = subprocess.check_output(["pw-link", "-i"], text=True, stderr=subprocess.DEVNULL)
+                    all_in_ports = [line.strip() for line in raw_ports.splitlines() if line.strip()]
                 except Exception:
-                    pass
+                    all_in_ports = []
 
-            if not phys_node_name:
-                return
+            if target_node_name:
+                target_ports = [
+                    port for port in all_in_ports
+                    if re.sub(r'^\d+\s+', '', port).strip().startswith(f"{target_node_name}:")
+                    and (":playback_" in port or ":input_" in port)
+                ]
+                if not target_ports:
+                    return
+            else:
+                target_ports = self._get_default_sink_playback_ports()
+                target_node_name = next(
+                    (
+                        clean_port.split(":")[0]
+                        for port in target_ports
+                        for clean_port in [re.sub(r'^\d+\s+', '', port).strip()]
+                        if clean_port.startswith("alsa_output.") and ":" in clean_port
+                    ),
+                    "",
+                )
+                if not target_node_name:
+                    return
+                target_ports = [
+                    port for port in all_in_ports
+                    if re.sub(r'^\d+\s+', '', port).strip().startswith(f"{target_node_name}:")
+                    and ":playback_" in port
+                ] or target_ports
 
-            # Refresh phys_ports to ensure they are from the resolved physical node
-            try:
-                all_in_ports_raw = subprocess.check_output(["pw-link", "-i"], text=True, stderr=subprocess.DEVNULL)
-                all_in_ports = [l.strip() for l in all_in_ports_raw.splitlines() if l.strip()]
-                phys_ports = [p for p in all_in_ports if p.startswith(f"{phys_node_name}:") and ":playback_" in p]
-            except Exception:
-                pass
-
-            if not phys_ports:
-                return
-
-            # Separate FL/FR playback ports
-            phys_fl = [p for p in phys_ports if any(s in p.lower().split(":")[-1] for s in ("_fl", "playback_0", "playback_fl"))]
-            phys_fr = [p for p in phys_ports if any(s in p.lower().split(":")[-1] for s in ("_fr", "playback_1", "playback_fr"))]
+            target_fl = [p for p in target_ports if any(s in p.lower().split(":")[-1] for s in ("_fl", "playback_0", "playback_fl"))]
+            target_fr = [p for p in target_ports if any(s in p.lower().split(":")[-1] for s in ("_fr", "playback_1", "playback_fr"))]
 
             # 3. Enumerate all live Stream/Output/Audio nodes from pw-dump
             try:
@@ -1286,17 +1306,15 @@ class PipeWireManager:
                     self._bound_unassigned_nodes.discard(nid)
                     continue
 
-                # 5. This is a genuinely unassigned stream — bind it to the physical output
+                # 5. This is a genuinely unassigned stream — bind it to the selected fallback
                 if nid not in self._bound_unassigned_nodes:
-                    # Assert WirePlumber target.object → physical hardware sink
-                    # This overrides the -1 inhibitor WirePlumber sets when it can't find the default sink
                     subprocess.run(
-                        ["pw-metadata", "-n", "default", str(nid), "target.object", phys_node_name],
+                        ["pw-metadata", "-n", "default", str(nid), "target.object", target_node_name],
                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
                     )
                     self._bound_unassigned_nodes.add(nid)
                     log.info(f"[WaveController.PipeWire] Unassigned stream '{app_name or node_name}' (id={nid}) "
-                             f"bound to physical output '{phys_node_name}' via fallback routing.")
+                             f"bound to fallback output '{target_node_name}'.")
 
                 # 6. Belt-and-suspenders: also pw-link directly to physical FL/FR ports
                 # Resolve this node's output ports from the provided out_ports list
@@ -1320,14 +1338,20 @@ class PipeWireManager:
                 cur_links = links_map or {}
                 for src_port in app_fl_ports:
                     existing_dests = {re.sub(r'^\d+\s+', '', d).strip() for d in cur_links.get(src_port, set())}
-                    for dest in phys_fl:
+                    for stale_dest in existing_dests:
+                        if stale_dest.startswith(("alsa_output.", "WaveController_Channel_", "WaveController_personal_Sink:")) and not stale_dest.startswith(f"{target_node_name}:"):
+                            subprocess.run(["pw-link", "-d", src_port, stale_dest], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    for dest in target_fl:
                         clean_dest = re.sub(r'^\d+\s+', '', dest).strip()
                         if clean_dest not in existing_dests:
                             subprocess.run(["pw-link", src_port, clean_dest], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
                 for src_port in app_fr_ports:
                     existing_dests = {re.sub(r'^\d+\s+', '', d).strip() for d in cur_links.get(src_port, set())}
-                    for dest in phys_fr:
+                    for stale_dest in existing_dests:
+                        if stale_dest.startswith(("alsa_output.", "WaveController_Channel_", "WaveController_personal_Sink:")) and not stale_dest.startswith(f"{target_node_name}:"):
+                            subprocess.run(["pw-link", "-d", src_port, stale_dest], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    for dest in target_fr:
                         clean_dest = re.sub(r'^\d+\s+', '', dest).strip()
                         if clean_dest not in existing_dests:
                             subprocess.run(["pw-link", src_port, clean_dest], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -1744,7 +1768,15 @@ class PipeWireManager:
                 for src_p, dests in links_map.items():
                     if ":output_" in src_p and self._port_matches_tokens(src_p, tokens, port_meta):
                         for dest_p in dests:
-                            if dest_p.startswith("WaveController_Fallback_Sink:") or "WaveController_fallback" in dest_p or dest_p.startswith("WaveController_personal_mix_Sink:"):
+                            if (
+                                dest_p.startswith("WaveController_Fallback_Sink:")
+                                or "WaveController_fallback" in dest_p
+                                or dest_p.startswith("WaveController_personal_mix_Sink:")
+                                or (
+                                    dest_p.startswith("WaveController_Channel_")
+                                    and not dest_p.startswith(f"WaveController_Channel_{channel_id}:")
+                                )
+                            ):
                                 try:
                                     subprocess.run(["pw-link", "-d", src_p, dest_p], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                                 except Exception:
@@ -2491,7 +2523,7 @@ class PipeWireManager:
                 # Virtual playback sinks (WaveController_Channel_<ch>):
                 # - When linked: virtual ingestion sink remains at unity (1.00) while submix loopback faders scale in lockstep.
                 # - When unlinked: apply master channel volume directly to the virtual ingestion sink as pre-fader channel attenuation.
-                is_virtual_sink = any(c.get("id") == channel_id and c.get("type") in ("sink", "group", "app") for c in self.channels)
+                is_virtual_sink = any(c.get("id") == channel_id and c.get("type") in ("sink", "group", "app", "virtual") for c in self.channels)
                 target_node_ids = set()
                 ch_sink_name = f"wavecontroller_channel_{channel_id}".lower()
 
@@ -2526,7 +2558,7 @@ class PipeWireManager:
                 # Priority 2: For hardware input capture sources (e.g. Fifine Mic, Mobo Mic) that don't use virtual playback sinks
                 if not target_node_ids:
                     ch_type = ch_obj.get("type", "source") if ch_obj else "source"
-                    is_source = (ch_type == "source") or (ch_type not in ("app", "sink", "group") and any(k in channel_id.lower() for k in ("mic", "fefine", "fifine", "microphone", "input", "capture", "mobo")))
+                    is_source = (ch_type == "source") or (ch_type not in ("app", "sink", "group", "virtual") and any(k in channel_id.lower() for k in ("mic", "fefine", "fifine", "microphone", "input", "capture", "mobo")))
                     if is_source:
                         hw_search = set([channel_id.lower()])
                         if "fefine" in hw_search:
@@ -2644,6 +2676,11 @@ class PipeWireManager:
                     except Exception:
                         pass
 
+    @staticmethod
+    def _get_playback_channel_output_ports(exposed: bool, app_ports: list, sink_monitor_ports: list) -> list:
+        """Selects the pre-fader audio source for a playback channel."""
+        return sink_monitor_ports if exposed else app_ports
+
     def _sync_channel_audio_routing(self, channel_id: str = None, mix_id: str = None,
                                      out_ports: list = None, in_ports: list = None,
                                      links_map: dict = None, port_meta: dict = None):
@@ -2710,7 +2747,7 @@ class PipeWireManager:
             ch_id = ch["id"]
             is_linked = self.is_channel_linked(ch_id)
             ch_type = ch.get("type", "sink")
-            is_source_channel = (ch_type == "source") or (ch_type not in ("app", "sink", "group") and any(k in ch_id.lower() for k in ("mic", "fefine", "fifine", "microphone", "elgato_wave_xlr", "input", "capture")))
+            is_source_channel = (ch_type == "source") or (ch_type not in ("app", "sink", "group", "virtual") and any(k in ch_id.lower() for k in ("mic", "fefine", "fifine", "microphone", "elgato_wave_xlr", "input", "capture")))
             
             # Find output ports for this channel
             ch_out_ports = []
@@ -2751,12 +2788,16 @@ class PipeWireManager:
                 sink_play_ports = [p for p in in_ports if re.sub(r'^\d+\s+', '', p).strip().startswith(f"{sink_node}:")]
                 sink_mon_ports = [p for p in out_ports if re.sub(r'^\d+\s+', '', p).strip().startswith(f"{sink_node}:")]
 
-                # Route assigned application outputs into the group ingestion node (if exposed group channel)
-                if ch.get("expose_sink", False) and app_out_ports and sink_play_ports:
-                    self._link_stereo_ports(app_out_ports, sink_play_ports, unlink=False)
-                    ch_out_ports = sink_mon_ports if sink_mon_ports else app_out_ports
-                else:
-                    ch_out_ports = app_out_ports
+                # Exposed channels always ingest from their sink monitor. Virtual channels
+                # receive system-default audio here even though they have no assigned apps.
+                if ch.get("expose_sink", False):
+                    if app_out_ports and sink_play_ports:
+                        self._link_stereo_ports(app_out_ports, sink_play_ports, unlink=False)
+                ch_out_ports = self._get_playback_channel_output_ports(
+                    ch.get("expose_sink", False),
+                    app_out_ports,
+                    sink_mon_ports,
+                )
 
             if not is_source_channel and app_out_ports:
                 has_active_sink_mix = any(m.get("type") == "sink" or m.get("id") in ("personal", "personal_mix") for m in mixes_copy)
@@ -3327,11 +3368,57 @@ class PipeWireManager:
         threading.Thread(target=_bg_provision, daemon=True).start()
         return new_ch
 
+    def ensure_desktop_audio_channel(self, select_default: bool = False) -> dict:
+        """Ensures the managed Desktop Audio channel exists and feeds Personal Mix."""
+        with self._lock:
+            channel = next(
+                (
+                    ch for ch in self.channels
+                    if ch.get("id") == "desktop_audio" and ch.get("type") == "virtual"
+                ),
+                None,
+            )
+
+        if channel is None:
+            channel = self.add_channel(
+                "Desktop Audio",
+                icon="audio-card-symbolic",
+                ch_type="virtual",
+                assigned_apps=[],
+                expose_sink=True,
+            )
+
+        with self._lock:
+            channel["name"] = "Desktop Audio"
+            channel["type"] = "virtual"
+            channel["icon"] = "audio-card-symbolic"
+            channel["expose_sink"] = True
+            self.assigned_apps.setdefault(channel["id"], [])
+            states = self.channel_states.setdefault(channel["id"], {})
+            for mix in self.mixes:
+                mix_id = mix["id"]
+                state = states.setdefault(
+                    mix_id,
+                    {"volume": channel.get("default_vol", 80), "muted": False, "linked": True, "enabled": False},
+                )
+                if mix_id in ("personal", "personal_mix"):
+                    state["enabled"] = True
+            self._save_state_to_config(immediate=True)
+
+        if select_default:
+            selected_id = config_manager.get("default_output_channel_id", "")
+            if not selected_id or not self.is_channel_system_default(selected_id):
+                self.set_channel_system_default(channel["id"], True)
+
+        return channel
+
     def remove_channel(self, channel_id: str) -> bool:
         with self._lock:
             ch_exists = any(c["id"] == channel_id for c in self.channels)
             if not ch_exists:
                 return False
+
+            was_system_default = config_manager.get("default_output_channel_id", "") == channel_id
 
             assigned = list(self.assigned_apps.get(channel_id, []))
             self.channels = [c for c in self.channels if c["id"] != channel_id]
@@ -3339,6 +3426,9 @@ class PipeWireManager:
             if hasattr(self, "channel_master_states") and isinstance(self.channel_master_states, dict):
                 self.channel_master_states.pop(channel_id, None)
             self.assigned_apps.pop(channel_id, None)
+            if was_system_default:
+                config_manager.set("default_output_channel_id", "", immediate=True)
+                self._bound_unassigned_nodes.clear()
 
             procs_to_terminate = []
             keys_to_remove = [k for k in list(self._submix_procs.keys()) if k[0] == channel_id]
@@ -3435,6 +3525,8 @@ class PipeWireManager:
 
             self._refresh_node_cache()
             self._ensure_virtual_mix_nodes()
+            if was_system_default and config_manager.get("system_defaults_enabled", False):
+                self._restore_physical_system_default("sink")
             self._sync_channel_audio_routing()
             self._notify_peak_monitor_refresh()
 
@@ -3633,14 +3725,12 @@ class PipeWireManager:
         with self._lock:
             for m in self.mixes:
                 if m.get("id") in (mix_id, canon_mix):
+                    m_type = m.get("type", "source" if m.get("id") != "personal" else "sink")
+                    if m_type != "source":
+                        return False
                     if m.get("is_default", False):
                         return True
-                    # Default fallbacks if no explicit is_default is set
-                    m_type = m.get("type", "source" if m.get("id") != "personal" else "sink")
-                    if m_type == "sink" and m.get("id") in ("personal", "personal_mix"):
-                        has_explicit = any(other.get("is_default", False) for other in self.mixes if (other.get("type") == "sink" or other.get("id") == "personal"))
-                        return not has_explicit
-                    elif m_type == "source" and m.get("id") in ("chat_mix", "chat"):
+                    if m_type == "source" and m.get("id") in ("chat_mix", "chat"):
                         has_explicit = any(
                             other.get("is_default", False)
                             for other in self.mixes
@@ -3650,21 +3740,117 @@ class PipeWireManager:
         return False
 
     def _apply_configured_system_defaults(self):
-        """Applies saved mix defaults only after the user has opted in."""
+        """Applies the selected virtual output channel and source mix after opt-in."""
         if not config_manager.get("system_defaults_enabled", False):
             return
 
-        selected_types = set()
+        output_channel_id = config_manager.get("default_output_channel_id", "")
+        output_applied = bool(output_channel_id) and self.set_channel_system_default(output_channel_id, True)
+        if not output_applied:
+            config_manager.set("default_output_channel_id", "", immediate=True)
+            with self._lock:
+                self._bound_unassigned_nodes.clear()
+                for mix in self.mixes:
+                    mix_type = mix.get("type", "source" if mix.get("id") != "personal" else "sink")
+                    if mix_type == "sink" or mix.get("id") in ("personal", "personal_mix"):
+                        mix["is_default"] = False
+                self._save_state_to_config(immediate=True)
+            self._restore_physical_system_default("sink")
+
         for mix in list(self.mixes):
             mix_type = mix.get("type", "source" if mix.get("id") != "personal" else "sink")
-            if mix_type in selected_types:
-                continue
-            if self.is_mix_system_default(mix["id"]):
+            if mix_type == "source" and self.is_mix_system_default(mix["id"]):
                 self.set_mix_system_default(mix["id"], True)
-                selected_types.add(mix_type)
+                break
+
+    def is_channel_system_default(self, channel_id: str) -> bool:
+        """Returns whether an exposed virtual channel is selected as the system output."""
+        selected_id = config_manager.get("default_output_channel_id", "")
+        with self._lock:
+            return selected_id == channel_id and any(
+                ch.get("id") == channel_id
+                and ch.get("type") == "virtual"
+                and ch.get("expose_sink", False)
+                for ch in self.channels
+            )
+
+    def set_channel_system_default(self, channel_id: str = None, is_default: bool = True) -> bool:
+        """Selects an exposed virtual channel as the system playback default."""
+        target_node_name = None
+        with self._lock:
+            if is_default:
+                channel = next(
+                    (
+                        ch for ch in self.channels
+                        if ch.get("id") == channel_id
+                        and ch.get("type") == "virtual"
+                        and ch.get("expose_sink", False)
+                    ),
+                    None,
+                )
+                if not channel:
+                    return False
+                target_node_name = f"WaveController_Channel_{channel_id}"
+                config_manager.set("default_output_channel_id", channel_id, immediate=True)
+            else:
+                selected_id = config_manager.get("default_output_channel_id", "")
+                if channel_id and selected_id != channel_id:
+                    return False
+                config_manager.set("default_output_channel_id", "", immediate=True)
+
+            self._bound_unassigned_nodes.clear()
+            for mix in self.mixes:
+                mix_type = mix.get("type", "source" if mix.get("id") != "personal" else "sink")
+                if mix_type == "sink" or mix.get("id") in ("personal", "personal_mix"):
+                    mix["is_default"] = False
+            self._save_state_to_config(immediate=True)
+
+        if not config_manager.get("system_defaults_enabled", False):
+            return True
+
+        if target_node_name:
+            def _apply_default_node():
+                for attempt in range(20):
+                    try:
+                        data = json.loads(subprocess.check_output(["pw-dump"], text=True, stderr=subprocess.DEVNULL))
+                        node_id = next(
+                            (
+                                str(obj["id"])
+                                for obj in data
+                                if obj.get("type") == "PipeWire:Interface:Node"
+                                and obj.get("info", {}).get("props", {}).get("node.name") == target_node_name
+                            ),
+                            None,
+                        )
+                        if node_id:
+                            node_json = json.dumps({"name": target_node_name})
+                            subprocess.run(
+                                ["pw-metadata", "-n", "default", "0", "default.audio.sink", node_json],
+                                stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL,
+                            )
+                            subprocess.run(
+                                ["pw-metadata", "-n", "default", "0", "default.configured.audio.sink", node_json],
+                                stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL,
+                            )
+                            subprocess.run(["wpctl", "set-default", node_id], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                            self._sync_unassigned_app_streams()
+                            return
+                    except Exception as exc:
+                        if attempt == 19:
+                            log.warning(f"[WaveController.PipeWire] Failed to set virtual default output: {exc}")
+                    time.sleep(0.1)
+                log.warning(f"[WaveController.PipeWire] Selected virtual output '{target_node_name}' is not available")
+
+            threading.Thread(target=_apply_default_node, daemon=True).start()
+        else:
+            self._restore_physical_system_default("sink")
+
+        return True
 
     def set_mix_system_default(self, mix_id: str, is_default: bool = True) -> bool:
-        """Sets or unsets a mix as the system default audio sink (for Output mixes) or source (for Input mixes)."""
+        """Sets or unsets a source mix as the system default audio input."""
         canon_mix = self._match_mix_id(mix_id)
         defaults_enabled = config_manager.get("system_defaults_enabled", False)
         target_node_name = None
@@ -3674,6 +3860,10 @@ class PipeWireManager:
             if not target_mix:
                 return False
             m_type = target_mix.get("type", "source" if target_mix.get("id") != "personal" else "sink")
+            if m_type != "source":
+                target_mix["is_default"] = False
+                self._save_state_to_config(immediate=True)
+                return False
             for m in self.mixes:
                 curr_type = m.get("type", "source" if m.get("id") != "personal" else "sink")
                 if curr_type == m_type:
@@ -3738,25 +3928,28 @@ class PipeWireManager:
 
             threading.Thread(target=_apply_default_node, daemon=True).start()
         elif not is_default and defaults_enabled:
-            try:
-                out = subprocess.check_output(["pw-dump"], text=True, stderr=subprocess.DEVNULL)
-                for obj in json.loads(out):
-                    if obj.get("type") == "PipeWire:Interface:Node":
-                        props = obj.get("info", {}).get("props", {})
-                        media_class = props.get("media.class", "")
-                        n_name = props.get("node.name", "")
-                        if m_type == "sink" and media_class == "Audio/Sink" and (n_name.startswith("alsa_output.") or props.get("device.api") == "alsa"):
-                            subprocess.run(["wpctl", "set-default", str(obj["id"])], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                            log.info(f"[WaveController.PipeWire] Restored system default sink to physical hardware '{n_name}' (id={obj['id']})")
-                            break
-                        elif m_type == "source" and media_class == "Audio/Source" and (n_name.startswith("alsa_input.") or props.get("device.api") == "alsa"):
-                            subprocess.run(["wpctl", "set-default", str(obj["id"])], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                            log.info(f"[WaveController.PipeWire] Restored system default source to physical hardware '{n_name}' (id={obj['id']})")
-                            break
-            except Exception as e:
-                log.warning(f"[WaveController.PipeWire] Failed to restore physical default: {e}")
+            self._restore_physical_system_default("source")
 
         return True
+
+    def _restore_physical_system_default(self, media_type: str) -> bool:
+        """Restores the requested system default to the first available physical device."""
+        media_class = "Audio/Source" if media_type == "source" else "Audio/Sink"
+        node_prefix = "alsa_input." if media_type == "source" else "alsa_output."
+        try:
+            data = json.loads(subprocess.check_output(["pw-dump"], text=True, stderr=subprocess.DEVNULL))
+            for obj in data:
+                if obj.get("type") != "PipeWire:Interface:Node":
+                    continue
+                props = obj.get("info", {}).get("props", {})
+                node_name = props.get("node.name", "")
+                if props.get("media.class") == media_class and (node_name.startswith(node_prefix) or props.get("device.api") == "alsa"):
+                    subprocess.run(["wpctl", "set-default", str(obj["id"])], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    log.info(f"[WaveController.PipeWire] Restored system default {media_type} to '{node_name}' (id={obj['id']})")
+                    return True
+        except Exception as exc:
+            log.warning(f"[WaveController.PipeWire] Failed to restore physical {media_type} default: {exc}")
+        return False
 
     def remove_mix(self, mix_id: str):
         """Removes a mix and tears down its PipeWire virtual audio device and all associated submix loopbacks."""
@@ -3767,8 +3960,8 @@ class PipeWireManager:
         with self._lock:
             target_mix = next((m for m in self.mixes if m.get("id") in (mix_id, canon_mix)), None)
             if target_mix:
-                was_default = bool(target_mix.get("is_default", False))
                 m_type = target_mix.get("type", "source" if target_mix.get("id") != "personal" else "sink")
+                was_default = m_type == "source" and bool(target_mix.get("is_default", False))
 
             self.mixes = [m for m in self.mixes if m["id"] != mix_id and m["id"] != canon_mix]
             for ch_id in self.channel_states:
@@ -3787,12 +3980,9 @@ class PipeWireManager:
                 self._submix_node_ids.pop(k, None)
                 self._submix_volume_queue.pop(k, None)
 
-            # If the deleted mix was the system default, fall back to standard default mix
+            # If the deleted input mix was the system default, choose another source mix.
             if was_default:
-                if m_type == "sink":
-                    fallback_default = next((m for m in self.mixes if m.get("id") == "personal" or m.get("type") == "sink"), None)
-                else:
-                    fallback_default = next((m for m in self.mixes if m.get("id") == "chat_mix" or m.get("type") == "source"), None)
+                fallback_default = next((m for m in self.mixes if m.get("id") == "chat_mix" or m.get("type") == "source"), None)
                 if fallback_default:
                     fallback_default["is_default"] = True
                     fallback_default_mix_id = fallback_default["id"]

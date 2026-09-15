@@ -40,10 +40,10 @@ class SubmixSinkManager:
 
             if m_id == "personal" or m_type == "sink":
                 node_name = f"WaveController_{m_id}_Sink"
-                needed_nodes[node_name] = (f"WaveController {m_name} (Sink)", "Audio/Sink", False)
+                needed_nodes[node_name] = (f"WaveController {m_name} (Sink)", "Audio/Sink", True)
             else:
                 node_name = f"WaveController_{m_id}_Source"
-                needed_nodes[node_name] = (f"WaveController {m_name}", "Audio/Source/Virtual")
+                needed_nodes[node_name] = (f"WaveController {m_name}", "Audio/Source/Virtual", False)
 
         for ch in channels:
             ch_id = ch["id"]
@@ -75,6 +75,10 @@ class SubmixSinkManager:
                         obj_id = obj.get("id")
                         if obj_id:
                             subprocess.run(["pw-cli", "destroy", str(obj_id)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    elif (str(props.get("node.hidden", False)).lower() in ("true", "1")) != needed_nodes[n_name][2]:
+                        obj_id = obj.get("id")
+                        if obj_id:
+                            subprocess.run(["pw-cli", "destroy", str(obj_id)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                     elif n_name in existing_active_names:
                         # Duplicate node with identical name already tracked! Destroy duplicate to ensure strict 1:1 node cardinality
                         obj_id = obj.get("id")
@@ -89,9 +93,11 @@ class SubmixSinkManager:
         for node_name, node_tuple in needed_nodes.items():
             desc = node_tuple[0]
             media_class = node_tuple[1]
+            is_hidden = node_tuple[2]
             if node_name not in existing_active_names:
                 try:
-                    cmd = f'{{ factory.name=support.null-audio-sink node.name="{node_name}" node.description="{desc}" media.class={media_class} object.linger=true }}'
+                    hidden_value = "true" if is_hidden else "false"
+                    cmd = f'{{ factory.name=support.null-audio-sink node.name="{node_name}" node.description="{desc}" media.class={media_class} node.hidden={hidden_value} object.linger=true }}'
                     subprocess.run(["pw-cli", "create-node", "adapter", cmd], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                     nodes_created = True
                 except Exception:

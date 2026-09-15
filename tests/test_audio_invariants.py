@@ -568,7 +568,11 @@ class TestTokenMatchingInvariants(unittest.TestCase):
             if command[:3] == ["pw-cli", "create-node", "adapter"]:
                 node_name = command[3].split('node.name="', 1)[1].split('"', 1)[0]
                 created.append(node_name)
-                nodes.append({"id": len(nodes) + 1, "info": {"props": {"node.name": node_name, "media.class": "Audio/Sink"}}})
+                nodes.append({"id": len(nodes) + 1, "info": {"props": {
+                    "node.name": node_name,
+                    "media.class": "Audio/Sink",
+                    "node.hidden": "true" if "node.hidden=true" in command[3] else "false",
+                }}})
             return MagicMock(returncode=0, stdout="", stderr="")
 
         with patch("subprocess.check_output", side_effect=mock_check_output), \
@@ -581,6 +585,43 @@ class TestTokenMatchingInvariants(unittest.TestCase):
             second.join()
 
         self.assertEqual(created, ["WaveController_personal_Sink"])
+
+    def test_output_mixes_are_hidden_but_virtual_devices_remain_visible(self):
+        """Internal output buses must not appear beside user-facing virtual audio devices."""
+        import threading
+        from unittest.mock import MagicMock, patch
+        from wavecontroller.engine.pipewire_manager import PipeWireManager
+
+        pwm = PipeWireManager.__new__(PipeWireManager)
+        pwm._lock = threading.RLock()
+        pwm._virtual_nodes_lock = threading.RLock()
+        pwm.channels = [{"id": "desktop_audio", "name": "Desktop Audio", "type": "virtual", "expose_sink": True}]
+        pwm.mixes = [
+            {"id": "personal", "name": "Personal Mix", "type": "sink"},
+            {"id": "chat_mix", "name": "Chat Mix", "type": "source"},
+        ]
+        pwm.channel_states = {}
+        pwm.mix_states = {}
+        pwm._mix_node_ids_cache = {}
+        pwm._submix_volume_queue = {}
+        pwm._mix_volume_queue = {}
+        pwm._volume_event = threading.Event()
+        pwm._sync_channel_audio_routing = MagicMock()
+        pwm._apply_configured_system_defaults = MagicMock()
+        create_specs = {}
+
+        def mock_run(command, **kwargs):
+            if command[:3] == ["pw-cli", "create-node", "adapter"]:
+                node_name = command[3].split('node.name="', 1)[1].split('"', 1)[0]
+                create_specs[node_name] = command[3]
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        with patch("subprocess.check_output", return_value="[]"), patch("subprocess.run", side_effect=mock_run):
+            pwm._ensure_virtual_mix_nodes()
+
+        self.assertIn("node.hidden=true", create_specs["WaveController_personal_Sink"])
+        self.assertIn("node.hidden=false", create_specs["WaveController_chat_mix_Source"])
+        self.assertIn("node.hidden=false", create_specs["WaveController_Channel_desktop_audio"])
 
     def test_granular_channel_lifecycle_isolation(self):
         """Invariant: Deleting channel A must never terminate or unlink channel B's processes."""
@@ -736,6 +777,42 @@ class TestTokenMatchingInvariants(unittest.TestCase):
             self.assertIn("stream.capture.sink=true", " ".join(cmd_args),
                           "REGRESSION: Virtual channel sink monitor must be recorded with stream.capture.sink=true")
             self.assertIn("WaveController_Channel_gaming", cmd_args)
+
+    def test_virtual_channel_meter_accepts_numeric_pw_link_ports(self):
+        """Invariant: pw-link -I numeric prefixes must not hide virtual sink monitor ports."""
+        import threading
+        from wavecontroller.engine.peak_monitor import MultiChannelPeakMonitor
+
+        with patch("subprocess.check_output") as check_output, patch("subprocess.Popen") as popen:
+            check_output.return_value = (
+                "301 WaveController_Channel_system:monitor_FL\n"
+                "302 WaveController_Channel_system:monitor_FR\n"
+            )
+            monitor = MultiChannelPeakMonitor.__new__(MultiChannelPeakMonitor)
+            monitor.pipewire_mgr = MagicMock()
+            monitor.pipewire_mgr.channels = [
+                {"id": "system", "type": "virtual", "expose_sink": True},
+            ]
+            monitor._channel_procs = {}
+            monitor._channel_proc_channels = {}
+            monitor._channel_peaks = {}
+            monitor._target_peaks = {}
+            monitor._lock = threading.RLock()
+            monitor.running = False
+            monitor._open_pw_record = MagicMock(return_value=MagicMock())
+            monitor._link_and_audit_channel_monitors = MagicMock()
+
+            monitor._refresh_channel_monitors()
+
+        monitor._open_pw_record.assert_called_once()
+        meter_args, meter_kwargs = monitor._open_pw_record.call_args
+        self.assertTrue(meter_args[0].startswith("wave_meter_WaveController_Channel_"))
+        self.assertEqual(meter_kwargs["target"], "WaveController_Channel_system")
+        self.assertEqual(meter_kwargs["channels"], 2)
+        self.assertTrue(meter_kwargs["is_sink"])
+        target_map = monitor._link_and_audit_channel_monitors.call_args.args[0]
+        self.assertIn("WaveController_Channel_system", target_map)
+        popen.assert_not_called()
 
     def test_no_mic_bleed_into_mixes(self):
         """Invariant: Microphone signals MUST NEVER bleed into mix peak meters (fefine_mix, mobo_device, chat_mix)."""
@@ -953,6 +1030,206 @@ class TestTokenMatchingInvariants(unittest.TestCase):
         self.pwm.set_channel_sink_exposed(ch_id, True)
         self.assertTrue(self.pwm.is_channel_sink_exposed(ch_id))
 
+    def test_virtual_channel_is_an_empty_exposed_system_sink(self):
+        """Invariant: Virtual channels are persisted as exposed sinks without implicit app assignments."""
+        self.pwm.mixes = [{"id": "personal", "name": "Personal Mix", "type": "sink"}]
+        ch = self.pwm.add_channel(
+            "Virtual Mic",
+            ch_type="virtual",
+            assigned_apps=[],
+            expose_sink=True,
+        )
+
+        self.assertEqual(ch["type"], "virtual")
+        self.assertTrue(ch["expose_sink"])
+        self.assertEqual(self.pwm.get_assigned_apps(ch["id"]), [])
+        self.assertTrue(self.pwm.is_channel_sink_exposed(ch["id"]))
+        self.assertFalse(self.pwm.get_channel_state(ch["id"], "personal")["enabled"])
+
+    def test_desktop_audio_bootstrap_is_idempotent_and_routes_only_to_personal_mix(self):
+        """Invariant: Managed Desktop Audio is unique and audible without auto-routing custom virtual channels."""
+        self.pwm.channels = []
+        self.pwm.mixes = [
+            {"id": "personal", "name": "Personal Mix", "type": "sink"},
+            {"id": "chat_mix", "name": "Chat Mix", "type": "source"},
+        ]
+        self.pwm.channel_states = {}
+        self.pwm.channel_master_states = {}
+        self.pwm.assigned_apps = {}
+
+        first = self.pwm.ensure_desktop_audio_channel(select_default=False)
+        second = self.pwm.ensure_desktop_audio_channel(select_default=False)
+
+        self.assertEqual(first["id"], "desktop_audio")
+        self.assertIs(first, second)
+        self.assertEqual([ch["id"] for ch in self.pwm.channels], ["desktop_audio"])
+        self.assertTrue(first["expose_sink"])
+        self.assertTrue(self.pwm.get_channel_state("desktop_audio", "personal")["enabled"])
+        self.assertFalse(self.pwm.get_channel_state("desktop_audio", "chat_mix")["enabled"])
+
+    def test_exposed_virtual_channel_uses_sink_monitor_as_audio_source(self):
+        """Invariant: System audio entering a virtual sink feeds its channel meter and submixes."""
+        app_ports = []
+        monitor_ports = [
+            "WaveController_Channel_system:monitor_FL",
+            "WaveController_Channel_system:monitor_FR",
+        ]
+
+        selected = self.pwm._get_playback_channel_output_ports(True, app_ports, monitor_ports)
+
+        self.assertEqual(selected, monitor_ports)
+
+    def test_only_exposed_virtual_channels_can_be_system_output_defaults(self):
+        """Invariant: Output defaults are virtual channels, never Personal Mix or app channels."""
+        from wavecontroller.engine.config_manager import config_manager
+
+        self.pwm.channels = [
+            {"id": "system", "name": "System", "type": "virtual", "expose_sink": True},
+            {"id": "spotify", "name": "Spotify", "type": "app", "expose_sink": False},
+        ]
+        self.pwm.mixes = [{"id": "personal", "name": "Personal Mix", "type": "sink", "is_default": True}]
+        self.pwm.channel_states = {
+            "system": {"personal": {"volume": 80, "muted": False, "linked": True, "enabled": False}},
+        }
+        self.pwm._bound_unassigned_nodes = {42}
+        stored = {"default_output_channel_id": "", "system_defaults_enabled": False}
+
+        with patch.object(config_manager, "get", side_effect=lambda key, default=None: stored.get(key, default)), \
+             patch.object(config_manager, "set", side_effect=lambda key, value, immediate=False: stored.__setitem__(key, value)):
+            self.assertFalse(self.pwm.set_channel_system_default("spotify", True))
+            self.assertTrue(self.pwm.set_channel_system_default("system", True))
+            self.assertTrue(self.pwm.is_channel_system_default("system"))
+            self.assertFalse(self.pwm.is_mix_system_default("personal"))
+            self.assertEqual(self.pwm._bound_unassigned_nodes, set())
+            self.assertFalse(self.pwm.get_channel_state("system", "personal")["enabled"])
+
+    def test_default_output_badge_tracks_selected_virtual_channel(self):
+        """Invariant: Only the selected system output channel displays the Default Output badge."""
+        from wavecontroller.views.channel_card import ChannelCard
+
+        card = ChannelCard.__new__(ChannelCard)
+        card.channel_info = {"id": "system"}
+        card.pipewire_mgr = MagicMock()
+        card.default_output_badge = MagicMock()
+
+        card.pipewire_mgr.is_channel_system_default.return_value = True
+        card.refresh_default_output_badge()
+        card.default_output_badge.set_visible.assert_called_with(True)
+
+        card.pipewire_mgr.is_channel_system_default.return_value = False
+        card.refresh_default_output_badge()
+        card.default_output_badge.set_visible.assert_called_with(False)
+
+    def test_virtual_channel_icon_tracks_system_default_role(self):
+        """Invariant: Only the selected virtual channel uses the computer icon."""
+        from wavecontroller.views.channel_card import ChannelCard
+
+        card = ChannelCard.__new__(ChannelCard)
+        card.channel_info = {"id": "desktop_audio", "type": "virtual", "icon": "audio-card-symbolic"}
+        card.pipewire_mgr = MagicMock()
+        card.hardware_mgr = None
+        card.is_wave_channel = False
+
+        card.pipewire_mgr.is_channel_system_default.return_value = True
+        self.assertEqual(card._resolve_icon(), "computer-symbolic")
+
+        card.pipewire_mgr.is_channel_system_default.return_value = False
+        self.assertEqual(card._resolve_icon(), "audio-card-symbolic")
+
+    def test_virtual_channel_subtitle_tracks_system_default_role(self):
+        """Invariant: Only the selected virtual channel is labeled as the system audio device."""
+        from wavecontroller.views.channel_card import ChannelCard
+
+        card = ChannelCard.__new__(ChannelCard)
+        card.channel_info = {"id": "desktop_audio", "name": "Desktop Audio", "type": "virtual"}
+        card.pipewire_mgr = MagicMock()
+        card.pipewire_mgr.get_channel_all_apps.return_value = [{"name": "Google Chrome"}]
+        card.sub_lbl = MagicMock()
+        card.is_mic_channel = False
+        card.is_group_channel = False
+
+        card.pipewire_mgr.is_channel_system_default.return_value = True
+        card.refresh_apps()
+        card.sub_lbl.set_label.assert_called_with("System Audio Device")
+        card.pipewire_mgr.get_channel_all_apps.assert_not_called()
+
+        card.pipewire_mgr.is_channel_system_default.return_value = False
+        card.refresh_apps()
+        card.sub_lbl.set_label.assert_called_with("Virtual Audio Device")
+
+    def test_unassigned_streams_use_virtual_default_but_assigned_apps_do_not(self):
+        """Invariant: The selected virtual channel receives fallback audio except assigned applications."""
+        from wavecontroller.engine.config_manager import config_manager
+
+        self.pwm.channels = [
+            {"id": "system", "name": "System", "type": "virtual", "expose_sink": True},
+            {"id": "music", "name": "Music", "type": "app", "expose_sink": False},
+        ]
+        self.pwm.assigned_apps = {"system": [], "music": ["Spotify"]}
+        self.pwm._bound_unassigned_nodes = set()
+        pw_data = [
+            {
+                "id": 101,
+                "type": "PipeWire:Interface:Node",
+                "info": {"props": {
+                    "media.class": "Stream/Output/Audio",
+                    "node.name": "firefox",
+                    "application.name": "Firefox",
+                    "application.process.binary": "firefox",
+                }},
+            },
+            {
+                "id": 202,
+                "type": "PipeWire:Interface:Node",
+                "info": {"props": {
+                    "media.class": "Stream/Output/Audio",
+                    "node.name": "spotify",
+                    "application.name": "Spotify",
+                    "application.process.binary": "spotify",
+                }},
+            },
+        ]
+        in_ports = [
+            "WaveController_Channel_system:playback_FL",
+            "WaveController_Channel_system:playback_FR",
+        ]
+        out_ports = ["firefox:output_FL", "firefox:output_FR", "spotify:output_FL", "spotify:output_FR"]
+
+        with patch.object(config_manager, "get", side_effect=lambda key, default=None: {
+                "system_defaults_enabled": True,
+                "default_output_channel_id": "system",
+             }.get(key, default)), \
+             patch("wavecontroller.engine.pipewire_manager.subprocess.check_output", return_value=json.dumps(pw_data)), \
+             patch("wavecontroller.engine.pipewire_manager.subprocess.run") as run:
+            self.pwm._sync_unassigned_app_streams(out_ports=out_ports, in_ports=in_ports, links_map={})
+
+        commands = [call.args[0] for call in run.call_args_list]
+        self.assertIn(
+            ["pw-metadata", "-n", "default", "101", "target.object", "WaveController_Channel_system"],
+            commands,
+        )
+        self.assertFalse(any(command[:4] == ["pw-metadata", "-n", "default", "202"] for command in commands))
+        self.assertTrue(any(command[-1] == "WaveController_Channel_system:playback_FL" for command in commands if command[0] == "pw-link"))
+        self.assertFalse(any("spotify:output_" in command for command in commands))
+
+    def test_missing_virtual_default_restores_physical_output_not_personal_mix(self):
+        """Invariant: Legacy Personal Mix defaults are cleared when no virtual output is selected."""
+        from wavecontroller.engine.config_manager import config_manager
+
+        self.pwm.channels = []
+        self.pwm.mixes = [{"id": "personal", "name": "Personal Mix", "type": "sink", "is_default": True}]
+        self.pwm._bound_unassigned_nodes = {42}
+        self.pwm._restore_physical_system_default = MagicMock(return_value=True)
+        stored = {"system_defaults_enabled": True, "default_output_channel_id": ""}
+
+        with patch.object(config_manager, "get", side_effect=lambda key, default=None: stored.get(key, default)), \
+             patch.object(config_manager, "set", side_effect=lambda key, value, immediate=False: stored.__setitem__(key, value)):
+            self.pwm._apply_configured_system_defaults()
+
+        self.pwm._restore_physical_system_default.assert_called_once_with("sink")
+        self.assertFalse(self.pwm.mixes[0]["is_default"])
+        self.assertEqual(self.pwm._bound_unassigned_nodes, set())
+
     def test_app_channels_do_not_provision_exposed_sinks(self):
         """Invariant: Regular application channels must not have expose_sink enabled or create Audio/Sink nodes."""
         ch = self.pwm.add_channel("Spotify", ch_type="app", assigned_apps=["Spotify"])
@@ -1001,6 +1278,11 @@ class TestTokenMatchingInvariants(unittest.TestCase):
         self.assertEqual(wiz._auto_mic_idx, 0)
         self.assertEqual(wiz._auto_output_idx, 0)
         self.assertIsNotNone(wiz.system_defaults_switch)
+
+        import inspect
+        finish_source = inspect.getsource(SetupWizardDialog._on_finish_clicked)
+        self.assertIn("ensure_desktop_audio_channel", finish_source)
+        self.assertIn('config_manager.get("system_defaults_enabled", False)', finish_source)
 
     def test_personal_mix_header_omits_target_device_dropdown(self):
         """Invariant: Personal Mix header edit popup must omit target device dropdown while secondary mixes retain it."""
@@ -1887,7 +2169,7 @@ class TestRoutingSubManagersInvariants(unittest.TestCase):
         pwm.stop()
 
     def test_mix_system_default_setting_and_gating(self):
-        """Invariant: set_mix_system_default sets is_default mutually exclusively among mixes of same type."""
+        """Invariant: only source mixes can be system defaults; Personal Mix is never the output default."""
         from wavecontroller.engine.pipewire_manager import PipeWireManager
         pwm = PipeWireManager()
         pwm.mixes = [
@@ -1897,15 +2179,15 @@ class TestRoutingSubManagersInvariants(unittest.TestCase):
             {"id": "record_mix", "name": "Record Mix", "type": "source", "is_default": False}
         ]
 
-        self.assertTrue(pwm.is_mix_system_default("personal"))
+        self.assertFalse(pwm.is_mix_system_default("personal"))
         self.assertFalse(pwm.is_mix_system_default("stream_mix"))
         self.assertTrue(pwm.is_mix_system_default("chat_mix"))
         self.assertFalse(pwm.is_mix_system_default("record_mix"))
 
-        # Promote stream_mix to default sink
-        pwm.set_mix_system_default("stream_mix", True)
+        # Output mixes cannot be promoted; output defaults are virtual channels.
+        self.assertFalse(pwm.set_mix_system_default("stream_mix", True))
         self.assertFalse(pwm.is_mix_system_default("personal"))
-        self.assertTrue(pwm.is_mix_system_default("stream_mix"))
+        self.assertFalse(pwm.is_mix_system_default("stream_mix"))
         # Verify source mixes unaffected
         self.assertTrue(pwm.is_mix_system_default("chat_mix"))
 
