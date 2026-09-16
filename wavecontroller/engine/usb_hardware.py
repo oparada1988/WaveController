@@ -1037,17 +1037,13 @@ class USBHardwareManager:
         k = str(device_key).lower().strip()
         primary_k = str(config_manager.get("primary_device_key", "")).lower().strip()
 
-        # 1. Check explicit config designation
-        if primary_k and (k == primary_k or primary_k in k or k in primary_k):
+        if primary_k and k == primary_k:
             return True
 
-        # 2. Check if this device is attached to the physical Microphone channel
-        if getattr(self, "pipewire_mgr", None):
-            for ch in list(getattr(self.pipewire_mgr, "channels", [])):
-                if ch.get("type") == "source" or ch.get("id") in ("mic", "elgato_wave_xlr"):
-                    assigned = [str(a).lower() for a in self.pipewire_mgr.get_assigned_apps(ch["id"])]
-                    if k in assigned or any(k in a for a in assigned) or any(a in k for a in assigned):
-                        return True
+        for setting in ("default_input_device", "default_output_device"):
+            configured_k = str(config_manager.get(setting, "")).lower().strip()
+            if configured_k and k == configured_k:
+                return True
 
         return False
 

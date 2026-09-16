@@ -549,10 +549,11 @@ class WaveMainWindow(Adw.ApplicationWindow):
 
     def _on_device_added(self, device_key: str):
         has_default = self.hardware_mgr.has_default_device() if self.hardware_mgr else False
-        log.info(f"[WaveController.Window] _on_device_added '{device_key}': has_default={has_default}")
+        tracked = config_manager.get("tracked_devices", []) or []
+        should_offer_default = not has_default and len(tracked) <= 1
+        log.info(f"[WaveController.Window] _on_device_added '{device_key}': has_default={has_default}, tracked={len(tracked)}")
 
-        # If no default device is active (e.g. 0 devices previously existed or default was deleted), prompt user to make it default
-        if not has_default:
+        if should_offer_default:
             dev_name = self.hardware_mgr.get_device_display_name(device_key) if self.hardware_mgr else "Audio Device"
             log.info(f"[WaveController.Window] Presenting Make Default dialog for '{dev_name}' ({device_key})")
             dialog = Adw.MessageDialog(
@@ -640,13 +641,7 @@ class WaveMainWindow(Adw.ApplicationWindow):
                 GLib.idle_add(lambda: self._on_make_device_default(new_dev_key))
 
             def _on_default_selection_cancelled():
-                # User declined to make any remaining device default -> remove orphaned channels/mixes
-                log.info("[WaveController.Window] Default device selection modal cancelled. Removing default channels and flagging default_selection_dismissed=True")
-                if self.pipewire_mgr:
-                    self.pipewire_mgr.remove_default_device_channels_and_mix()
-                config_manager.set("default_input_device", "", immediate=False)
-                config_manager.set("default_output_device", "", immediate=False)
-                config_manager.set("primary_device_key", "", immediate=False)
+                log.info("[WaveController.Window] Default device selection modal cancelled. Preserving configured channels and mixes.")
                 config_manager.set("default_selection_dismissed", True, immediate=True)
 
                 # Recreate device views so "Make Default" button appears on remaining devices
