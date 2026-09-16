@@ -2754,12 +2754,15 @@ class PipeWireManager:
             app_out_ports = []
             if is_source_channel:
                 ch_name = str(ch.get("name", ""))
-                ch_id_str = str(ch_id)
                 assigned_devs = self.get_assigned_apps(ch_id)
-                
-                # Build comprehensive matching tokens for this input channel
-                input_tokens = self._get_match_tokens(ch_id_str)
-                input_tokens.update(self._get_match_tokens(ch_name))
+
+                # Build matching tokens strictly from the channel's display name and its
+                # explicitly assigned device(s) - NEVER from the raw channel_id. get_match_tokens()
+                # always seeds the whole input string as a token (e.g. "mic"), and "mic" is a
+                # substring of "microphone", so tokenizing generic ids like "mic" would fuzzy-match
+                # ANY other connected device whose description contains that word (e.g. a second,
+                # unrelated USB microphone), silently pulling its audio into this channel's submix.
+                input_tokens = self._get_match_tokens(ch_name)
                 for dev in assigned_devs:
                     input_tokens.update(self._get_match_tokens(dev))
 
@@ -3452,6 +3455,13 @@ class PipeWireManager:
                         proc.kill()
                     except Exception:
                         pass
+
+            # Stop any lingering pre-fader FX filter-chain node (not covered by the
+            # submix-loopback cleanup above, since FX runs on the channel's raw capture).
+            try:
+                self.fx_manager.stop_fx_node(channel_id)
+            except Exception:
+                pass
 
             try:
                 subprocess.run(["pkill", "-f", f"WaveController_submix_{channel_id}_"], stderr=subprocess.DEVNULL)
@@ -4394,13 +4404,18 @@ class PipeWireManager:
         threading.Thread(target=_bg_cleanup, daemon=True).start()
 
     def remove_default_device_channels_and_mix(self):
-        """Removes the primary Personal Mix and physical Microphone channel from the graph and config."""
+        """Removes the primary Personal Mix, Chat Mix, and physical Microphone channel from the graph and config."""
         mic_ids = [c["id"] for c in list(self.channels) if c.get("type") == "source" or c.get("id") in ("mic", "elgato_wave_xlr")]
         for ch_id in mic_ids:
             self.remove_channel(ch_id)
 
-        personal_ids = [m["id"] for m in list(self.mixes) if m.get("id") in ("personal", "personal_mix") or m.get("type") == "sink"]
-        for m_id in personal_ids:
+        # Chat Mix is a source-type mix, so it isn't caught by the sink-type sweep below;
+        # it must be swept explicitly or it survives with no channel feeding it.
+        mix_ids = [
+            m["id"] for m in list(self.mixes)
+            if m.get("id") in ("personal", "personal_mix", "chat_mix", "chat") or m.get("type") == "sink"
+        ]
+        for m_id in mix_ids:
             self.remove_mix(m_id)
 
         with self._lock:

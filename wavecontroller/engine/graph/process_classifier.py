@@ -130,12 +130,18 @@ def get_match_tokens(name_or_id: str) -> set:
         tokens.update({"fifine", "fefine", "3142"})
 
     # 5. Extract individual distinct alphanumeric words (len >= 3)
+    # NOTE: "mic"/"microphone" are intentionally excluded here even though they are not truly
+    # generic English filler words. Channel ids/names like the default "Microphone" channel would
+    # otherwise tokenize to "microphone" and fuzzy-match ANY other connected capture device whose
+    # description also contains that word (e.g. "fifine Microphone Analog Stereo"), silently
+    # routing a second physical device's audio into the first device's channel/submix. Matching
+    # must instead rely on the specific device name/key the user actually assigned.
     stop_words = {
         "the", "and", "for", "with", "player", "media", "audio", "sound",
         "stream", "desktop", "client", "app", "application", "input", "output",
         "stereo", "mono", "analog", "default", "system", "capture", "playback",
         "usb", "alsa", "pci", "card", "sink", "source", "device", "devices",
-        "node", "nodes", "port", "ports"
+        "node", "nodes", "port", "ports", "mic", "mics", "microphone", "microphones"
     }
     words = [w for w in re.split(r"[\s\-_.:/]+", raw) if len(w) >= 3 and w not in stop_words]
     tokens.update(words)
