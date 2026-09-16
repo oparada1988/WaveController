@@ -3,6 +3,7 @@ gi.require_version("Gtk", "4.0")
 from gi.repository import Gtk, GLib
 
 from .channel_card import ChannelCard
+from .fx_sidebar import FXSidebar
 from .mix_header import MixHeaderCard
 from .matrix_cell import MatrixCell
 from .led_color_picker import LEDColorButton
@@ -131,15 +132,65 @@ class MixerMatrixView(Gtk.Box):
 
         self._build_grid()
 
-        # Scrolled container for channels
+        # Scrolled container for channels and the selected-channel FX inspector.
         scrolled = Gtk.ScrolledWindow()
         scrolled.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
         scrolled.set_child(self.grid)
         scrolled.set_vexpand(True)
-        self.append(scrolled)
+        self.fx_sidebar = FXSidebar(
+            self.pipewire_mgr,
+            on_closed=self._hide_fx_sidebar,
+            on_fx_changed=self._on_fx_sidebar_changed,
+        )
+        self.fx_revealer = Gtk.Revealer()
+        self.fx_revealer.set_transition_type(Gtk.RevealerTransitionType.SLIDE_LEFT)
+        self.fx_revealer.set_transition_duration(240)
+        self.fx_revealer.set_child(self.fx_sidebar)
+        self.fx_revealer.set_hexpand(False)
+        self.fx_revealer.set_halign(Gtk.Align.END)
+        self.fx_revealer.set_reveal_child(False)
+        content_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+        content_box.set_vexpand(True)
+        scrolled.set_hexpand(True)
+        content_box.append(scrolled)
+        content_box.append(self.fx_revealer)
+        self.content_box = content_box
+        click_away = Gtk.GestureClick.new()
+        click_away.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
+        click_away.connect("pressed", self._on_content_pressed)
+        content_box.add_controller(click_away)
+        self.append(content_box)
 
         # 40 FPS Timer to refresh meter levels and sync states
         GLib.timeout_add(25, self._on_ui_tick)
+
+    def _show_fx_sidebar(self, channel_info):
+        if (
+            self.fx_revealer.get_reveal_child()
+            and self.fx_sidebar.channel_info
+            and self.fx_sidebar.channel_info.get("id") == channel_info.get("id")
+        ):
+            self._hide_fx_sidebar()
+            return
+        self.fx_sidebar.show_channel(channel_info)
+        self.fx_revealer.set_reveal_child(True)
+
+    def _hide_fx_sidebar(self):
+        self.fx_revealer.set_reveal_child(False)
+
+    def _on_content_pressed(self, _gesture, _presses, x, _y):
+        picked = self.content_box.pick(x, _y, Gtk.PickFlags.DEFAULT)
+        while picked:
+            if picked in self.channel_cards.values() and getattr(picked, "fx_btn", None):
+                return
+            picked = picked.get_parent()
+        if self.fx_revealer.get_reveal_child() and x < self.fx_revealer.get_allocation().x:
+            self._hide_fx_sidebar()
+
+    def _on_fx_sidebar_changed(self, channel_id):
+        card = self.channel_cards.get(channel_id)
+        if card:
+            card.update_fx_state()
 
     def _build_grid(self):
         current_ch_ids = [c["id"] for c in self.pipewire_mgr.channels]
@@ -234,7 +285,8 @@ class MixerMatrixView(Gtk.Box):
                     on_channel_removed_callback=self._on_channel_deleted,
                     on_channel_renamed_callback=lambda ch_id, name: GLib.idle_add(self._rebuild_grid),
                     on_reorder_callback=self._on_reorder_channel,
-                    on_hover_row_callback=self._on_hover_row
+                    on_hover_row_callback=self._on_hover_row,
+                    on_fx_requested=self._show_fx_sidebar,
                 )
                 self.channel_cards[ch_id] = card
             card.set_valign(Gtk.Align.START)

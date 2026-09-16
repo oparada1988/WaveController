@@ -19,7 +19,7 @@ class ChannelCard(Gtk.Box):
     48V phantom power quick toggle badge, mute button, dual-track stereo volume slider
     with real-time VU meters, and link toggle.
     """
-    def __init__(self, channel_info: dict, pipewire_mgr, hardware_mgr=None, on_link_toggle_callback=None, on_sync_meter_callback=None, on_channel_removed_callback=None, on_channel_renamed_callback=None, on_reorder_callback=None, on_hover_row_callback=None):
+    def __init__(self, channel_info: dict, pipewire_mgr, hardware_mgr=None, on_link_toggle_callback=None, on_sync_meter_callback=None, on_channel_renamed_callback=None, on_channel_removed_callback=None, on_reorder_callback=None, on_hover_row_callback=None, on_fx_requested=None):
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=0)
         self.channel_info = channel_info
         self.pipewire_mgr = pipewire_mgr
@@ -30,6 +30,7 @@ class ChannelCard(Gtk.Box):
         self.on_channel_renamed_callback = on_channel_renamed_callback
         self.on_reorder_callback = on_reorder_callback
         self.on_hover_row_callback = on_hover_row_callback
+        self.on_fx_requested = on_fx_requested
         
         self.set_valign(Gtk.Align.CENTER)
         self.set_hexpand(False)
@@ -157,13 +158,12 @@ class ChannelCard(Gtk.Box):
 
         # 4b. Audio Effects (FX) Badge & Popover Menu (Present at all times on mic/input channels)
         if self.is_mic_channel:
-            self.fx_btn = Gtk.MenuButton()
-            self.fx_btn.set_label("FX")
+            self.fx_btn = Gtk.Button(label="FX")
             self.fx_btn.add_css_class("flat")
             self.fx_btn.add_css_class("wave-fx-badge")
             self.fx_btn.set_valign(Gtk.Align.CENTER)
             self.fx_btn.set_tooltip_text(f"Audio Effects for '{display_name}'")
-            self._setup_fx_popover()
+            self.fx_btn.connect("clicked", self._on_fx_clicked)
             self.header_box.append(self.fx_btn)
         else:
             self.fx_btn = None
@@ -456,15 +456,12 @@ class ChannelCard(Gtk.Box):
                 self.fx_btn.set_tooltip_text(f"Audio Effects Bypassed for '{self.channel_info.get('name')}' (Click to configure)")
 
     def refresh_fx_effect_visibility(self):
-        """Refreshes per-channel FX popover rows after global DSP or plugin library changes."""
-        if hasattr(self, "fx_btn") and self.fx_btn:
-            self._setup_fx_popover()
-            return
-        if not hasattr(self, "_fx_effect_rows"):
-            return
-        for fx_key, row in self._fx_effect_rows.items():
-            default_val = self._fx_effect_defaults.get(fx_key, True)
-            row.set_visible(config_manager.get(fx_key, default_val))
+        """Refreshes the FX badge after global DSP or plugin library changes."""
+        self.update_fx_state()
+
+    def _on_fx_clicked(self, _button):
+        if self.on_fx_requested:
+            self.on_fx_requested(self.channel_info)
 
     def _setup_fx_popover(self):
         """Builds the per-channel Audio Effects popover with master switch and processor suite."""

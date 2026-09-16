@@ -570,7 +570,7 @@ popover.wave-popover entry:focus {
 }
 
 /* Audio Effects (FX) Badge Button (Matching 48V badge height & geometry) */
-menubutton.wave-fx-badge {
+button.wave-fx-badge {
     padding: 0;
     margin: 0;
     min-height: 22px;
@@ -579,7 +579,7 @@ menubutton.wave-fx-badge {
     box-shadow: none;
 }
 
-menubutton.wave-fx-badge > button {
+button.wave-fx-badge {
     font-size: 10px;
     font-weight: 800;
     letter-spacing: 0.5px;
@@ -590,38 +590,77 @@ menubutton.wave-fx-badge > button {
     transition: all 150ms cubic-bezier(0.2, 0, 0, 1);
 }
 
-menubutton.wave-fx-badge > button arrow {
-    min-height: 8px;
-    min-width: 8px;
-    margin-left: 2px;
-}
-
 /* Dimmed / Bypassed State */
-menubutton.wave-fx-badge.dimmed-fx > button {
+button.wave-fx-badge.dimmed-fx {
     background-color: rgba(255, 255, 255, 0.06);
     color: rgba(255, 255, 255, 0.45);
     border: 1px solid rgba(255, 255, 255, 0.1);
 }
 
-menubutton.wave-fx-badge.dimmed-fx > button:hover {
+button.wave-fx-badge.dimmed-fx:hover {
     background-color: rgba(255, 255, 255, 0.12);
     color: rgba(255, 255, 255, 0.85);
     border-color: rgba(255, 255, 255, 0.25);
 }
 
 /* Active / Processing State */
-menubutton.wave-fx-badge.active-fx > button {
+button.wave-fx-badge.active-fx {
     background-color: rgba(145, 70, 255, 0.25);
     color: #a970ff;
     border: 1px solid rgba(145, 70, 255, 0.6);
     box-shadow: 0 0 10px rgba(145, 70, 255, 0.35);
 }
 
-menubutton.wave-fx-badge.active-fx > button:hover {
+button.wave-fx-badge.active-fx:hover {
     background-color: rgba(145, 70, 255, 0.35);
     color: #c09bf8;
     border-color: #a970ff;
     box-shadow: 0 0 14px rgba(145, 70, 255, 0.55);
+}
+
+/* Selected-channel FX inspector */
+.fx-sidebar {
+    background-color: alpha(@card_bg_color, 0.88);
+    border-left: 1px solid alpha(@borders, 0.9);
+    box-shadow: -12px 0 22px rgba(0, 0, 0, 0.20);
+}
+
+window.theme-midnight .fx-sidebar {
+    background-color: #19191e;
+    border-left-color: rgba(255, 255, 255, 0.10);
+    box-shadow: -12px 0 22px rgba(0, 0, 0, 0.36);
+}
+
+.fx-sidebar-header {
+    padding: 14px;
+    border-bottom: 1px solid alpha(@borders, 0.75);
+}
+
+.fx-sidebar-channel {
+    font-size: 13px;
+    font-weight: 600;
+    color: alpha(@window_fg_color, 0.82);
+}
+
+.fx-intensity-slider trough {
+    min-height: 5px;
+    border-radius: 3px;
+}
+
+.fx-intensity-slider highlight {
+    background-color: @accent_bg_color;
+    border-radius: 3px;
+}
+
+.fx-intensity-slider slider {
+    min-width: 12px;
+    min-height: 12px;
+    margin: 0;
+}
+
+.fx-intensity-value {
+    font-size: 11px;
+    color: alpha(@window_fg_color, 0.65);
 }
 
 /* Balance Fader & Hardware LED Picker Styling */

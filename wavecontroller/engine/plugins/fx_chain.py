@@ -613,21 +613,9 @@ class FXChainManager:
                 "dsp_equalizer", "dsp_compressor", "dsp_deesser", "dsp_limiter"
             ))
 
-        # Fallback for microphone / vocal source channels if no per-channel record
-        is_mic = any(k in channel_id.lower() for k in ("mic", "fefine", "fifine", "microphone", "elgato_wave_xlr", "input"))
-        if not is_mic:
-            ch_configs = config_manager.get("channel_fx_enabled", {})
-            return ch_configs.get(channel_id, False)
-
-        # For mic, check if any DSP effect is toggled on
-        return (
-            config_manager.get("dsp_noise_suppression", True) or
-            config_manager.get("dsp_equalizer", True) or
-            config_manager.get("dsp_compressor", True) or
-            config_manager.get("dsp_limiter", True) or
-            config_manager.get("dsp_deesser", False) or
-            config_manager.get("dsp_noise_gate", False)
-        )
+        # Per-channel processing is opt-in. Global DSP defaults describe which
+        # processors are available, not whether a channel has enabled its chain.
+        return False
 
     def ensure_fx_node(self, channel_id: str) -> bool:
         """Ensures the FX filter-chain process is running for the channel."""
