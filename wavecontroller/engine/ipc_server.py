@@ -2,6 +2,7 @@ import os
 import json
 import socket
 import threading
+from .config_manager import config_manager
 from ..utils.logger import get_logger
 
 log = get_logger("IPCServer")
@@ -176,6 +177,8 @@ class IPCServer:
                         dev_icon = getattr(self.hardware_mgr, "get_device_icon", lambda *a: None)(self.hardware_mgr.device_name)
                         if dev_icon and dev_icon not in ("audio-input-microphone-symbolic", "network-offline-symbolic"):
                             c_data["icon"] = dev_icon
+                if hasattr(self.pipewire_mgr, "fx_manager"):
+                    c_data["fx_enabled"] = self.pipewire_mgr.fx_manager.is_fx_enabled(c_data.get("id", ""))
                 channels_list.append(c_data)
             res["channels"] = channels_list
             res["mixes"] = self.pipewire_mgr.mixes
@@ -369,6 +372,34 @@ class IPCServer:
                 if self.pipewire_mgr.on_external_change_callback:
                     from gi.repository import GLib
                     GLib.idle_add(self.pipewire_mgr.on_external_change_callback)
+        elif cmd == "get_fx_status":
+            raw_target = req.get("channel_id") or "mic"
+            ch = self._match_channel_id(raw_target)
+            is_enabled = False
+            if hasattr(self.pipewire_mgr, "fx_manager"):
+                is_enabled = self.pipewire_mgr.fx_manager.is_fx_enabled(ch)
+            res["enabled"] = is_enabled
+        elif cmd == "toggle_fx":
+            raw_target = req.get("channel_id") or "mic"
+            ch = self._match_channel_id(raw_target)
+            is_enabled = False
+            if hasattr(self.pipewire_mgr, "fx_manager"):
+                ch_fx = dict(config_manager.get("channel_fx", {}).get(ch, {}))
+                curr_enabled = ch_fx.get("enabled", True)
+                new_val = not curr_enabled
+                ch_fx["enabled"] = new_val
+                all_fx = dict(config_manager.get("channel_fx", {}))
+                all_fx[ch] = ch_fx
+                config_manager.set("channel_fx", all_fx, immediate=True)
+                if not new_val:
+                    self.pipewire_mgr.fx_manager.stop_fx_node(ch)
+                else:
+                    self.pipewire_mgr.fx_manager.ensure_fx_node(ch)
+                is_enabled = self.pipewire_mgr.fx_manager.is_fx_enabled(ch)
+            res["enabled"] = is_enabled
+            if self.pipewire_mgr.on_external_change_callback:
+                from gi.repository import GLib
+                GLib.idle_add(self.pipewire_mgr.on_external_change_callback)
         else:
             res["status"] = "unknown_command"
 
