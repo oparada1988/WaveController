@@ -2850,7 +2850,7 @@ class PipeWireManager:
             effective_ch_out_ports = ch_out_ports
             fx_mgr = getattr(self, "fx_manager", fx_manager)
             fx_chain = fx_mgr.get_chain(ch_id)
-            if is_source_channel and ch_out_ports and fx_mgr.is_fx_enabled(ch_id):
+            if is_source_channel and ch_out_ports and fx_mgr.is_fx_enabled(ch_id) and fx_mgr.has_active_effects(ch_id):
                 if fx_mgr.ensure_fx_node(ch_id):
                     fx_in_prefix = fx_chain.input_prefix
                     fx_out_prefix = fx_chain.output_prefix
@@ -4460,7 +4460,7 @@ class PipeWireManager:
         def _bg_reload():
             for c_id in target_ids:
                 try:
-                    if self.fx_manager.is_fx_enabled(c_id):
+                    if self.fx_manager.is_fx_enabled(c_id) and self.fx_manager.has_active_effects(c_id):
                         self.fx_manager.get_chain(c_id).start()
                     else:
                         self.fx_manager.stop_fx_node(c_id)

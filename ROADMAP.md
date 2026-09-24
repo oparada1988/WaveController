@@ -53,3 +53,15 @@ This document tracks the technical milestones and core engine enhancements for W
 * [ ] **Single-Click Auto-Arrange Layout**: Automatically organizes nodes into clean logical columns (Applications → Channels → Submix Matrix → Physical Outputs).
 * [ ] **Real-Time Node Telemetry**: Embedded mini-VU meters and volume indicators directly on graph node blocks.
 * [ ] **Signal Flow Diagnostics**: Click any node or link to inspect PipeWire properties, port IDs, buffer latency, and format specifications.
+
+---
+
+## Milestone 5: Installation Reliability and Distribution Packaging
+**Focus**: Make installation predictable across supported Linux distributions with dependency validation, actionable diagnostics, and native package formats.
+
+### Key Objectives
+* [ ] **Installer Dependency Preflight**: Review and update `install.sh` to detect the host distribution, verify required system libraries, GI typelibs, Python modules, PipeWire components, and command-line tools, and offer the appropriate package-manager command when dependencies are missing.
+* [ ] **Post-Install Validation**: Recheck GTK4, Libadwaita, PyGObject, libusb, PipeWire, and WirePlumber availability after installation and stop with clear remediation guidance when a requirement remains unresolved.
+* [ ] **Debian Package Distribution**: Evaluate maintained `.deb` packages for Debian, Ubuntu, Linux Mint, and related distributions.
+* [ ] **RPM Package Distribution**: Evaluate maintained `.rpm` packages for Fedora, RHEL-compatible, openSUSE, and related distributions.
+* [ ] **Arch Package Distribution**: Evaluate a `PKGBUILD` and AUR-compatible release path for Arch-based distributions, including CachyOS, Manjaro, and EndeavourOS.

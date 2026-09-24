@@ -375,10 +375,119 @@ class IPCServer:
         elif cmd == "get_fx_status":
             raw_target = req.get("channel_id") or "mic"
             ch = self._match_channel_id(raw_target)
-            is_enabled = False
-            if hasattr(self.pipewire_mgr, "fx_manager"):
-                is_enabled = self.pipewire_mgr.fx_manager.is_fx_enabled(ch)
-            res["enabled"] = is_enabled
+            effect_id = req.get("effect_id")
+            if effect_id:
+                ch_fx = dict(config_manager.get("channel_fx", {}).get(ch, {}))
+                master_enabled = bool(ch_fx.get("enabled", True))
+                if effect_id.startswith("dsp_"):
+                    globally_active = bool(config_manager.get(effect_id, True))
+                    chan_active = bool(ch_fx.get(effect_id, globally_active))
+                    is_enabled = chan_active and globally_active and master_enabled
+                else:
+                    chan_ext = dict(ch_fx.get("external_plugins", {}))
+                    is_active = bool(chan_ext.get(effect_id, False))
+                    globally_ext = dict(config_manager.get("external_plugin_enabled", {}))
+                    is_global = bool(globally_ext.get(effect_id, True))
+                    is_enabled = is_active and is_global and master_enabled
+                res["channel_id"] = ch
+                res["effect_id"] = effect_id
+                res["enabled"] = is_enabled
+            else:
+                is_enabled = False
+                if hasattr(self.pipewire_mgr, "fx_manager"):
+                    is_enabled = self.pipewire_mgr.fx_manager.is_fx_enabled(ch)
+                res["enabled"] = is_enabled
+        elif cmd == "get_channel_fx":
+            raw_target = req.get("channel_id") or "mic"
+            ch = self._match_channel_id(raw_target)
+            ch_fx = dict(config_manager.get("channel_fx", {}).get(ch, {}))
+            master_enabled = bool(ch_fx.get("enabled", True))
+
+            builtin_effects = {}
+            for effect_key, title, default_val in [
+                ("dsp_highpass", "Low-Cut / High-Pass Filter (80 Hz)", True),
+                ("dsp_noise_suppression", "AI Noise Suppression (RNNoise)", True),
+                ("dsp_noise_gate", "Broadcast Noise Gate", False),
+                ("dsp_equalizer", "Parametric Vocal Equalizer", True),
+                ("dsp_compressor", "Broadcast Vocal Compressor", True),
+                ("dsp_deesser", "Vocal De-Esser", False),
+                ("dsp_limiter", "Broadcast Peak Limiter", True),
+            ]:
+                globally_active = bool(config_manager.get(effect_key, default_val))
+                chan_active = bool(ch_fx.get(effect_key, globally_active))
+                builtin_effects[effect_key] = {
+                    "enabled": chan_active and globally_active,
+                    "globally_enabled": globally_active,
+                    "title": title
+                }
+
+            chan_ext = dict(ch_fx.get("external_plugins", {}))
+            globally_ext = dict(config_manager.get("external_plugin_enabled", {}))
+            available_ext = []
+            try:
+                from .plugins import plugin_scanner, PluginFormat
+                for p in plugin_scanner.get_all_plugins():
+                    if (p.format == PluginFormat.LV2 and p.plugin_uri and 
+                            len(p.audio_input_ports) >= 2 and len(p.audio_output_ports) >= 2):
+                        is_global = bool(globally_ext.get(p.id, True))
+                        is_active = bool(chan_ext.get(p.id, False))
+                        available_ext.append({
+                            "id": p.id,
+                            "name": p.name,
+                            "category": p.category.value if hasattr(p.category, "value") else str(p.category),
+                            "enabled": is_active and is_global,
+                            "globally_enabled": is_global
+                        })
+            except Exception as e:
+                log.warning(f"Error fetching hostable external plugins: {e}")
+
+            res["channel_id"] = ch
+            res["master_enabled"] = master_enabled
+            res["builtin_effects"] = builtin_effects
+            res["external_plugins"] = chan_ext
+            res["available_external_plugins"] = available_ext
+        elif cmd in ["toggle_channel_effect", "set_channel_effect"]:
+            raw_target = req.get("channel_id") or "mic"
+            ch = self._match_channel_id(raw_target)
+            effect_id = req.get("effect_id", "").strip()
+            explicit_val = req.get("enabled")
+
+            if not effect_id:
+                res["status"] = "error"
+                res["error"] = "Missing effect_id"
+            else:
+                all_fx = dict(config_manager.get("channel_fx", {}))
+                ch_fx = dict(all_fx.get(ch, {}))
+                
+                if effect_id.startswith("dsp_"):
+                    curr_val = bool(ch_fx.get(effect_id, config_manager.get(effect_id, True)))
+                    new_val = (not curr_val) if explicit_val is None else bool(explicit_val)
+                    ch_fx[effect_id] = new_val
+                else:
+                    ext_plugins = dict(ch_fx.get("external_plugins", {}))
+                    curr_val = bool(ext_plugins.get(effect_id, False))
+                    new_val = (not curr_val) if explicit_val is None else bool(explicit_val)
+                    ext_plugins[effect_id] = new_val
+                    ch_fx["external_plugins"] = ext_plugins
+
+                # If turning on an effect and channel rack master bypass was off, activate master
+                if new_val and not ch_fx.get("enabled", True):
+                    ch_fx["enabled"] = True
+
+                all_fx[ch] = ch_fx
+                config_manager.set("channel_fx", all_fx, immediate=True)
+
+                if hasattr(self.pipewire_mgr, "reload_channel_fx"):
+                    self.pipewire_mgr.reload_channel_fx(ch)
+
+                if self.pipewire_mgr.on_external_change_callback:
+                    from gi.repository import GLib
+                    GLib.idle_add(self.pipewire_mgr.on_external_change_callback)
+
+                res["channel_id"] = ch
+                res["effect_id"] = effect_id
+                res["enabled"] = new_val
+                res["master_enabled"] = ch_fx.get("enabled", True)
         elif cmd == "toggle_fx":
             raw_target = req.get("channel_id") or "mic"
             ch = self._match_channel_id(raw_target)
@@ -391,10 +500,13 @@ class IPCServer:
                 all_fx = dict(config_manager.get("channel_fx", {}))
                 all_fx[ch] = ch_fx
                 config_manager.set("channel_fx", all_fx, immediate=True)
-                if not new_val:
-                    self.pipewire_mgr.fx_manager.stop_fx_node(ch)
+                if hasattr(self.pipewire_mgr, "reload_channel_fx"):
+                    self.pipewire_mgr.reload_channel_fx(ch)
                 else:
-                    self.pipewire_mgr.fx_manager.ensure_fx_node(ch)
+                    if not new_val:
+                        self.pipewire_mgr.fx_manager.stop_fx_node(ch)
+                    else:
+                        self.pipewire_mgr.fx_manager.ensure_fx_node(ch)
                 is_enabled = self.pipewire_mgr.fx_manager.is_fx_enabled(ch)
             res["enabled"] = is_enabled
             if self.pipewire_mgr.on_external_change_callback:

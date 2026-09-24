@@ -601,24 +601,33 @@ class FXChainManager:
             return self._chains[channel_id]
 
     def is_fx_enabled(self, channel_id: str) -> bool:
-        """Determines if the FX chain should be active for this channel."""
+        """Determines if the master FX switch is enabled for this channel."""
         ch_fx = config_manager.get("channel_fx", {}).get(channel_id)
         if ch_fx is not None:
-            if not ch_fx.get("enabled", True):
-                return False
-            external_plugins = ch_fx.get("external_plugins", {})
-            external_active = isinstance(external_plugins, dict) and any(external_plugins.values())
-            return external_active or any(ch_fx.get(k, False) for k in (
+            return bool(ch_fx.get("enabled", True))
+        return False
+
+    def has_active_effects(self, channel_id: str) -> bool:
+        """Determines if there are any active DSP or external effects enabled for this channel."""
+        ch_fx = config_manager.get("channel_fx", {}).get(channel_id)
+        if ch_fx is None or not ch_fx.get("enabled", True):
+            return False
+        external_plugins = ch_fx.get("external_plugins", {})
+        globally_ext = config_manager.get("external_plugin_enabled", {})
+        external_active = isinstance(external_plugins, dict) and any(
+            v and globally_ext.get(k, True) for k, v in external_plugins.items()
+        )
+        return external_active or any(
+            ch_fx.get(k, False) and config_manager.get(k, True) for k in (
                 "dsp_highpass", "dsp_noise_suppression", "dsp_noise_gate",
                 "dsp_equalizer", "dsp_compressor", "dsp_deesser", "dsp_limiter"
-            ))
-
-        # Per-channel processing is opt-in. Global DSP defaults describe which
-        # processors are available, not whether a channel has enabled its chain.
-        return False
+            )
+        )
 
     def ensure_fx_node(self, channel_id: str) -> bool:
         """Ensures the FX filter-chain process is running for the channel."""
+        if not self.has_active_effects(channel_id):
+            return False
         chain = self.get_chain(channel_id)
         if not chain.is_running:
             return chain.start()
