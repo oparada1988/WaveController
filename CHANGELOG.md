@@ -2,6 +2,41 @@
 
 All notable changes to WaveController are documented in this file.
 
+## [0.0.4.0] - 2026-09-26 (Alpha 4)
+
+### Added
+- **Slide-out FX Inspector Sidebar**:
+  - Added an interactive, collapsible FX sidebar in the mixer matrix with smooth slide-left animation (`Gtk.Revealer`, 240ms) and click-away background dismissal.
+  - Quick, real-time toggling and intensity adjustments (0–100% sliders) for built-in DSP effects (Equalizer, Compressor, Noise Gate, RNNoise, De-Esser, Limiter, Highpass) and hostable external LV2 plugins.
+- **Granular Stream Deck & IPC Effects Control**:
+  - Added `get_fx_status` command over the Unix IPC socket, returning comprehensive rack state: master bypass, active built-in DSP toggles, and hostable external LV2 plugins.
+  - Added `toggle_fx` for channel master rack bypass, and `toggle_channel_effect` / `set_channel_effect` for targeted per-effect control over individual DSP and LV2 modules.
+  - Decoupled rack bypass logic: enabling any individual effect automatically awakens the master channel rack if it was bypassed.
+- **Virtual System Output Device Exposure for App Channels**:
+  - Single application channels can now be exposed as independent virtual sound cards (`Audio/Sink`) directly to the OS, allowing granular routing in external applications without requiring a group channel.
+- **System Default Output Channel ("Desktop Audio")**:
+  - WaveController can now automatically provision and manage a dedicated "Desktop Audio" virtual sink channel for unassigned application audio streams.
+  - Updated Settings and the Setup Wizard to select the default virtual channel directly.
+
+### Changed
+- **OOBE Setup Wizard Modernization**:
+  - Redesigned Page 5 to remove redundant primary device selectors in favor of automatic hardware mapping and unified system default toggles.
+  - Added automatic provisioning of the Desktop Audio channel when enabling system defaults during initial setup.
+- **Settings View Layout**:
+  - Wrapped the Preferences page in an automatic `Gtk.ScrolledWindow` to prevent UI overflow or footer truncation on compact screen resolutions.
+
+### Fixed
+- **Wave Hardware Disconnect Shield**:
+  - Added `_is_live_elgato_device` checks to prevent physical Wave XLR and Wave microphones from falsely transitioning to "Disconnected" while PipeWire dynamically reloads or switches audio profiles.
+- **System Resume & Power Lifecycle Stability**:
+  - Fixed a native segmentation fault on Linux system resume by declaring explicit 64-bit ctypes function signatures for `libusb_detach_kernel_driver` and `libusb_control_transfer.restype`.
+  - Offloaded USB hardware reconnection routines to worker threads to eliminate UI freezes on wake.
+  - Added hardware suspend awareness to blackout LED rings during sleep and prevent dial event dropouts.
+- **Cross-Device Microphone Isolation**:
+  - Fixed an audio routing edge case to prevent physical microphones or auxiliary inputs from linking or leaking across unrelated audio devices.
+- **Capacitive Mute Hardware Sync**:
+  - Restored visual capacitive mute styling on `MixHeaderCard` when hardware mute states change via physical touch.
+
 ## [0.0.3.4] - 2026-09-12
 
 ### Fixed

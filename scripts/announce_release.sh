@@ -29,6 +29,8 @@ else
     CHANGES=$(git -C "$REPO_DIR" log -n 5 --pretty=format:"• %s" 2>/dev/null || echo "• Maintenance and feature updates.")
 fi
 
+INTRO_MESSAGE="${3:-An official update for **WaveController** is now available!}"
+
 echo "Broadcasting release announcement for ${VERSION} to Discord..."
 
 PAYLOAD=$(jq -n \
@@ -36,6 +38,7 @@ PAYLOAD=$(jq -n \
   --arg title "🚀 WaveController Release: $VERSION" \
   --arg url "https://github.com/oparada1988/WaveController/releases" \
   --arg changes "$CHANGES" \
+  --arg intro "$INTRO_MESSAGE" \
   '{
     username: "WaveController Releases",
     avatar_url: "https://raw.githubusercontent.com/oparada1988/WaveController/main/assets/icons/WaveController.png",
@@ -43,7 +46,7 @@ PAYLOAD=$(jq -n \
       {
         title: $title,
         url: $url,
-        description: ("An official update for **WaveController** is now available!\n\n### 📝 What'\''s Changed\n" + $changes),
+        description: ($intro + "\n\n### 📝 What'\''s Changed\n" + $changes),
         color: 8141549,
         fields: [
           {
