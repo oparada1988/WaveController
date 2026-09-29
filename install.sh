@@ -21,6 +21,7 @@ DESKTOP_DIR="${HOME}/.local/share/applications"
 ICON_PNG_DIR="${HOME}/.local/share/icons/hicolor/512x512/apps"
 ICON_SVG_DIR="${HOME}/.local/share/icons/hicolor/scalable/apps"
 SYSTEMD_USER_DIR="${HOME}/.config/systemd/user"
+WIREPLUMBER_CONF_DIR="${HOME}/.config/wireplumber/wireplumber.conf.d"
 CONFIG_DIR="${HOME}/.config/WaveController"
 AUTOSTART_DIR="${HOME}/.config/autostart"
 
@@ -35,7 +36,7 @@ fi
 print_banner() {
     echo -e "${CYAN}${BOLD}"
     echo "=================================================================="
-    echo "       WaveController — Linux Audio Mixer & Hardware Manager      "
+    echo "       WaveController - Linux Audio Mixer & Hardware Manager      "
     echo "=================================================================="
     echo -e "${NC}"
 }
@@ -46,29 +47,105 @@ show_help() {
     echo -e "${BOLD}Usage:${NC} ./install.sh [OPTION]"
     echo ""
     echo -e "${BOLD}Options:${NC}"
-    echo -e "  ${GREEN}--install, -i${NC}        Install WaveController, desktop launcher, icons, and udev rules (default)"
-    echo -e "  ${BLUE}--upgrade, -u${NC}        Update WaveController to the latest release while preserving settings"
-    echo -e "  ${RED}--uninstall, -r${NC}      Remove WaveController, desktop icons, and launcher wrapper"
+    echo -e "  ${GREEN}--install, -i${NC}        Install WaveController, services, desktop launcher, icons, and udev rules (default)"
+    echo -e "  ${BLUE}--upgrade, -u${NC}        Update WaveController to latest version while preserving settings"
+    echo -e "  ${RED}--uninstall, -r${NC}      Remove WaveController, systemd service, desktop icons, and launcher wrapper"
     echo -e "  ${YELLOW}--autostart${NC}          Enable systemd user service for background launch on desktop login"
     echo -e "  ${YELLOW}--disable-autostart${NC}  Disable systemd background auto-start service"
     echo -e "  ${CYAN}--help, -h${NC}             Show this help message and exit"
     echo ""
     echo -e "${BOLD}Installation Paths:${NC}"
-    echo -e "  • Application:   ${INSTALL_DIR}"
-    echo -e "  • CLI Launcher:  ${BIN_DIR}/wavecontroller"
-    echo -e "  • Desktop Entry: ${DESKTOP_DIR}/com.oparada.WaveController.desktop"
-    echo -e "  • Config State:  ${CONFIG_DIR}/config.json"
+    echo -e "  - Application:    ${INSTALL_DIR}"
+    echo -e "  - CLI Launcher:   ${BIN_DIR}/wavecontroller"
+    echo -e "  - Systemd Unit:   ${SYSTEMD_USER_DIR}/wavecontroller.service"
+    echo -e "  - WirePlumber:    ${WIREPLUMBER_CONF_DIR}/51-wavecontroller-wave-xlr.conf"
+    echo -e "  - Desktop Entry:  ${DESKTOP_DIR}/com.oparada.WaveController.desktop"
+    echo -e "  - Config State:   ${CONFIG_DIR}/config.json"
     echo ""
+}
+
+# Verify System & Python Dependencies
+check_dependencies() {
+    echo -e "${BLUE}[1/6] Checking system dependencies and Python environment...${NC}"
+    local missing_bins=()
+    local missing_py=()
+
+    for bin_cmd in python3 pipewire wireplumber pw-link pw-loopback wpctl rsync udevadm; do
+        if ! command -v "${bin_cmd}" &>/dev/null; then
+            missing_bins+=("${bin_cmd}")
+        fi
+    done
+
+    # Check Python version >= 3.10
+    if command -v python3 &>/dev/null; then
+        local py_ver_ok
+        py_ver_ok=$(python3 -c "import sys; print(1 if sys.version_info >= (3, 10) else 0)" 2>/dev/null || echo 0)
+        if [ "${py_ver_ok}" -ne 1 ]; then
+            missing_bins+=("python3>=3.10")
+        fi
+
+        # Check Python GI, Gtk 4.0, Adw 1, and Pillow
+        if ! python3 -c "import gi; gi.require_version('Gtk', '4.0'); gi.require_version('Adw', '1'); from gi.repository import Gtk, Adw, GLib, Gio" &>/dev/null; then
+            missing_py+=("PyGObject / GTK4 / Libadwaita (gi, Gtk 4.0, Adw 1)")
+        fi
+        if ! python3 -c "import PIL" &>/dev/null; then
+            missing_py+=("Pillow (PIL)")
+        fi
+    fi
+
+    if [ ${#missing_bins[@]} -ne 0 ] || [ ${#missing_py[@]} -ne 0 ]; then
+        echo -e "${RED}[ERROR] Missing required dependencies:${NC}"
+        for b in "${missing_bins[@]}"; do
+            echo -e "  - Binary: ${b}"
+        done
+        for p in "${missing_py[@]}"; do
+            echo -e "  - Python: ${p}"
+        done
+        echo ""
+        echo -e "${YELLOW}Please install the missing dependencies for your Linux distribution:${NC}"
+
+        local distro=""
+        if [ -f /etc/os-release ]; then
+            distro=$(source /etc/os-release 2>/dev/null && echo "${ID} ${ID_LIKE}" || true)
+        fi
+
+        case "${distro}" in
+            *ubuntu*|*debian*|*pop*|*mint*)
+                echo -e "${BOLD}Ubuntu / Debian:${NC}"
+                echo "  sudo apt update && sudo apt install -y python3-gi python3-gi-cairo gir1.2-gtk-4.0 gir1.2-adw-1 python3-pil pipewire wireplumber pipewire-bin rsync"
+                ;;
+            *fedora*|*rhel*|*centos*)
+                echo -e "${BOLD}Fedora / RHEL:${NC}"
+                echo "  sudo dnf install -y python3-gobject gtk4 libadwaita python3-pillow pipewire wireplumber rsync"
+                ;;
+            *arch*|*manjaro*)
+                echo -e "${BOLD}Arch Linux:${NC}"
+                echo "  sudo pacman -S --needed python-gobject gtk4 libadwaita python-pillow pipewire wireplumber rsync"
+                ;;
+            *suse*|*opensuse*)
+                echo -e "${BOLD}openSUSE:${NC}"
+                echo "  sudo zypper install -y python3-gobject gtk4 typelib-1_0-Adw-1 python3-Pillow pipewire wireplumber rsync"
+                ;;
+            *)
+                echo -e "${BOLD}Required packages:${NC}"
+                echo "  Python 3 (>=3.10), PyGObject, GTK 4, Libadwaita 1, Pillow, PipeWire, WirePlumber, pipewire-tools (pw-link, pw-loopback), rsync"
+                ;;
+        esac
+        echo ""
+        exit 1
+    fi
+
+    echo -e "${GREEN}[OK] All required system dependencies and Python libraries are available.${NC}"
 }
 
 # Install / Update Udev Rules & Boot Pre-Init Helper
 install_udev_rules() {
-    echo -e "${BLUE}[1/5] Checking hardware USB permissions & boot pre-init helper (udev rules)...${NC}"
+    echo -e "${BLUE}[2/6] Checking hardware USB permissions & boot pre-init helper (udev rules)...${NC}"
     local udev_file="${REPO_DIR}/data/99-elgato-wave.rules"
     local udev_dest="/etc/udev/rules.d/99-elgato-wave.rules"
     local init_script="${REPO_DIR}/scripts/wavecontroller_hw_init.py"
     local init_dest="/usr/local/bin/wavecontroller-hw-init"
-    
+
     if [ -f "${init_script}" ]; then
         if [ ! -f "${init_dest}" ] || ! cmp -s "${init_script}" "${init_dest}"; then
             echo -e "${YELLOW}Installing WaveController hardware boot pre-init helper (sudo password required)...${NC}"
@@ -83,22 +160,22 @@ install_udev_rules() {
             sudo cp "${udev_file}" "${udev_dest}"
             sudo udevadm control --reload-rules
             sudo udevadm trigger
-            echo -e "${GREEN}✔ udev rules & boot pre-init helper installed and activated successfully.${NC}"
+            echo -e "${GREEN}[OK] udev rules & boot pre-init helper installed and activated successfully.${NC}"
         else
-            echo -e "${GREEN}✔ Hardware udev rules are up to date.${NC}"
+            echo -e "${GREEN}[OK] Hardware udev rules are up to date.${NC}"
         fi
     else
         echo -e "${YELLOW}Downloading latest udev rules from GitHub...${NC}"
         curl -fsSL https://raw.githubusercontent.com/oparada1988/WaveController/main/data/99-elgato-wave.rules | sudo tee "${udev_dest}" > /dev/null
         sudo udevadm control --reload-rules
         sudo udevadm trigger
-        echo -e "${GREEN}✔ udev rules installed and activated successfully.${NC}"
+        echo -e "${GREEN}[OK] udev rules installed and activated successfully.${NC}"
     fi
 }
 
-# Install Core Files
+# Install Core Files & Bundled DSP Plugins
 install_core_files() {
-    echo -e "${BLUE}[2/5] Installing application package to ${INSTALL_DIR}...${NC}"
+    echo -e "${BLUE}[3/6] Installing application package to ${INSTALL_DIR}...${NC}"
     mkdir -p "${INSTALL_DIR}"
     mkdir -p "${BIN_DIR}"
     mkdir -p "${DESKTOP_DIR}"
@@ -121,12 +198,12 @@ install_core_files() {
             cp -n "${REPO_DIR}/wavecontroller/assets/plugins"/*.so "${HOME}/.ladspa/" 2>/dev/null || true
         fi
     else
-        echo -e "${RED}Error: Repository source directory not found.${NC}"
+        echo -e "${RED}[ERROR] Repository source directory not found.${NC}"
         exit 1
     fi
 
     # Create CLI Wrapper in ~/.local/bin
-    echo -e "${BLUE}[3/5] Creating executable wrapper in ${BIN_DIR}/wavecontroller...${NC}"
+    echo -e "${BLUE}Creating executable wrapper in ${BIN_DIR}/wavecontroller...${NC}"
     cat << 'EOF' > "${BIN_DIR}/wavecontroller"
 #!/usr/bin/env bash
 export PATH="${HOME}/.local/bin:${PATH}"
@@ -135,7 +212,7 @@ EOF
     chmod +x "${BIN_DIR}/wavecontroller"
 
     # Install Desktop Icons
-    echo -e "${BLUE}[4/5] Installing desktop application icons...${NC}"
+    echo -e "${BLUE}Installing desktop application icons...${NC}"
     for res in 48x48 64x64 128x128 256x256 512x512; do
         mkdir -p "${HOME}/.local/share/icons/hicolor/${res}/apps"
         if [ -f "${INSTALL_DIR}/assets/icons/com.oparada.WaveController.png" ]; then
@@ -168,7 +245,7 @@ EOF
     fi
 
     # Create Desktop Launcher
-    echo -e "${BLUE}[5/5] Creating desktop menu launcher in ${DESKTOP_DIR}...${NC}"
+    echo -e "${BLUE}Creating desktop menu launcher in ${DESKTOP_DIR}...${NC}"
     cat << EOF > "${DESKTOP_DIR}/com.oparada.WaveController.desktop"
 [Desktop Entry]
 Name=WaveController
@@ -191,38 +268,26 @@ EOF
     if command -v gtk-update-icon-cache >/dev/null 2>&1; then
         gtk-update-icon-cache -f -t "${HOME}/.local/share/icons/hicolor" >/dev/null 2>&1 || true
     fi
-
-    echo ""
-    echo -e "${GREEN}${BOLD}✔ WaveController installed successfully!${NC}"
-    echo -e "Launch it from your application menu or run: ${CYAN}wavecontroller${NC}"
-    echo ""
 }
 
-# Upgrade Installation
-upgrade_app() {
-    print_banner
-    echo -e "${BLUE}Upgrading WaveController to latest version...${NC}"
-    
-    # If inside git repo, pull latest and install pre-commit regression guard
-    if [ -d "${REPO_DIR}/.git" ]; then
-        echo -e "${CYAN}Pulling latest changes from git repository...${NC}"
-        cd "${REPO_DIR}"
-        git pull origin main
-        if [ -f "${REPO_DIR}/scripts/pre-commit-hook.sh" ]; then
-            mkdir -p "${REPO_DIR}/.git/hooks"
-            cp "${REPO_DIR}/scripts/pre-commit-hook.sh" "${REPO_DIR}/.git/hooks/pre-commit"
-            chmod +x "${REPO_DIR}/.git/hooks/pre-commit"
-        fi
+# Deploy WirePlumber Studio Audio Profile (anti-suspend, 48kHz clock pinning)
+install_wireplumber_config() {
+    echo -e "${BLUE}[4/6] Installing WirePlumber studio audio configuration...${NC}"
+    mkdir -p "${WIREPLUMBER_CONF_DIR}"
+    local wp_conf="${REPO_DIR}/data/51-wavecontroller-wave-xlr.conf"
+    if [ -f "${wp_conf}" ]; then
+        cp "${wp_conf}" "${WIREPLUMBER_CONF_DIR}/51-wavecontroller-wave-xlr.conf"
+        echo -e "${GREEN}[OK] WirePlumber 48kHz clock-lock and anti-suspend profile installed.${NC}"
+    elif [ -f "${INSTALL_DIR}/data/51-wavecontroller-wave-xlr.conf" ]; then
+        cp "${INSTALL_DIR}/data/51-wavecontroller-wave-xlr.conf" "${WIREPLUMBER_CONF_DIR}/51-wavecontroller-wave-xlr.conf"
+        echo -e "${GREEN}[OK] WirePlumber 48kHz clock-lock and anti-suspend profile installed.${NC}"
     fi
-
-    install_core_files
-    install_udev_rules
-    echo -e "${GREEN}${BOLD}✔ Upgrade complete! Saved configurations were preserved.${NC}"
 }
 
-# Autostart Management (user-space systemd unit, no sudo required)
-enable_autostart() {
-    # Remove any leftover pre-systemd XDG autostart entry
+# Install Systemd User Service Unit
+install_systemd_service() {
+    echo -e "${BLUE}[5/6] Installing background daemon systemd service unit...${NC}"
+    # Remove leftover pre-systemd XDG autostart entry
     rm -f "${AUTOSTART_DIR}/com.oparada.WaveController.desktop"
 
     mkdir -p "${SYSTEMD_USER_DIR}"
@@ -245,9 +310,51 @@ StandardError=journal
 [Install]
 WantedBy=graphical-session.target
 EOF
+    systemctl --user daemon-reload 2>/dev/null || true
+    echo -e "${GREEN}[OK] Systemd user service unit installed to ${SYSTEMD_USER_DIR}/wavecontroller.service.${NC}"
+}
+
+# Finalize Installation
+finalize_install() {
+    echo -e "${BLUE}[6/6] Finalizing installation...${NC}"
+    echo ""
+    echo -e "${GREEN}${BOLD}[OK] WaveController installed successfully!${NC}"
+    echo -e "Launch it from your application menu or run: ${CYAN}wavecontroller${NC}"
+    echo -e "To enable background startup on login, run: ${CYAN}./install.sh --autostart${NC}"
+    echo ""
+}
+
+# Upgrade Installation
+upgrade_app() {
+    print_banner
+    echo -e "${BLUE}Upgrading WaveController to latest version...${NC}"
+    check_dependencies
+
+    # If inside git repo, pull latest and install pre-commit regression guard
+    if [ -d "${REPO_DIR}/.git" ]; then
+        echo -e "${CYAN}Pulling latest changes from git repository...${NC}"
+        cd "${REPO_DIR}"
+        git pull origin main
+        if [ -f "${REPO_DIR}/scripts/pre-commit-hook.sh" ]; then
+            mkdir -p "${REPO_DIR}/.git/hooks"
+            cp "${REPO_DIR}/scripts/pre-commit-hook.sh" "${REPO_DIR}/.git/hooks/pre-commit"
+            chmod +x "${REPO_DIR}/.git/hooks/pre-commit"
+        fi
+    fi
+
+    install_udev_rules
+    install_core_files
+    install_wireplumber_config
+    install_systemd_service
+    echo -e "${GREEN}${BOLD}[OK] Upgrade complete! Saved configurations were preserved.${NC}"
+}
+
+# Autostart Management (user-space systemd unit, no sudo required)
+enable_autostart() {
+    install_systemd_service
     systemctl --user daemon-reload
     systemctl --user enable --now wavecontroller.service
-    echo -e "${GREEN}✔ WaveController background auto-start enabled via systemd user service.${NC}"
+    echo -e "${GREEN}[OK] WaveController background auto-start enabled via systemd user service.${NC}"
 }
 
 disable_autostart() {
@@ -255,14 +362,15 @@ disable_autostart() {
     systemctl --user stop wavecontroller.service 2>/dev/null || true
     systemctl --user disable wavecontroller.service 2>/dev/null || true
     rm -f "${SYSTEMD_USER_DIR}/wavecontroller.service" 2>/dev/null || true
-    echo -e "${YELLOW}✔ WaveController background auto-start disabled.${NC}"
+    systemctl --user daemon-reload 2>/dev/null || true
+    echo -e "${YELLOW}[OK] WaveController background auto-start disabled.${NC}"
 }
 
 # Uninstallation
 uninstall_app() {
     print_banner
     echo -e "${YELLOW}Uninstalling WaveController...${NC}"
-    
+
     # 1. Terminate running processes
     pkill -f "python3.*wavecontroller/main.py" || true
     pkill -f "pw-loopback.*WaveController" || true
@@ -272,6 +380,7 @@ uninstall_app() {
     rm -rf "${INSTALL_DIR}"
     rm -f "${BIN_DIR}/wavecontroller"
     sudo rm -f "/usr/local/bin/wavecontroller-hw-init" 2>/dev/null || true
+    rm -f "${WIREPLUMBER_CONF_DIR}/51-wavecontroller-wave-xlr.conf"
     rm -f "${DESKTOP_DIR}/com.oparada.WaveController.desktop"
     rm -f "${AUTOSTART_DIR}/com.oparada.WaveController.desktop"
     rm -f "${ICON_PNG_DIR}/com.oparada.WaveController.png"
@@ -285,28 +394,32 @@ uninstall_app() {
         gtk-update-icon-cache -f -t "${HOME}/.local/share/icons/hicolor" >/dev/null 2>&1 || true
     fi
 
-    echo -e "${GREEN}✔ Application, desktop entry, and icons removed.${NC}"
-    
+    echo -e "${GREEN}[OK] Application, systemd service, desktop entry, and icons removed.${NC}"
+
     # Prompt for configuration removal
     if [ -d "${CONFIG_DIR}" ]; then
         read -p "Do you also want to remove your saved settings (~/.config/WaveController)? [y/N]: " confirm
         if [[ "$confirm" =~ ^[Yy]$ ]]; then
             rm -rf "${CONFIG_DIR}"
-            echo -e "${GREEN}✔ User configuration purged.${NC}"
+            echo -e "${GREEN}[OK] User configuration purged.${NC}"
         else
             echo -e "${CYAN}Configuration files preserved at ${CONFIG_DIR}.${NC}"
         fi
     fi
     echo ""
-    echo -e "${GREEN}${BOLD}✔ Uninstallation complete.${NC}"
+    echo -e "${GREEN}${BOLD}[OK] Uninstallation complete.${NC}"
 }
 
 # Main Execution Routing
 case "$1" in
     --install|-i|"")
         print_banner
+        check_dependencies
         install_udev_rules
         install_core_files
+        install_wireplumber_config
+        install_systemd_service
+        finalize_install
         ;;
     --upgrade|-u)
         upgrade_app

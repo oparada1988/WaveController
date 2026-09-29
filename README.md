@@ -2,7 +2,9 @@
 
 <h2 align="center"><strong>NOTICE: EARLY STAGES OF DEVELOPMENT</strong></h2>
 
-**WaveController** is a modern, native Linux multi-track audio mixing engine, PipeWire compatible, and hardware manager. Designed to provide the complete **Elgato Wave Link**, **Wave Device** tier-1, first class experience on Linux. It also supports other 3rd party USB devices. It is **HEAVILY** developed using Google Antigravity, but heavily tested, and troubleshot by a real human! Currently only supports the Wave XLR(non MK2) and other USB based audio devicess, with the goal to support all Elgato Wave devices, and popular third party hardware.
+**WaveController** is a native Linux multi-track audio mixing engine, PipeWire session manager, and hardware controller. It is engineered to deliver the full **Elgato Wave Link** and **Wave Device** tier-1 experience natively on Linux, alongside universal support for third-party USB microphones and audio interfaces.
+
+WaveController is actively developed, human-tested, and audited on production Linux audio workstations. Hardware support currently centers on the **Elgato Wave XLR (MK1)**, with scaffolded support and milestones planned for the Wave XLR MK2, Wave:3, and Wave:1.
 
 <p align="center">
   <a href="https://discord.gg/Mhu29PcPJ">
@@ -13,58 +15,129 @@
 <img width="1750" height="1185" alt="Screenshot From 2026-08-25 13-45-00" src="https://github.com/user-attachments/assets/ab713660-c190-4dc0-9c23-c9409d873834" />
 <img width="1750" height="1185" alt="Screenshot From 2026-08-25 13-45-06" src="https://github.com/user-attachments/assets/ea92b5b0-ddcb-46d2-90d4-3115ebcae015" />
 
+---
 
+### Supported Hardware Devices
+
+WaveController organizes hardware support into two distinct operational tiers:
+
+- **Tier 1 (Native Elgato USB Protocol)**: Direct communication with on-device hardware controllers via raw `libusb` control transfers on Endpoint 0 (`wIndex=0x3303`). This bypasses standard Linux kernel ALSA driver locks, permitting real-time control of analog preamp gain, true 48V phantom power, dual-stage hardware Clipguard limiters, low-cut filters, capacitive touch mute events, and customizable RGB LED rings without interrupting audio capture or playback.
+- **Tier 2 (Universal USB Microphones & Audio Interfaces)**: Comprehensive compatibility with any standard USB audio device. Missing hardware features (such as analog limiters or high-pass filters) are emulated transparently in software through PipeWire DSP filter graphs.
+
+| Device | USB VID:PID | Support Tier | Hardware Features | Status |
+| :--- | :--- | :--- | :--- | :--- |
+| **Elgato Wave XLR (MK1)** | `0fd9:007d` | Tier 1 (Native USB) | 0–75 dB Preamp Gain, 48V Phantom Power, Clipguard Limiter, 80Hz/120Hz Low-Cut, Capacitive Touch Mute, Headphone Volume, Mic/PC Crossfade, RGB LED Ring | **Fully Supported** |
+| **Elgato Wave XLR MK2** | `0fd9:00b6` | Tier 1 (Native USB) | 0–75 dB Preamp Gain, 48V Phantom Power, Clipguard Limiter, 80Hz/120Hz Low-Cut, Capacitive Touch Mute, Headphone Volume, Mic/PC Crossfade, RGB LED Ring | Planned (Beta 1) |
+| **Elgato Wave:3** | `0fd9:0070` | Tier 1 (Native USB) | 0–40 dB Gain, Clipguard Limiter, 80Hz/120Hz Low-Cut, Capacitive Touch Mute, Headphone Volume, Mic/PC Crossfade, LED Bar Sync | Planned (Beta 1) |
+| **Elgato Wave:1** | `0fd9:007c` | Tier 1 (Native USB) | Software Gain, Clipguard Limiter, 80Hz/120Hz Low-Cut, Hardware Dial Mute, Headphone Volume | Planned |
+| **Generic USB Microphones & Interfaces** | Any USB Audio Device | Tier 2 (Universal) | Software Gain, Emulated Clipguard Limiter, Emulated Low-Cut Filter, PipeWire Submix Routing, System Mute Sync | **Fully Supported** |
 
 ---
 
 ### Features
 
-* **Modular Audio Engine & Regression Protection**:
-  * **Decoupled Architecture**: Modularized into specialized subsystems (`engine/graph/process_classifier` and `engine/metering/capture_driver`).
-  * **31-Test Audio Invariant Suite**: Automated regression suite guarding zero-bleed audio contracts, submix loopback states, group channel isolation, and binary priority mapping.
-  * **Git Pre-Commit Safety Guard**: Automatically blocks regressions on commit.
-* **App Group Channels & Virtual System Audio Devices**:
-  * **Multi-App Bundling**: Group multiple audio streams (e.g., Discord + Slack + Zoom, or Spotify + Firefox) into a unified channel strip with dynamic stream chips and `[✕]` remove buttons.
-  * **Expose as System Audio Device**: Optionally expose any Group Channel as a dedicated virtual PipeWire sink (`WaveController_Channel_<name>`), allowing applications with in-app device selectors (Discord, OBS, games) or Desktop Settings to route directly into the group.
-  * **Strict Channel Exclusivity**: Dedicated **Application Channels** provide streamlined 1:1 control, while **Group Channels** handle multi-app bundling and virtual sink exposure.
-  * **Instant (<25ms) Zero-Bleed Metering**: Event-driven hooks attach VU taps on the very next frame with zero idle process churn and zero cross-bleed.
-* **Clean System Audio Menus & Direct Ingestion**:
-  * System settings (Desktop Settings, Discord Output, Browser Menus) display **ONLY** true Output Mixes (*Personal Mix*, *Application Mix*, *Stream Mix*) and explicitly exposed Group Channels.
-  * Internal ingestion channels remain purely within WaveController's matrix, eliminating menu clutter.
-* **Authoritative App Classification & Zero Collisions**:
-  * Prioritizes `application.process.binary` metadata to completely eliminate Chromium/Electron collisions (e.g. Discord, Slack, Teams vs Google Chrome).
-* **Studio-Grade Perceptual VU Metering**:
-  * Smooth 40 FPS unbuffered PCM stream metering with OBS/Wave Link broadcast $-54\text{ dBFS}$ to $0\text{ dBFS}$ loudness curves.
-  * Strict zero-bleed microphone and channel isolation across independent submix faders.
-* **Multi-Track Virtual Sub-Mixing**:
-  * Virtual Audio Input Channels & App Groups
-  * Independent Output Buses
-  * Independent Faders & Mute Controls per channel and mix bus.
-* **Tier 1 First-Class Elgato Hardware Integration**:
-  * Native USB Control Transfers (`wIndex=0x3303`) without needing custom kernel modules.
-  * $0\text{--}75\text{dB}$ Preamp Gain Control.
-  * 48V Phantom Power toggle for condenser microphones.
-  * Enhanced Low-Cut High-Pass Filter (80Hz / 120Hz).
-  * Clipguard dual-stage analog/digital limiter.
-  * Bi-directional Capacitive Touch Mute synchronization.
-  * Hardware Headphone Volume and Mic/PC Crossfade.
-  * Gain, Volume, Mute peak on Wave XLR
-* **Tier 2 Universal Microphone & Interface Support**:
-  * Compatible with any USB microphone (Fifine, Blue Yeti, Rode, Shure, Audio-Technica).
-  * Software-emulated Clipguard limiter and Low-Cut filters via PipeWire.
-* **GNOME Microphone Icon Bypass**:
-  * Real-time VU peak monitoring and helper sub-mix streams are spoofed with `application.id=org.PulseAudio.pavucontrol` and `media.role=volume-control` to prevent GNOME Shell from displaying a persistent orange recording microphone indicator on the top panel.
+#### 1. Slide-Out FX Inspector Sidebar & Real-Time DSP Rack
+- **Animated FX Sidebar**: Smooth 240ms slide-out revealer panel in the mixer matrix with click-away background dismissal.
+- **Live DSP Controls**: Real-time intensity sliders (0–100%) and toggle controls for built-in audio processing modules:
+  - 10-Band Parametric Equalizer
+  - Studio Compressor
+  - Noise Gate
+  - RNNoise Neural Network Noise Suppression
+  - De-Esser
+  - Fast Lookahead Peak Limiter
+  - High-Pass Filter (80Hz / 120Hz)
+- **Rotary Intensity Dials**: Fine-grained rotary dials with neutral center detents, vertical drag, and scroll-wheel nudge support.
+
+#### 2. External Audio Plugin Architecture (VST3 & LV2)
+- **Plugin Installation Manager**: Install external VST3 and LV2 plugin bundles via drag-and-drop or directory pickers.
+- **Safe Symlink Management**: Plugins are linked into `~/.vst3` and `~/.lv2` and tracked in an installation manifest for clean removal.
+- **Custom Scan Directories**: Add custom search paths for DAW-bundled, Flatpak, or system-wide audio plugin folders.
+- **Deduplicated Plugin Index**: External plugin browser isolates user-installed plugins from internal system duplicates.
+
+#### 3. Unix IPC Socket API & Stream Deck / StreamController Integration
+- **High-Performance Unix Domain Socket**: Local control socket located at `~/.config/WaveController/ipc.sock`.
+- **Granular DSP Commands**: Supports `get_fx_status`, `toggle_fx` (master rack bypass), `toggle_channel_effect`, and `set_channel_effect`.
+- **Hardware & UI Parity**: Bi-directional synchronization between Stream Deck keys, rotary dials, hardware buttons, and GUI state.
+
+#### 4. Virtual System Output Sinks & Desktop Audio
+- **Direct Sound Card Exposure**: Single application channels can be exposed as independent virtual PipeWire sound cards (`media.class="Audio/Sink"`), enabling discrete routing inside external software (OBS, Discord, games) without requiring a group channel.
+- **Desktop Audio Default Sink**: Dedicated virtual sink channel that automatically captures and controls unassigned desktop audio streams.
+
+#### 5. Application Group Channels & Direct Matrix Ingestion
+- **Multi-App Bundling**: Combine multiple audio streams (e.g., Discord + Slack + Zoom, or Spotify + Firefox) into a single fader strip with removable stream chips.
+- **Clean Audio Menus**: Internal channel ingestion sinks stay contained within WaveController, preventing menu clutter in system settings.
+
+#### 6. Real-Time Stream Routing & Binary Classification
+- **Instant Stream Reconcile**: Event-driven `pw-mon` stream monitor immediately routes newly launched applications or browser tabs with zero audible lag.
+- **Authoritative Process Classification**: Inspects `application.process.binary` metadata to eliminate collisions between Chromium and Electron applications.
+
+#### 7. Studio-Grade Perceptual VU Metering
+- **Broadcast-Calibrated Ballistics**: 40 FPS unbuffered PCM stream metering with calibrated -54 dBFS to 0 dBFS loudness curves.
+- **Zero-Bleed Isolation**: Strict channel and submix separation prevents cross-talk across independent monitoring faders.
+
+#### 8. Multi-Track Virtual Sub-Mixing
+- **Discrete Output Buses**: Manage independent mixes (Personal Mix, Stream Mix, Application Mix) with discrete per-channel faders and mute states.
+- **Master Bus Headers**: Output cards provide hardware assignment, volume sliders, mute toggles, and direct monitor routing.
+
+#### 9. Hardware Disconnect Shield & Power Lifecycle Protection
+- **Disconnect Shield**: Prevents physical Wave devices from falsely reporting as offline during dynamic PipeWire profile switches.
+- **Resume Protection**: 64-bit ctypes libusb signatures prevent native segmentation faults across system sleep cycles.
+- **Resume Mute Shield & Blackout**: Automatically turns off hardware LEDs during sleep and silences hardware outputs on wake until USB registers are fully synchronized, eliminating clicks, pops, and volume spikes.
+
+#### 10. GNOME Panel Recording Indicator Bypass
+- Metering taps and internal helper loopbacks report with `application.id=org.PulseAudio.pavucontrol` and `media.role=volume-control`, preventing GNOME Shell from displaying a persistent recording microphone pill on the top panel.
+
+#### 11. Modular Audio Engine & Regression Invariants
+- Modular subsystems separate graph resolution, metering capture, and hardware control.
+- Automated audio invariant regression test suite verifies routing invariants, zero-bleed contracts, and link stability.
+- Pre-commit git hook blocks regressions from entering the codebase.
+
+---
+
+### System Requirements & Dependencies
+
+WaveController requires a modern Linux distribution running PipeWire with WirePlumber session management.
+
+#### Runtime Dependencies
+- **Audio Subsystem**: PipeWire (>= 0.3.50), WirePlumber (>= 0.4.10), `pw-link`, `pw-loopback`, `wpctl`
+- **Runtime Environment**: Python (>= 3.10)
+- **GUI Framework**: GTK 4, Libadwaita 1, PyGObject, Pillow (PIL)
+- **System Tools**: `rsync`, `udevadm`
+
+#### Distribution Package Commands
+
+**Ubuntu / Debian / Pop!_OS / Linux Mint**:
+```bash
+sudo apt update && sudo apt install -y python3-gi python3-gi-cairo gir1.2-gtk-4.0 gir1.2-adw-1 python3-pil pipewire wireplumber pipewire-bin rsync
+```
+
+**Fedora / RHEL**:
+```bash
+sudo dnf install -y python3-gobject gtk4 libadwaita python3-pillow pipewire wireplumber rsync
+```
+
+**Arch Linux / Manjaro**:
+```bash
+sudo pacman -S --needed python-gobject gtk4 libadwaita python-pillow pipewire wireplumber rsync
+```
+
+**openSUSE (Tumbleweed / Leap)**:
+```bash
+sudo zypper install -y python3-gobject gtk4 typelib-1_0-Adw-1 python3-Pillow pipewire wireplumber rsync
+```
+
+---
 
 ### Installation & Setup
 
 #### 1. One-Line Remote Installer
-Install WaveController, desktop launcher, application icons, and `udev` hardware permissions in a single command:
+Install WaveController, systemd service units, desktop launcher, icons, WirePlumber profiles, and udev hardware permissions:
 ```bash
 curl -fsSL https://raw.githubusercontent.com/oparada1988/WaveController/main/install.sh | bash
 ```
 
-#### 2. Local Script Installation
-Clone the repository and run the management script:
+#### 2. Local Repository Installation
+Clone the repository and run the installation script:
 ```bash
 git clone https://github.com/oparada1988/WaveController.git
 cd WaveController
@@ -75,27 +148,51 @@ cd WaveController
 
 ### Management Script Options (`install.sh`)
 
-The unified installer script supports the following flags:
+The unified installer manages installation, systemd user services, and upgrades:
 
-| Flag / Option | Description |
+| Option | Description |
 | :--- | :--- |
-| **`./install.sh`** (or `-i`, `--install`) | Installs application to `~/.local/share/wavecontroller`, creates CLI wrapper `~/.local/bin/wavecontroller`, installs desktop icons, and configures `udev` rules. |
-| **`./install.sh -u`** (`--upgrade`) | Pulls latest code from Git, syncs the installation, and refreshes icons while **preserving all user configurations**. |
-| **`./install.sh -r`** (`--uninstall`) | Cleanly removes the application package, desktop menu entry, icons, and launcher wrapper. |
-| **`./install.sh --autostart`** | Enables a systemd user service (`wavecontroller.service`) to start WaveController automatically on desktop login. |
-| **`./install.sh --disable-autostart`** | Disables the background systemd startup service. |
+| **`./install.sh`** (or `-i`, `--install`) | Checks dependencies, installs application files to `~/.local/share/wavecontroller`, deploys WirePlumber studio profiles, installs the systemd unit, creates CLI launcher `~/.local/bin/wavecontroller`, installs icons, and configures `udev` rules. |
+| **`./install.sh -u`** (`--upgrade`) | Pulls latest code from Git, updates application files, refreshes systemd and WirePlumber units, and syncs icons while preserving user configuration. |
+| **`./install.sh -r`** (`--uninstall`) | Cleanly stops and removes the systemd service, WirePlumber profile drop-in, desktop menu entry, icons, and application files. |
+| **`./install.sh --autostart`** | Enables and starts the user-space systemd unit (`wavecontroller.service`) to run the audio daemon on login. |
+| **`./install.sh --disable-autostart`** | Disables and stops the systemd background auto-start service. |
 | **`./install.sh -h`** (`--help`) | Displays script usage and path information. |
 
 ---
 
 ### Standard Installation Paths
 
-* **Application Codebase**: `~/.local/share/wavecontroller/`
-* **CLI Executable**: `~/.local/bin/wavecontroller`
-* **Desktop Application Entry**: `~/.local/share/applications/com.oparada.WaveController.desktop`
-* **Desktop Icons**: `~/.local/share/icons/hicolor/512x512/apps/com.oparada.WaveController.png`
-* **User Configuration**: `~/.config/WaveController/config.json`
-* **Hardware Permissions**: `/etc/udev/rules.d/99-elgato-wave.rules`
+- **Application Directory**: `~/.local/share/wavecontroller/`
+- **CLI Executable**: `~/.local/bin/wavecontroller`
+- **Systemd User Service**: `~/.config/systemd/user/wavecontroller.service`
+- **WirePlumber Studio Profile**: `~/.config/wireplumber/wireplumber.conf.d/51-wavecontroller-wave-xlr.conf`
+- **Desktop Menu Entry**: `~/.local/share/applications/com.oparada.WaveController.desktop`
+- **Desktop Icons**: `~/.local/share/icons/hicolor/` (48x48 through 512x512, scalable, and symbolic)
+- **User Configuration**: `~/.config/WaveController/config.json`
+- **IPC Socket**: `~/.config/WaveController/ipc.sock`
+- **Hardware Udev Permissions**: `/etc/udev/rules.d/99-elgato-wave.rules`
+- **Hardware Boot Pre-Init Helper**: `/usr/local/bin/wavecontroller-hw-init`
+
+---
+
+### Background Service Management (Systemd)
+
+WaveController includes a user-level systemd service that manages background audio routing and mixer state without requiring root privileges:
+
+```bash
+# Start background daemon
+systemctl --user start wavecontroller.service
+
+# Check daemon status and journal logs
+systemctl --user status wavecontroller.service
+
+# Enable automatic start on user login
+systemctl --user enable --now wavecontroller.service
+
+# Disable background startup
+systemctl --user disable --now wavecontroller.service
+```
 
 ---
 
@@ -104,19 +201,29 @@ The unified installer script supports the following flags:
 If you only need to install or update the hardware USB permissions manually:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/oparada1988/WaveController/main/data/99-elgato-wave.rules | sudo tee /etc/udev/rules.d/99-elgato-wave.rules > /dev/null && sudo udevadm control --reload-rules && sudo udevadm trigger && echo "✔ Elgato Wave udev rules successfully installed and activated!"
+curl -fsSL https://raw.githubusercontent.com/oparada1988/WaveController/main/data/99-elgato-wave.rules | sudo tee /etc/udev/rules.d/99-elgato-wave.rules > /dev/null && sudo udevadm control --reload-rules && sudo udevadm trigger && echo "Elgato Wave udev rules installed and activated."
 ```
-
-### Documentation & Roadmap
-
-* [**Technical Roadmap & Milestones**](ROADMAP.md) — Live progress and objectives tracked on [GitHub Milestones](https://github.com/oparada1988/WaveController/milestones).
-* [**Elgato Wave Hardware & PipeWire Audio Architecture**](docs/WaveController_Elgato_Hardware_Technical_Architecture.md) — In-depth reverse-engineered USB memory maps, mode-isolated capacitive muting architecture, and PipeWire graph diagrams.
 
 ---
 
 ### Running WaveController
 
-Once installed, launch it directly from your desktop application launcher or run:
+Once installed, launch WaveController from your desktop application launcher or run:
+
 ```bash
 wavecontroller
 ```
+
+To run exclusively as a background routing daemon (without showing the main mixer window):
+
+```bash
+wavecontroller --daemon
+```
+
+---
+
+### Documentation & Milestones
+
+- [**Technical Roadmap & Milestones**](ROADMAP.md) - Live tracking of milestones and features on [GitHub Milestones](https://github.com/oparada1988/WaveController/milestones).
+- [**Elgato Wave Hardware & PipeWire Architecture**](docs/WaveController_Elgato_Hardware_Technical_Architecture.md) - Reverse-engineered USB memory maps, mode-isolated capacitive muting architecture, and PipeWire graph diagrams.
+- [**License**](LICENSE) - WaveController is licensed under the GNU General Public License v3.0 (GPL-3.0).

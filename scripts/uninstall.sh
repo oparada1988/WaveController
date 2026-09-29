@@ -18,6 +18,7 @@ systemctl --user daemon-reload 2>/dev/null || true
 echo "Removing PipeWire configuration drop-ins..."
 rm -f "$PIPEWIRE_CONF_DIR/99-wavecontroller.conf"
 rm -f "${XDG_CONFIG_HOME:-$HOME/.config}/pipewire/pipewire-pulse.conf.d/99-wavecontroller.conf"
+rm -f "${XDG_CONFIG_HOME:-$HOME/.config}/wireplumber/wireplumber.conf.d/51-wavecontroller-wave-xlr.conf"
 
 # 3. Clean up WaveController configuration & socket directory
 echo "Removing WaveController configuration & IPC socket directory..."
