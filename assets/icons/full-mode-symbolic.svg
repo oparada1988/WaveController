@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">
+  <!-- Outward diagonal arrows representing full mode / expand -->
+  <g fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <!-- Top-Right arrow pointing outward -->
+    <path d="M 9.5 6.5 L 14 2" />
+    <path d="M 9.5 2 L 14 2 L 14 6.5" />
+    <!-- Bottom-Left arrow pointing outward -->
+    <path d="M 6.5 9.5 L 2 14" />
+    <path d="M 6.5 14 L 2 14 L 2 9.5" />
+  </g>
+</svg>

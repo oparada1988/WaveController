@@ -7,8 +7,6 @@ Completely isolated from application discovery heuristics and microphone capture
 """
 
 import re
-import json
-import time
 import subprocess
 from wavecontroller.engine.graph.stream_resolver import resolve_physical_device_ports
 from wavecontroller.engine.config_manager import config_manager
@@ -26,87 +24,6 @@ class SubmixSinkManager:
         self._submix_procs = {}       # {(channel_id, mix_id): subprocess.Popen}
         self._submix_node_ids = {}    # {(channel_id, mix_id): [node_id, ...]}
         self._mix_node_ids_cache = {} # {mix_id: [node_id, ...]}
-
-    def ensure_virtual_nodes(self, mixes: list, channels: list) -> bool:
-        """
-        Provisions necessary PipeWire null-audio-sink nodes for mixes and exposed group channels.
-        Destroys stale/orphan nodes.
-        """
-        needed_nodes = {}
-        for m in mixes:
-            m_id = m["id"]
-            m_name = m["name"]
-            m_type = m.get("type", "source")
-
-            if m_id == "personal" or m_type == "sink":
-                node_name = f"WaveController_{m_id}_Sink"
-                needed_nodes[node_name] = (f"WaveController {m_name} (Sink)", "Audio/Sink", True)
-            else:
-                node_name = f"WaveController_{m_id}_Source"
-                needed_nodes[node_name] = (f"WaveController {m_name}", "Audio/Source/Virtual", False)
-
-        for ch in channels:
-            ch_id = ch["id"]
-            if ch.get("type") == "source":
-                continue
-            if ch.get("expose_sink", False):
-                ch_name = ch.get("name", ch_id)
-                node_name = f"WaveController_Channel_{ch_id}"
-                needed_nodes[node_name] = (f"WaveController {ch_name} (Sink)", "Audio/Sink", False)
-
-        existing_active_names = set()
-        try:
-            out = subprocess.check_output(["pw-dump"], text=True, stderr=subprocess.DEVNULL)
-            data = json.loads(out)
-            valid_submix_names = {f"WaveController_submix_{ch['id']}_{mx['id']}" for ch in channels for mx in mixes}
-
-            for obj in data:
-                props = obj.get("info", {}).get("props", {})
-                n_name = props.get("node.name", "")
-                n_desc = props.get("node.description", "")
-                if "WaveController_submix_" in n_name:
-                    sub_clean = n_name.replace("input.", "").replace("output.", "")
-                    if sub_clean not in valid_submix_names:
-                        obj_id = obj.get("id")
-                        if obj_id:
-                            subprocess.run(["pw-cli", "destroy", str(obj_id)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                elif n_name.startswith("WaveController_") or n_desc.startswith("WaveController "):
-                    if n_name not in needed_nodes:
-                        obj_id = obj.get("id")
-                        if obj_id:
-                            subprocess.run(["pw-cli", "destroy", str(obj_id)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                    elif (str(props.get("node.hidden", False)).lower() in ("true", "1")) != needed_nodes[n_name][2]:
-                        obj_id = obj.get("id")
-                        if obj_id:
-                            subprocess.run(["pw-cli", "destroy", str(obj_id)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                    elif n_name in existing_active_names:
-                        # Duplicate node with identical name already tracked! Destroy duplicate to ensure strict 1:1 node cardinality
-                        obj_id = obj.get("id")
-                        if obj_id:
-                            subprocess.run(["pw-cli", "destroy", str(obj_id)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                    else:
-                        existing_active_names.add(n_name)
-        except Exception:
-            pass
-
-        nodes_created = False
-        for node_name, node_tuple in needed_nodes.items():
-            desc = node_tuple[0]
-            media_class = node_tuple[1]
-            is_hidden = node_tuple[2]
-            if node_name not in existing_active_names:
-                try:
-                    hidden_value = "true" if is_hidden else "false"
-                    cmd = f'{{ factory.name=support.null-audio-sink node.name="{node_name}" node.description="{desc}" media.class={media_class} node.hidden={hidden_value} object.linger=true }}'
-                    subprocess.run(["pw-cli", "create-node", "adapter", cmd], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                    nodes_created = True
-                except Exception:
-                    pass
-
-        if nodes_created:
-            time.sleep(0.08)
-        self._mix_node_ids_cache.clear()
-        return nodes_created
 
     def sync_physical_output_routing(self, mixes: list, mix_id: str = None, out_ports: list = None, in_ports: list = None, 
                                      get_mix_mute_fn = None, links_map: dict = None):
@@ -163,9 +80,11 @@ class SubmixSinkManager:
 
             is_personal = m_id in ("personal", "personal_mix") or (m_type == "sink" and "personal" in m_id)
             if is_personal:
-                target_dev = config_manager.get("default_output_device", "") or m.get("target_device", "") or "default"
-                if "wavecontroller" in str(target_dev).lower():
-                    target_dev = "default"
+                target_dev = getattr(self.pipewire_mgr, "selected_monitor_device", None) or config_manager.get("default_output_device", "") or m.get("target_device", "") or "default"
+                if not target_dev or "wavecontroller" in str(target_dev).lower():
+                    target_dev = config_manager.get("default_output_device", "") or m.get("target_device", "") or "default"
+                    if "wavecontroller" in str(target_dev).lower():
+                        target_dev = "default"
                 m["target_device"] = target_dev
             else:
                 target_dev = m.get("target_device", "none" if not is_personal else "default")

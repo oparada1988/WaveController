@@ -160,8 +160,19 @@ class IPCServer:
                 if self._match_mix_id(m.get("id")) == mix_id:
                     mix_info = m
                     break
-        target = str(mix_info.get("target_device", "") if mix_info else "").lower()
-        return "wave" in target or "elgato" in target or "personal" in str(mix_id).lower() or target in ("default", "")
+        if not mix_info:
+            return False
+
+        # Virtual sources (Chat Mix, Stream Mix) are inputs and NEVER drive the physical headphone output
+        if str(mix_info.get("type", "sink")).lower() in ("source", "input", "virtual_source"):
+            return False
+
+        target = str(mix_info.get("target_device", "")).lower()
+        if "wave" in target or "elgato" in target:
+            return True
+        if ("personal" in str(mix_id).lower() or mix_info.get("id") == "personal") and (not target or "wave" in target or "elgato" in target):
+            return True
+        return False
 
     def _process_command(self, req: dict) -> dict:
         cmd = req.get("command")

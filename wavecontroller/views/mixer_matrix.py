@@ -27,7 +27,10 @@ class MixerMatrixView(Gtk.Box):
         self.channel_cards = {}
         self.matrix_cells = {} # {(channel_id, mix_id): MatrixCell}
         self.mix_headers = {} # {mix_id: MixHeaderCard}
-        self.pipewire_mgr.on_external_change_callback = self._on_external_sync
+        if hasattr(self.pipewire_mgr, "add_external_change_listener"):
+            self.pipewire_mgr.add_external_change_listener(self._on_external_sync)
+        else:
+            self.pipewire_mgr.on_external_change_callback = self._on_external_sync
         if self.hardware_mgr and hasattr(self.hardware_mgr, "add_hardware_listener"):
             self.hardware_mgr.add_hardware_listener(lambda curr, changed: GLib.idle_add(self._on_hardware_sync, curr, changed))
         
@@ -1398,10 +1401,7 @@ class MixerMatrixView(Gtk.Box):
                         break
             log.info(f"[WaveController.Matrix] _on_external_sync mix target_header={header.mix_info.get('name') if header else None} (target_id={target_id}, value={value})")
             if header:
-                if value is not None:
-                    header.set_volume(value)
-                else:
-                    header.update_ui_state()
+                header.update_ui_state()
             for (ch, m), cell in self.matrix_cells.items():
                 if m == target_id:
                     cell.update_ui_state()

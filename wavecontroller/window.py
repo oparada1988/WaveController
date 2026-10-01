@@ -7,8 +7,10 @@ from gi.repository import Gtk, Adw, Gdk, Pango, GLib
 from .views.mixer_matrix import MixerMatrixView
 from .views.device_settings import UnifiedDeviceSettingsView, AddDeviceDialog, SelectDefaultDeviceDialog
 from .views.effects_view import EffectsView
+from .views.audio_flow_view import AudioFlowView
 from .views.settings_view import SettingsView
 from .views.setup_wizard import SetupWizardDialog
+from .views.compact_mixer import CompactMixerWindow
 from .engine.config_manager import config_manager
 from .utils.logger import get_logger
 
@@ -28,6 +30,7 @@ class WaveMainWindow(Adw.ApplicationWindow):
             self.hardware_mgr.pipewire_mgr = self.pipewire_mgr
             self.pipewire_mgr.hardware_mgr = self.hardware_mgr
 
+        self.compact_window = None
         self.device_views = {}
         self.device_buttons = {}
         self._sidebar_text_widgets = []
@@ -92,6 +95,15 @@ class WaveMainWindow(Adw.ApplicationWindow):
         self._sidebar_toggle_btn = sidebar_toggle
         self._apply_sidebar_state(sidebar)
 
+        # Compact Mode Launcher Button (Right side of the title bar)
+        compact_btn = Gtk.Button.new_from_icon_name("compact-mode-symbolic")
+        compact_btn.add_css_class("flat")
+        compact_btn.add_css_class("wave-icon-btn")
+        compact_btn.set_tooltip_text("Compact Mode")
+        compact_btn.connect("clicked", lambda btn: self._enter_compact_mode())
+        header_bar.pack_end(compact_btn)
+        self.compact_btn = compact_btn
+
         # 2. Main Content Stack
         self.stack = Gtk.Stack()
         self.stack.set_transition_type(Gtk.StackTransitionType.CROSSFADE)
@@ -111,6 +123,13 @@ class WaveMainWindow(Adw.ApplicationWindow):
             on_global_fx_changed_callback=self._on_global_fx_changed
         )
         self.stack.add_named(self.effects_view, "effects")
+
+        self.audio_flow_view = AudioFlowView(
+            pipewire_mgr=self.pipewire_mgr,
+            hardware_mgr=self.hardware_mgr,
+            peak_monitor=self.peak_monitor
+        )
+        self.stack.add_named(self.audio_flow_view, "audio_flow")
 
         self.settings_view = SettingsView(
             self.hardware_mgr,
@@ -172,10 +191,17 @@ class WaveMainWindow(Adw.ApplicationWindow):
     def _on_close_request(self, win):
         # Immediate: ensures the final geometry isn't lost if the app quits before the debounce timer fires
         self.save_window_state(immediate=True)
+        if hasattr(self, "audio_flow_view") and hasattr(self.audio_flow_view, "cleanup"):
+            self.audio_flow_view.cleanup()
+        if self.compact_window:
+            self.compact_window.set_visible(False)
         close_to_tray = config_manager.get("close_to_tray", True)
         if close_to_tray:
             self.set_visible(False)
             return True  # Prevents default destruction and keeps daemon running
+        if self.compact_window:
+            self.compact_window.destroy()
+            self.compact_window = None
         return False
 
     def _build_sidebar(self) -> Gtk.Box:
@@ -225,6 +251,23 @@ class WaveMainWindow(Adw.ApplicationWindow):
         self.fx_btn.set_child(fx_box)
         self.fx_btn.connect("clicked", lambda b: self._switch_view("effects", self.fx_btn))
         sidebar.append(self.fx_btn)
+
+        self.audio_flow_btn = Gtk.Button()
+        self.audio_flow_btn.add_css_class("flat")
+        self.audio_flow_btn.add_css_class("wave-sidebar-row")
+
+        flow_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+        flow_icon = Gtk.Image.new_from_icon_name("audio-flow-symbolic")
+        flow_icon.set_pixel_size(24)
+        flow_lbl = Gtk.Label(label="Audio Flow")
+        self._register_sidebar_text(flow_lbl)
+        flow_lbl.set_halign(Gtk.Align.START)
+        flow_lbl.set_hexpand(True)
+        flow_box.append(flow_icon)
+        flow_box.append(flow_lbl)
+        self.audio_flow_btn.set_child(flow_box)
+        self.audio_flow_btn.connect("clicked", lambda b: self._switch_view("audio_flow", self.audio_flow_btn))
+        sidebar.append(self.audio_flow_btn)
 
         # Section 2: Audio Hardware Devices Header with [+] button (2nd Position)
         sec2_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
@@ -467,8 +510,15 @@ class WaveMainWindow(Adw.ApplicationWindow):
         # Handle View Selection & Persistence
         if target_view and target_view in self.device_buttons:
             self._switch_view(target_view, self.device_buttons[target_view])
-        elif target_view in ("mixes", "settings", "effects"):
-            btn = self.mixes_btn if target_view == "mixes" else (self.fx_btn if target_view == "effects" else self.settings_btn)
+        elif target_view in ("mixes", "settings", "effects", "audio_flow"):
+            if target_view == "mixes":
+                btn = self.mixes_btn
+            elif target_view == "effects":
+                btn = self.fx_btn
+            elif target_view == "audio_flow":
+                btn = getattr(self, "audio_flow_btn", self.mixes_btn)
+            else:
+                btn = self.settings_btn
             self._switch_view(target_view, btn)
         else:
             self._switch_view("mixes", self.mixes_btn)
@@ -672,8 +722,11 @@ class WaveMainWindow(Adw.ApplicationWindow):
             btn.remove_css_class("selected")
         self.mixes_btn.remove_css_class("selected")
         self.fx_btn.remove_css_class("selected")
+        if hasattr(self, "audio_flow_btn"):
+            self.audio_flow_btn.remove_css_class("selected")
         self.settings_btn.remove_css_class("selected")
 
+        # 1. Update button selection styling
         if active_btn:
             active_btn.add_css_class("selected")
         elif name in self.device_buttons:
@@ -682,8 +735,16 @@ class WaveMainWindow(Adw.ApplicationWindow):
             self.mixes_btn.add_css_class("selected")
         elif name == "effects":
             self.fx_btn.add_css_class("selected")
+        elif name == "audio_flow" and hasattr(self, "audio_flow_btn"):
+            self.audio_flow_btn.add_css_class("selected")
         elif name == "settings":
             self.settings_btn.add_css_class("selected")
+
+        # 2. View activation & dynamic refresh hooks
+        if name == "audio_flow":
+            if hasattr(self, "audio_flow_view") and hasattr(self.audio_flow_view, "refresh"):
+                self.audio_flow_view.refresh()
+        elif name == "settings":
             if hasattr(self, "settings_view") and hasattr(self.settings_view, "refresh_device_list"):
                 self.settings_view.refresh_device_list()
 
@@ -701,6 +762,9 @@ class WaveMainWindow(Adw.ApplicationWindow):
             self.mixer_view.refresh_all_faders()
         if hasattr(self, "settings_view") and hasattr(self.settings_view, "refresh_device_list"):
             self.settings_view.refresh_device_list()
+        if self.compact_window and self.compact_window.get_visible():
+            self.compact_window.refresh()
+            self.compact_window.sync_all_faders()
 
     def _on_device_disconnected(self, device_key: str):
         """Keep configured virtual mixes alive during a temporary hardware loss."""
@@ -716,10 +780,44 @@ class WaveMainWindow(Adw.ApplicationWindow):
             self.mixer_view.refresh_all_faders()
         if hasattr(self, "settings_view") and hasattr(self.settings_view, "refresh_mix_defaults"):
             self.settings_view.refresh_mix_defaults()
+        if self.compact_window and self.compact_window.get_visible():
+            self.compact_window.refresh()
+            self.compact_window.sync_all_faders()
 
     def _on_mix_list_changed(self):
         if hasattr(self, "settings_view") and hasattr(self.settings_view, "refresh_mix_defaults"):
             self.settings_view.refresh_mix_defaults()
+        if hasattr(self, "audio_flow_view") and hasattr(self.audio_flow_view, "refresh"):
+            self.audio_flow_view.refresh()
+        if self.compact_window and self.compact_window.get_visible():
+            self.compact_window.refresh()
+
+    def _enter_compact_mode(self):
+        log.info("[WaveController.Window] Switching to Compact Mode")
+        self.save_window_state(immediate=True)
+        self.set_visible(False)
+        if not self.compact_window:
+            self.compact_window = CompactMixerWindow(
+                pipewire_mgr=self.pipewire_mgr,
+                peak_monitor=self.peak_monitor,
+                hardware_mgr=self.hardware_mgr,
+                restore_callback=self._restore_from_compact
+            )
+        else:
+            self.compact_window.refresh()
+        self.compact_window.set_visible(True)
+        self.compact_window.present()
+
+    def _restore_from_compact(self, target_view: str = None):
+        log.info("[WaveController.Window] Restoring to Full Mode")
+        if self.compact_window:
+            self.compact_window.set_visible(False)
+        self.set_visible(True)
+        self.present()
+        if target_view and hasattr(self, "_switch_view"):
+            self._switch_view(target_view)
+        if hasattr(self, "mixer_view") and hasattr(self.mixer_view, "refresh_all_faders"):
+            self.mixer_view.refresh_all_faders()
 
     def _on_global_fx_changed(self):
         """Live-refreshes per-channel FX popovers after global DSP or plugin library changes."""

@@ -857,3 +857,235 @@ window.theme-midnight .group-drawer-container {
     border-color: alpha(@window_fg_color, 0.08);
 }
 
+/* =========================================================================
+   Audio Flow Visualizer Styling
+   ========================================================================= */
+
+.graph-toolbar {
+    background-color: alpha(@card_bg_color, 0.45);
+    border: 1px solid alpha(white, 0.07);
+    border-radius: 12px;
+    padding: 6px 14px;
+}
+
+window.theme-midnight .graph-toolbar {
+    background-color: #1a1b20;
+    border-color: rgba(255, 255, 255, 0.07);
+}
+
+.graph-toolbar .title-label {
+    font-weight: 800;
+    font-size: 15px;
+    color: #e8e8ec;
+    margin-right: 8px;
+}
+
+.graph-toolbar .zoom-label {
+    font-weight: 700;
+    font-size: 13px;
+    min-width: 48px;
+    color: #e0e0e4;
+}
+
+.clear-sel-btn {
+    background-color: alpha(#3b82f6, 0.22);
+    color: #60a5fa;
+    border: 1px solid alpha(#3b82f6, 0.40);
+    border-radius: 8px;
+    font-size: 11px;
+    font-weight: 700;
+    padding: 2px 12px;
+}
+
+.clear-sel-btn:hover {
+    background-color: alpha(#3b82f6, 0.35);
+    color: #93c5fd;
+}
+
+.graph-status-bar {
+    background-color: alpha(@card_bg_color, 0.35);
+    border: 1px solid alpha(white, 0.06);
+    border-radius: 10px;
+    padding: 5px 14px;
+}
+
+window.theme-midnight .graph-status-bar {
+    background-color: #15161a;
+    border-color: rgba(255, 255, 255, 0.06);
+}
+
+.graph-status-bar label {
+    font-size: 11px;
+    color: alpha(white, 0.55);
+}
+
+.lock-active {
+    color: @accent_color;
+}
+
+.line-style-box {
+    background-color: alpha(white, 0.06);
+    border-radius: 8px;
+    padding: 2px;
+}
+
+.line-style-box button {
+    min-height: 24px;
+    min-width: 28px;
+    padding: 2px 8px;
+    border-radius: 6px;
+    font-size: 11px;
+    font-weight: 600;
+    color: alpha(white, 0.55);
+    background: transparent;
+    border: none;
+    box-shadow: none;
+}
+
+.line-style-box button:checked,
+.line-style-box button.active-style {
+    background-color: alpha(@accent_color, 0.35);
+    color: white;
+}
+
+.legend-item {
+    font-size: 11px;
+    font-weight: 600;
+    margin-right: 10px;
+}
+
+/* =========================================================================
+   Compact Mixer Mode Styles
+   ========================================================================= */
+
+window.compact-mixer-window {
+    background-color: #111114;
+    color: #e4e4e7;
+}
+
+.compact-header-bar {
+    background-color: #16161a;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+    padding: 2px 6px;
+}
+
+.compact-target-btn {
+    border-radius: 8px;
+    padding: 3px 8px;
+    background-color: rgba(255, 255, 255, 0.05);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.compact-target-btn:hover {
+    background-color: rgba(255, 255, 255, 0.10);
+    border-color: rgba(255, 255, 255, 0.15);
+}
+
+.compact-target-label {
+    font-size: 13px;
+    font-weight: 600;
+    color: #f4f4f5;
+}
+
+.compact-target-row {
+    padding: 6px 10px;
+    border-radius: 6px;
+    font-size: 13px;
+    color: rgba(255, 255, 255, 0.85);
+}
+
+.compact-target-row:hover {
+    background-color: rgba(255, 255, 255, 0.08);
+    color: #ffffff;
+}
+
+.compact-target-row.selected {
+    background-color: rgba(145, 70, 255, 0.22);
+    color: #e9d5ff;
+}
+
+.compact-scrolled-window {
+    background-color: #111114;
+}
+
+.compact-horizontal-box {
+    padding: 12px 14px;
+}
+
+.compact-vertical-box {
+    padding: 12px 14px;
+}
+
+/* Horizontal Mode: Vertical Channel Strips */
+.compact-strip-card {
+    background-color: #1a1a22;
+    border: 1px solid rgba(255, 255, 255, 0.07);
+    border-radius: 12px;
+    padding: 12px 8px;
+    transition: border-color 150ms ease, background-color 150ms ease;
+}
+
+.compact-strip-card:hover {
+    border-color: rgba(255, 255, 255, 0.14);
+    background-color: #1f1f2a;
+}
+
+.compact-strip-card.muted {
+    border-color: rgba(239, 68, 68, 0.25);
+}
+
+/* Vertical Mode: Horizontal Channel Rows */
+.compact-row-card {
+    background-color: #1a1a22;
+    border: 1px solid rgba(255, 255, 255, 0.07);
+    border-radius: 10px;
+    padding: 6px 12px;
+    transition: border-color 150ms ease, background-color 150ms ease;
+}
+
+.compact-row-card:hover {
+    border-color: rgba(255, 255, 255, 0.14);
+    background-color: #1f1f2a;
+}
+
+.compact-row-card.muted {
+    border-color: rgba(239, 68, 68, 0.25);
+}
+
+/* Mix Master Output Card (Distinctive Subtle Accent) */
+.compact-mix-master-card {
+    background-color: #1d1e2a;
+    border: 1px solid rgba(145, 70, 255, 0.25);
+}
+
+.compact-mix-master-card:hover {
+    border-color: rgba(145, 70, 255, 0.45);
+    background-color: #232435;
+}
+
+.compact-channel-name {
+    font-size: 11px;
+    font-weight: 700;
+    line-height: 1.2;
+    color: rgba(255, 255, 255, 0.9);
+}
+
+.compact-vol-label {
+    font-size: 11px;
+    font-weight: 600;
+    color: rgba(255, 255, 255, 0.65);
+    font-feature-settings: "tnum";
+}
+
+.compact-mute-btn {
+    min-width: 28px;
+    min-height: 28px;
+    padding: 4px;
+    border-radius: 50%;
+}
+
+.compact-mute-btn.muted {
+    color: #ef4444;
+    background-color: rgba(239, 68, 68, 0.15);
+}
+

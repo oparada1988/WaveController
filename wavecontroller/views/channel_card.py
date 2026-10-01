@@ -410,17 +410,6 @@ class ChannelCard(Gtk.Box):
             new_val = self.hardware_mgr.set_phantom_power(False)
             self.update_phantom_state(new_val)
 
-    def _on_hardware_state_sync(self, curr: dict, changed: dict):
-        if self.is_wave_channel:
-            dial_mode = curr.get("dial_mode", "gain")
-            if "phantom_power" in changed:
-                self.update_phantom_state(bool(changed["phantom_power"]))
-            if "mute" in changed and "dial_mode" not in changed and dial_mode == "gain":
-                self.set_muted(bool(changed["mute"]))
-            if "gain_db" in changed and dial_mode == "gain":
-                vol_pct = max(0, min(100, int(round((float(changed["gain_db"]) / 75.0) * 100))))
-                self.set_master_volume(vol_pct, self.pipewire_mgr.get_channel_master_mute(self.channel_info["id"]))
-
     def update_phantom_state(self, is_active: bool):
         if hasattr(self, "phantom_btn") and self.phantom_btn:
             if is_active:
@@ -1115,11 +1104,7 @@ class ChannelCard(Gtk.Box):
             self.on_link_toggle_callback(ch_id, True)
 
     def set_master_volume(self, volume: int, is_muted: bool = False):
-        ch_id = self.channel_info["id"]
         self.slider.set_volume(volume, is_muted)
-        self.pipewire_mgr.set_channel_master_volume(ch_id, volume)
-        if self.pipewire_mgr.is_channel_linked(ch_id) and self.on_link_toggle_callback:
-            self.on_link_toggle_callback(ch_id, True)
 
     def set_muted(self, is_muted: bool):
         vol = self.pipewire_mgr.get_channel_master_volume(self.channel_info["id"])
@@ -1207,11 +1192,14 @@ class ChannelCard(Gtk.Box):
     def _on_hardware_synced(self, curr: dict, changed: dict):
         if not (getattr(self, "is_mic_channel", False) or getattr(self, "is_wave_channel", False)):
             return
-        if "gain_db" in changed and self.hardware_mgr:
+        dial_mode = curr.get("dial_mode", "gain")
+        if "mute" in changed and "dial_mode" not in changed and dial_mode == "gain":
+            self.set_muted(bool(changed["mute"]))
+        if "gain_db" in changed and self.hardware_mgr and dial_mode == "gain":
             gain_db = changed["gain_db"]
             vol_pct = max(0, min(100, int(round((gain_db / 75.0) * 100))))
             is_muted = self.pipewire_mgr.get_channel_master_mute(self.channel_info["id"])
-            if self.slider.volume != vol_pct:
+            if self.slider.volume != vol_pct or self.slider.is_muted != is_muted:
                 self.slider.set_volume(vol_pct, is_muted)
         if "phantom_power" in changed and hasattr(self, "phantom_btn"):
             self.update_phantom_state(bool(changed["phantom_power"]))

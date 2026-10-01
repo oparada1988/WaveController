@@ -383,11 +383,15 @@ class UnifiedDeviceSettingsView(Gtk.Box):
             self.hardware_mgr.add_hardware_listener(self._hw_listener_cb)
 
         # Start live meter timer if mic is available
+        self._meter_tick_id = None
         if self.device_type in ["duplex", "input"]:
-            GLib.timeout_add(25, self._on_meter_tick)
+            self._meter_tick_id = GLib.timeout_add(25, self._on_meter_tick)
 
     def cleanup(self):
-        """Unregisters the hardware listener; call before dropping the last reference to this view."""
+        """Unregisters the hardware listener and meter timer; call before dropping the last reference to this view."""
+        if getattr(self, "_meter_tick_id", None) is not None:
+            GLib.source_remove(self._meter_tick_id)
+            self._meter_tick_id = None
         if self._hw_listener_cb and self.hardware_mgr and hasattr(self.hardware_mgr, "remove_hardware_listener"):
             self.hardware_mgr.remove_hardware_listener(self._hw_listener_cb)
             self._hw_listener_cb = None
@@ -622,6 +626,9 @@ class UnifiedDeviceSettingsView(Gtk.Box):
             self.hardware_mgr.set_device_assigned_mix(self.device_key, mix["id"])
 
     def _on_meter_tick(self) -> bool:
+        if getattr(self, "_meter_tick_id", None) is None:
+            return False
+
         if not self.get_mapped():
             return True
 

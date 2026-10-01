@@ -102,7 +102,7 @@ class PipeWireManager:
         self._pending_node_dispatches = {}
         self._bound_stream_nodes = set()
         self._bound_unassigned_nodes = set()   # tracks unassigned streams bound to physical fallback
-        self.on_external_change_callback = None
+        self._external_change_listeners = []
         self._is_sleeping = False
         self._resume_mute_shield = False
         self.peak_monitor = None
@@ -117,6 +117,41 @@ class PipeWireManager:
     def set_peak_monitor(self, peak_mon):
         """Links the active MultiChannelPeakMonitor instance for real-time <25ms reactive metering."""
         self.peak_monitor = peak_mon
+
+    def add_external_change_listener(self, cb):
+        """Registers a listener callback for external IPC or hardware volume/mix changes."""
+        if not hasattr(self, "_external_change_listeners"):
+            self._external_change_listeners = []
+        if cb and cb not in self._external_change_listeners:
+            self._external_change_listeners.append(cb)
+
+    def remove_external_change_listener(self, cb):
+        """Unregisters an external change listener callback."""
+        if hasattr(self, "_external_change_listeners") and cb in self._external_change_listeners:
+            self._external_change_listeners.remove(cb)
+
+    def dispatch_external_change(self, target_type=None, target_id=None, value=None):
+        """Dispatches an external change event to all registered listeners on the GTK main loop."""
+        for cb in list(getattr(self, "_external_change_listeners", [])):
+            try:
+                cb(target_type, target_id, value)
+            except TypeError:
+                try:
+                    cb()
+                except Exception as e:
+                    log.error(f"[WaveController] Error dispatching to external change listener: {e}")
+            except Exception as e:
+                log.error(f"[WaveController] Error dispatching to external change listener: {e}")
+        return False
+
+    @property
+    def on_external_change_callback(self):
+        return self.dispatch_external_change
+
+    @on_external_change_callback.setter
+    def on_external_change_callback(self, cb):
+        if cb is not None:
+            self.add_external_change_listener(cb)
 
     def _notify_peak_monitor_refresh(self):
         """Immediately signals the peak monitor to attach to newly assigned or modified streams (<25ms)."""
@@ -2588,18 +2623,6 @@ class PipeWireManager:
                 for n_id in node_ids:
                     self._dispatch_node_volume(str(n_id), mix_gain, effective_mute)
 
-    def toggle_channel_link(self, channel_id: str, mix_id: str) -> bool:
-        with self._lock:
-            if channel_id in self.channel_states and mix_id in self.channel_states[channel_id]:
-                curr = self.channel_states[channel_id][mix_id].get("linked", True)
-                new_val = not curr
-                for m_id in self.channel_states[channel_id]:
-                    self.channel_states[channel_id][m_id]["linked"] = new_val
-                self._save_state_to_config(immediate=True)
-                self._sync_channel_audio_routing(channel_id)
-                return new_val
-        return True
-
     def is_channel_mix_compatible(self, channel_id: str, mix_id: str) -> bool:
         """Returns True since any audio channel can be routed to any mix bus."""
         return True
@@ -3127,186 +3150,6 @@ class PipeWireManager:
                 get_mix_mute_fn=self.get_mix_master_mute,
                 links_map=links_map
             )
-            return
-
-        if out_ports is None:
-            try:
-                try:
-                    out_ports_raw = subprocess.check_output(["pw-link", "-I", "-o"], text=True, stderr=subprocess.DEVNULL)
-                except Exception:
-                    out_ports_raw = ""
-                if not out_ports_raw:
-                    out_ports_raw = subprocess.check_output(["pw-link", "-o"], text=True, stderr=subprocess.DEVNULL)
-                out_ports = [l.strip() for l in out_ports_raw.splitlines() if l.strip()]
-            except Exception:
-                out_ports = []
-
-        if in_ports is None:
-            try:
-                try:
-                    in_ports_raw = subprocess.check_output(["pw-link", "-I", "-i"], text=True, stderr=subprocess.DEVNULL)
-                except Exception:
-                    in_ports_raw = ""
-                if not in_ports_raw:
-                    in_ports_raw = subprocess.check_output(["pw-link", "-i"], text=True, stderr=subprocess.DEVNULL)
-                in_ports = [l.strip() for l in in_ports_raw.splitlines() if l.strip()]
-            except Exception:
-                in_ports = []
-
-        clean_out_ports = {re.sub(r'^\d+\s+', '', p).strip() for p in out_ports}
-        clean_in_ports = [re.sub(r'^\d+\s+', '', p).strip() for p in in_ports]
-        links_map = self._get_pw_links_map()
-
-        with self._lock:
-            mixes_copy = list(self.mixes)
-
-        mixes_to_sync = [m for m in mixes_copy if mix_id is None or m["id"] == mix_id]
-
-        for m in mixes_to_sync:
-            m_id = m["id"]
-            m_type = m.get("type", "source")
-
-            is_personal = m_id in ("personal", "personal_mix") or (m_type == "sink" and "personal" in m_id)
-            if is_personal:
-                target_dev = getattr(self, "selected_monitor_device", None) or config_manager.get("default_output_device", "") or m.get("target_device", "") or "default"
-                if not target_dev or "wavecontroller" in str(target_dev).lower():
-                    target_dev = config_manager.get("default_output_device", "") or m.get("target_device", "") or "default"
-                    if "wavecontroller" in str(target_dev).lower():
-                        target_dev = "default"
-                m["target_device"] = target_dev
-            else:
-                target_dev = m.get("target_device", "none" if not is_personal else "default")
-
-            if m_type != "sink" and not is_personal:
-                continue
-
-            mon_fl = f"WaveController_{m_id}_Sink:monitor_FL"
-            mon_fr = f"WaveController_{m_id}_Sink:monitor_FR"
-
-            desired_fl = set()
-            desired_fr = set()
-
-            is_mix_muted = self.get_mix_master_mute(m_id)
-            if target_dev and target_dev != "none" and not is_mix_muted:
-                clean_target = str(target_dev).replace("alsa_card.", "").replace("alsa_output.", "").replace("alsa_input.", "").strip().lower()
-                if not clean_target or clean_target in ("default", "none") or "wavecontroller" in clean_target:
-                    wave_ports = [p for p in clean_in_ports if ("wave" in p.lower() or "elgato" in p.lower()) and ":playback_" in p and p.startswith("alsa_output.")]
-                    if wave_ports:
-                        clean_target = wave_ports[0].split(":")[0].replace("alsa_output.", "").strip().lower()
-                    else:
-                        first_alsa_nodes = [p.split(":")[0] for p in clean_in_ports if p.startswith("alsa_output.") and ":playback_" in p]
-                        if first_alsa_nodes:
-                            clean_target = first_alsa_nodes[0].replace("alsa_output.", "").strip().lower()
-
-                for p in clean_in_ports:
-                    if p.startswith("WaveController_") or p.startswith("output.WaveController_") or p.startswith("input.WaveController_"):
-                        continue
-                    if ":playback_" not in p or not p.startswith("alsa_output."):
-                        continue
-                    
-                    p_low = p.lower()
-                    matched = False
-                    if clean_target and clean_target != "default":
-                        if clean_target in p_low:
-                            matched = True
-                        else:
-                            dev_tokens = self._get_match_tokens(clean_target)
-                            if self._port_matches_tokens(p, dev_tokens):
-                                matched = True
-                    elif clean_target == "default":
-                        first_alsa_nodes = [p_clean.split(":")[0] for p_clean in clean_in_ports if p_clean.startswith("alsa_output.") and ":playback_" in p_clean]
-                        if first_alsa_nodes and p.startswith(f"{first_alsa_nodes[0]}:"):
-                            matched = True
-
-                    if matched:
-                        suffix = p.split(":")[-1].lower()
-                        if "_fl" in suffix or suffix.endswith("_1") or suffix.endswith("_l") or suffix == "playback_0":
-                            desired_fl.add(p)
-                        elif "_fr" in suffix or suffix.endswith("_2") or suffix.endswith("_r") or suffix == "playback_1":
-                            desired_fr.add(p)
-
-                # Resilient fallback for Personal Mix to ensure headphones are NEVER left unlinked
-                if is_personal and (not desired_fl or not desired_fr):
-                    alsa_playback_ports = [p for p in clean_in_ports if p.startswith("alsa_output.") and ":playback_" in p]
-                    wave_ports = [p for p in alsa_playback_ports if "wave" in p.lower() or "elgato" in p.lower()]
-                    candidate_ports = wave_ports or alsa_playback_ports
-                    for p in candidate_ports:
-                        suffix = p.split(":")[-1].lower()
-                        if ("_fl" in suffix or suffix.endswith("_1") or suffix.endswith("_l") or suffix == "playback_0") and not desired_fl:
-                            desired_fl.add(p)
-                        elif ("_fr" in suffix or suffix.endswith("_2") or suffix.endswith("_r") or suffix == "playback_1") and not desired_fr:
-                            desired_fr.add(p)
-
-            # Reconcile FL links
-            raw_fl_links = links_map.get(mon_fl, set())
-            clean_fl_links = {re.sub(r'^\d+\s+', '', d).strip() for d in raw_fl_links if not d.isdigit()}
-            for linked_dest in list(clean_fl_links):
-                if linked_dest.startswith("alsa_output.") and linked_dest not in desired_fl:
-                    try:
-                        subprocess.run(["pw-link", "-d", mon_fl, linked_dest], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                    except Exception:
-                        pass
-            if mon_fl in clean_out_ports:
-                for dest in desired_fl:
-                    if dest not in clean_fl_links:
-                        try:
-                            subprocess.run(["pw-link", mon_fl, dest], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                        except Exception:
-                            pass
-
-            # Reconcile FR links
-            raw_fr_links = links_map.get(mon_fr, set())
-            clean_fr_links = {re.sub(r'^\d+\s+', '', d).strip() for d in raw_fr_links if not d.isdigit()}
-            for linked_dest in list(clean_fr_links):
-                if linked_dest.startswith("alsa_output.") and linked_dest not in desired_fr:
-                    try:
-                        subprocess.run(["pw-link", "-d", mon_fr, linked_dest], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                    except Exception:
-                        pass
-            if mon_fr in clean_out_ports:
-                for dest in desired_fr:
-                    if dest not in clean_fr_links:
-                        try:
-                            subprocess.run(["pw-link", mon_fr, dest], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                        except Exception:
-                            pass
-
-            if m_id in ("personal", "personal_mix") or (m_type == "sink" and "personal" in m_id):
-                # Reconcile Fallback Sink monitor ports to the same physical monitor device target
-                fb_mon_fl = next((p for p in clean_out_ports if p.startswith("WaveController_Fallback_Sink:") and ("_fl" in p.lower() or "_1" in p or ":output_1" in p or ":monitor_fl" in p.lower())), "WaveController_Fallback_Sink:monitor_FL")
-                fb_mon_fr = next((p for p in clean_out_ports if p.startswith("WaveController_Fallback_Sink:") and ("_fr" in p.lower() or "_2" in p or ":output_2" in p or ":monitor_fr" in p.lower())), "WaveController_Fallback_Sink:monitor_FR")
-
-                raw_fb_fl = links_map.get(fb_mon_fl, set())
-                clean_fb_fl = {re.sub(r'^\d+\s+', '', d).strip() for d in raw_fb_fl if not d.isdigit()}
-                for linked_dest in list(clean_fb_fl):
-                    if linked_dest.startswith("alsa_output.") and linked_dest not in desired_fl:
-                        try:
-                            subprocess.run(["pw-link", "-d", fb_mon_fl, linked_dest], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                        except Exception:
-                            pass
-                if fb_mon_fl in clean_out_ports:
-                    for dest in desired_fl:
-                        if dest not in clean_fb_fl:
-                            try:
-                                subprocess.run(["pw-link", fb_mon_fl, dest], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                            except Exception:
-                                pass
-
-                raw_fb_fr = links_map.get(fb_mon_fr, set())
-                clean_fb_fr = {re.sub(r'^\d+\s+', '', d).strip() for d in raw_fb_fr if not d.isdigit()}
-                for linked_dest in list(clean_fb_fr):
-                    if linked_dest.startswith("alsa_output.") and linked_dest not in desired_fr:
-                        try:
-                            subprocess.run(["pw-link", "-d", fb_mon_fr, linked_dest], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                        except Exception:
-                            pass
-                if fb_mon_fr in clean_out_ports:
-                    for dest in desired_fr:
-                        if dest not in clean_fb_fr:
-                            try:
-                                subprocess.run(["pw-link", fb_mon_fr, dest], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                            except Exception:
-                                pass
 
     def get_channel_state(self, channel_id: str, mix_id: str) -> dict:
         canon_mix = self._match_mix_id(mix_id)
