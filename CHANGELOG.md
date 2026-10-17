@@ -2,6 +2,52 @@
 
 All notable changes to WaveController are documented in this file.
 
+## [0.0.4.2] - 2026-10-17 (Pre-Alpha)
+
+### Added
+- **Native Linux Packaging (.deb and .rpm)**:
+  - Added complete Debian packaging infrastructure (`packaging/debian/control`, `postinst`, `postrm`) for Ubuntu/Debian distributions.
+  - Added Red Hat / Fedora RPM packaging infrastructure (`packaging/rpm/wavecontroller.spec`) supporting `x86_64` architecture, systemd user service integration, and udev rule deployment.
+  - Automated package creation via `scripts/build_packages.sh` for local builds.
+  - Added GitHub Actions CI/CD workflow (`.github/workflows/build-packages.yml`) automatically building `.deb` and `.rpm` artifacts and attaching them along with SHA256 checksums to GitHub Releases.
+- **Contextual Signal Strip in Audio Flow**:
+  - Implemented an interactive `SignalStrip` property bar embedded in the Audio Flow toolbar for selected nodes.
+  - Real-time controls for output target device selection, volume faders, mute toggles, and hardware microphone preamps (48V phantom power status badge & Clipguard toggle).
+- **Embedded FX Rack Inspector in Audio Flow**:
+  - Integrated slide-over `FXSidebar` into the Audio Flow graph view with quick-access DSP parameter sliders.
+  - Added a reactive `.wave-fx-badge` to the toolbar that glows violet when channel effects are active and dims when bypassed.
+- **Personal Mix Target Flexibility**:
+  - Unlocked the output target selector dropdown in `MixHeaderCard` for the Personal Mix, allowing personal monitoring to be routed to any hardware audio sink.
+  - Updated `SinkManager` to honor custom Personal Mix sink routing while preserving OOBE wizard defaults.
+- **Bidirectional Matrix & Graph Synchronization**:
+  - Connected mixer matrix cross-point cells directly to Audio Flow connection states so linking or severing channels in one view instantly updates the other in real time.
+
+### Changed
+- **Unified Toolbar Button Styling**:
+  - Matched the `Add Channel` button style to the standard muted `Add Mix` button style.
+  - Locked toolbar height to 46px to eliminate view jumping between Mixer Matrix and Audio Flow.
+- **Repository Cleanup & Optimization**:
+  - Removed deprecated scratch test scripts (`scripts/live_hardware_test.py`) and eliminated unused internal routing variables.
+
+## [0.0.4.1] - 2026-10-17 (Pre-Alpha)
+
+### Added
+- **Audio Flow View (Patchbay Topology)**:
+  - Added an interactive 3-stage visual audio routing graph (`[CHANNELS] -> [MIXES] -> [OUTPUTS]`).
+  - Interactive Bézier connection cables with audio-reactive flow pulses reflecting live VU levels.
+  - Node isolation, multi-selection, and persistent layout coordinate saving.
+- **Wave Link Compact Mode**:
+  - Added a dedicated compact mixer window with dual horizontal and vertical layouts.
+  - Submix filtering to focus on specific audio mixes (e.g. Stream Mix, Personal Mix).
+  - Dedicated submix master output strips with synchronized hardware dial control.
+- **VolumeControllerPlus Bidirectional IPC Sync**:
+  - Implemented a multi-listener IPC dispatcher in `PipeWireManager` enabling real-time volume, mute, and peak telemetry synchronization across external controllers and plugins.
+
+### Performance & Optimization
+- Eliminated 40 FPS VU meter timer leaks on view switching and destruction.
+- Throttled Cairo canvas draw ticks when Audio Flow is hidden or unmapped.
+- Cleaned up physical fallback routing logic to streamline PipeWire stream reconciliation.
+
 ## [0.0.4.0] - 2026-09-26 (Alpha 4)
 
 ### Added
