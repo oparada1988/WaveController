@@ -48,7 +48,7 @@ jobs:
     steps:
       - name: Install Build Tools
         run: |
-          dnf install -y rpm-build python3 tar git rsync findutils
+          dnf install -y rpm-build systemd-rpm-macros python3 tar git rsync findutils
 
       - name: Mark Git Directory Safe
         run: |
@@ -60,7 +60,7 @@ jobs:
       - name: Build RPM Package
         run: |
           chmod +x scripts/build_packages.sh
-          bash -x ./scripts/build_packages.sh --rpm
+          ./scripts/build_packages.sh --rpm
 
       - name: Upload RPM Artifact
         uses: actions/upload-artifact@v4

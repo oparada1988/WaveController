@@ -7,6 +7,9 @@ URL:            https://github.com/oparada1988/WaveController
 Source0:        wavecontroller-%{version}.tar.gz
 BuildArch:      x86_64
 
+# Define systemd userunitdir if not provided by macros
+%{!?_userunitdir: %global _userunitdir %{_prefix}/lib/systemd/user}
+
 # Disable debuginfo package generation
 %define debug_package %{nil}
 %define _enable_debug_packages 0
@@ -117,3 +120,7 @@ fi
 %{_datadir}/wireplumber/wireplumber.conf.d/51-wavecontroller-wave-xlr.conf
 %{_prefix}/lib/udev/rules.d/99-elgato-wave.rules
 %{_prefix}/lib/ladspa/*.so
+
+%changelog
+* Sat Oct 17 2026 Oscar Parada <oparada1988@gmail.com> - 0.0.4.2-1
+- Release v0.0.4.2 (Pre-Alpha): Audio Flow Signal Strip, embedded FX rack, and packaging
