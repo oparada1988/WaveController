@@ -1,0 +1,89 @@
+name: Bug Report
+description: Report an issue or unexpected behavior in WaveController
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for reporting an issue! Please provide the details below so we can diagnose and resolve it quickly.
+
+  - type: dropdown
+    id: wave-device
+    attributes:
+      label: Wave Device
+      description: Are you using an Elgato Wave hardware device?
+      options:
+        - "Yes"
+        - "No"
+    validations:
+      required: true
+
+  - type: input
+    id: device-id
+    attributes:
+      label: Device ID
+      description: Hardware model or USB ID (e.g. from `lsusb`, or Wave:3, Wave:1, Wave XLR, Virtual / Software only).
+      placeholder: "e.g., 0fd9:0070 (Wave:3) or Virtual only"
+    validations:
+      required: false
+
+  - type: input
+    id: os-distro
+    attributes:
+      label: OS / Distro
+      description: Linux distribution and desktop environment.
+      placeholder: "e.g., Fedora 41 (GNOME 47), Ubuntu 24.04, Arch Linux"
+    validations:
+      required: true
+
+  - type: input
+    id: pipewire-version
+    attributes:
+      label: PipeWire Version
+      description: Run `pipewire --version` in terminal.
+      placeholder: "e.g., 1.2.6"
+    validations:
+      required: true
+
+  - type: input
+    id: kernel-version
+    attributes:
+      label: Kernel Version
+      description: Run `uname -r` in terminal.
+      placeholder: "e.g., 6.11.4"
+    validations:
+      required: true
+
+  - type: input
+    id: wavecontroller-version
+    attributes:
+      label: WaveController Version / Commit
+      description: Current git branch, commit hash, or installed version.
+      placeholder: "e.g., main branch (commit abc1234)"
+    validations:
+      required: false
+
+  - type: textarea
+    id: issue-details
+    attributes:
+      label: Details of the issue
+      description: A clear and concise description of the issue, steps to reproduce, and expected behavior.
+      placeholder: |
+        - What happened:
+        - Steps to reproduce:
+        - Expected behavior:
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: WaveController Logs
+      description: |
+        **Please include WaveController Logs.**
+        Logs are located at: `~/.config/WaveController/logs/wavecontroller.log`
+      placeholder: Paste the contents of ~/.config/WaveController/logs/wavecontroller.log here...
+      render: shell
+    validations:
+      required: false

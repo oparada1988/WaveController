@@ -1,0 +1,58 @@
+name: Feature Request
+description: Suggest an idea, enhancement, or new hardware support for WaveController
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for helping improve WaveController! Please provide as much detail as possible to help us understand your idea.
+
+  - type: dropdown
+    id: category
+    attributes:
+      label: Feature Category
+      description: What part of WaveController does this feature primarily relate to?
+      options:
+        - "Hardware Integration (Wave:3, Wave XLR, Stream Deck+, etc.)"
+        - "Audio Routing & Submixing (Channels, Sinks, PipeWire)"
+        - "User Interface (Main Window, Compact Mode, Audio Flow)"
+        - "Effects & DSP (VST3, LV2, Noise Suppression, EQ)"
+        - "StreamController Plugin Integration"
+        - "General / Other"
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Is your feature request related to a problem?
+      description: A clear and concise description of the limitation or workflow friction you are experiencing.
+      placeholder: "I'm always frustrated when..."
+    validations:
+      required: false
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Describe the solution you'd like
+      description: A clear description of what you want to happen and how you envision it working in WaveController.
+      placeholder: "I would like WaveController to..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Describe alternatives or workarounds considered
+      description: Any existing workarounds, alternative software, or CLI tools you currently use for this.
+    validations:
+      required: false
+
+  - type: textarea
+    id: additional-context
+    attributes:
+      label: Additional Context, Screenshots, or Mockups
+      description: Add any other context, hardware manuals, screenshots, or UI mockups here.
+    validations:
+      required: false

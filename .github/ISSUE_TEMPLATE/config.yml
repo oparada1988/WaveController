@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: WaveController Documentation
+    url: https://github.com/oparada1988/WaveController#readme
+    about: Please check the README and documentation for setup and usage questions.
