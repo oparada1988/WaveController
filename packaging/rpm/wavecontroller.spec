@@ -1,10 +1,15 @@
 Name:           wavecontroller
-Version:        0.0.4.1
+Version:        0.0.4.2
 Release:        1%{?dist}
 Summary:        Elgato Wave Link & Advanced Multi-Track Virtual Mixer for Linux
 License:        GPL-3.0-or-later
 URL:            https://github.com/oparada1988/WaveController
+Source0:        wavecontroller-%{version}.tar.gz
 BuildArch:      noarch
+
+# Disable debuginfo package and binary strip for bundled plugins on noarch
+%define debug_package %{nil}
+%define _binaries_in_noarch_error_fatal 0
 
 Requires:       python3 >= 3.10
 Requires:       python3-gobject
@@ -22,6 +27,9 @@ WaveController provides hardware DSP control for Elgato Wave devices (Wave XLR,
 Wave:3, Wave:1) and a full virtual multi-track audio routing mixer using
 PipeWire and WirePlumber. Features include submixing, zero-latency monitoring,
 rotary dial synchronization, and studio audio profiles.
+
+%prep
+%setup -q
 
 %install
 rm -rf %{buildroot}

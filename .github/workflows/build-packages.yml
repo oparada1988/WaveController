@@ -104,4 +104,8 @@ jobs:
             TAG="${GITHUB_REF#refs/tags/}"
           fi
           echo "Uploading release assets for tag: $TAG"
+          if ! gh release view "$TAG" &>/dev/null; then
+            echo "Release $TAG does not exist yet. Creating release draft..."
+            gh release create "$TAG" --title "$TAG" --generate-notes
+          fi
           gh release upload "$TAG" release_dist/* --clobber
