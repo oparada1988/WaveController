@@ -60,7 +60,7 @@ jobs:
       - name: Build RPM Package
         run: |
           chmod +x scripts/build_packages.sh
-          ./scripts/build_packages.sh --rpm
+          bash -x ./scripts/build_packages.sh --rpm
 
       - name: Upload RPM Artifact
         uses: actions/upload-artifact@v4

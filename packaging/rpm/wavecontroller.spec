@@ -5,11 +5,12 @@ Summary:        Elgato Wave Link & Advanced Multi-Track Virtual Mixer for Linux
 License:        GPL-3.0-or-later
 URL:            https://github.com/oparada1988/WaveController
 Source0:        wavecontroller-%{version}.tar.gz
-BuildArch:      noarch
+BuildArch:      x86_64
 
-# Disable debuginfo package and binary strip for bundled plugins on noarch
+# Disable debuginfo package generation
 %define debug_package %{nil}
-%define _binaries_in_noarch_error_fatal 0
+%define _enable_debug_packages 0
+%define __strip /bin/true
 
 Requires:       python3 >= 3.10
 Requires:       python3-gobject
