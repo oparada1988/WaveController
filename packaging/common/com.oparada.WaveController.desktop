@@ -1,0 +1,11 @@
+[Desktop Entry]
+Name=WaveController
+GenericName=Audio Mixer
+Comment=Elgato Wave Link & Advanced Multi-Track Virtual Mixer for Linux
+Exec=/usr/bin/wavecontroller
+Icon=com.oparada.WaveController
+Terminal=false
+Type=Application
+Categories=AudioVideo;Audio;Mixer;GTK;
+StartupWMClass=com.oparada.WaveController
+Keywords=audio;mixer;wave;elgato;pipewire;volume;

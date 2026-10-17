@@ -171,6 +171,13 @@ class MatrixCell(Gtk.Box):
             self.slider.set_peaks(raw_p_l * scale, raw_p_r * scale)
 
     def update_ui_state(self):
+        is_compatible = self.pipewire_mgr.is_channel_mix_compatible(self.channel_id, self.mix_id)
+        is_enabled = self.pipewire_mgr.is_channel_mix_enabled(self.channel_id, self.mix_id)
+        target_state = "active" if (is_enabled and is_compatible) else ("empty" if is_compatible else "incompatible")
+        if getattr(self, "_current_state", None) != target_state:
+            self._build_cell_content(force=True)
+            return
+
         if not self.slider or not self.mute_btn:
             return
         state = self.pipewire_mgr.get_channel_state(self.channel_id, self.mix_id)

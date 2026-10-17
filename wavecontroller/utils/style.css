@@ -865,7 +865,8 @@ window.theme-midnight .group-drawer-container {
     background-color: alpha(@card_bg_color, 0.45);
     border: 1px solid alpha(white, 0.07);
     border-radius: 12px;
-    padding: 6px 14px;
+    padding: 4px 14px;
+    min-height: 46px;
 }
 
 window.theme-midnight .graph-toolbar {
@@ -1088,4 +1089,51 @@ window.compact-mixer-window {
     color: #ef4444;
     background-color: rgba(239, 68, 68, 0.15);
 }
+
+/* =========================================================================
+   Signal Strip — Contextual Property Bar for Audio Flow
+   ========================================================================= */
+
+.signal-strip {
+    background-color: rgba(255, 255, 255, 0.04);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 9px;
+    padding: 2px 10px;
+    min-height: 32px;
+}
+
+.signal-strip-badge {
+    background-color: rgba(145, 70, 255, 0.16);
+    border: 1px solid rgba(145, 70, 255, 0.35);
+    border-radius: 7px;
+    padding: 2px 8px;
+    font-weight: 700;
+    font-size: 12px;
+    color: #e4e4e7;
+}
+
+.signal-strip-badge.mix-badge {
+    background-color: rgba(145, 70, 255, 0.18);
+    border-color: rgba(145, 70, 255, 0.4);
+    color: #d8b4fe;
+}
+
+.signal-strip-badge.channel-badge {
+    background-color: rgba(59, 130, 246, 0.18);
+    border-color: rgba(59, 130, 246, 0.4);
+    color: #93c5fd;
+}
+
+.signal-strip-badge.output-badge {
+    background-color: rgba(16, 185, 129, 0.18);
+    border-color: rgba(16, 185, 129, 0.4);
+    color: #6ee7b7;
+}
+
+.signal-strip-badge.link-badge {
+    background-color: rgba(236, 72, 153, 0.18);
+    border-color: rgba(236, 72, 153, 0.4);
+    color: #f472b6;
+}
+
 

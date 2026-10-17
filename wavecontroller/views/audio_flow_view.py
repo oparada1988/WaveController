@@ -30,14 +30,15 @@ import cairo
 
 import gi
 gi.require_version("Gtk", "4.0")
-from gi.repository import Gtk, GLib, Gdk
+gi.require_version("Adw", "1")
+from gi.repository import Gtk, Adw, GLib, Gdk
 
+from .fx_sidebar import FXSidebar
 from ..utils.logger import get_logger
 
 log = get_logger("AudioFlowView")
 
 POSITIONS_FILE = os.path.join(os.path.expanduser("~/.config/WaveController"), "audio_flow_positions.json")
-GRAPH_STUFF_POSITIONS = "/home/oscar/Project stuf/WaveController PW Graph/positions.json"
 
 # ── Colour Palette ──────────────────────────────────────────────────────────
 # Canvas & Cards
@@ -83,9 +84,9 @@ LINE_STYLE_STRAIGHT = "straight"
 
 # Stage columns configuration (Clean 3-Stage Pipeline: CHANNELS -> MIXES -> OUTPUTS)
 STAGES = [
-    {"id": "channel", "title": "CHANNELS", "icon": "🎚️", "x": 100,  "desc": "Mixer Channel Strips"},
-    {"id": "mix",     "title": "MIXES",    "icon": "🎛️", "x": 580,  "desc": "Virtual Submix Buses"},
-    {"id": "output",  "title": "OUTPUTS",  "icon": "🔊", "x": 1060, "desc": "Physical & Virtual Outputs"},
+    {"id": "channel", "title": "CHANNELS", "icon": "audio-input-microphone-symbolic", "x": 100,  "desc": "Mixer Channel Strips"},
+    {"id": "mix",     "title": "MIXES",    "icon": "audio-speakers-symbolic",         "x": 580,  "desc": "Virtual Submix Buses"},
+    {"id": "output",  "title": "OUTPUTS",  "icon": "audio-headset-symbolic",          "x": 1060, "desc": "Physical & Virtual Outputs"},
 ]
 
 
@@ -275,8 +276,6 @@ def save_positions(nodes: dict, connections=None, line_style=None, cable_gap=Non
 
 def load_positions(nodes: dict, connections=None, return_settings=False):
     target_file = POSITIONS_FILE
-    if not os.path.exists(target_file) and os.path.exists(GRAPH_STUFF_POSITIONS):
-        target_file = GRAPH_STUFF_POSITIONS
 
     if not os.path.exists(target_file):
         return {} if return_settings else None
@@ -764,7 +763,10 @@ class AudioFlowCanvas(Gtk.DrawingArea):
         self.update_signal_path_isolation(node)
 
         if hasattr(self.view, "btn_clear_sel"):
-            self.view.btn_clear_sel.set_visible(node is not None)
+            self.view.btn_clear_sel.set_visible(node is not None or getattr(self, "_selected_connection", None) is not None)
+
+        if hasattr(self.view, "update_signal_strip"):
+            self.view.update_signal_strip(node=node, conn=None)
 
         if node:
             in_nodes = sum(1 for n in self.nodes.values() if n.highlighted)
@@ -1459,6 +1461,7 @@ class AudioFlowCanvas(Gtk.DrawingArea):
 
             node = self.node_at(cx, cy)
             if node:
+                self._selected_connection = None
                 if self.selected_node is node:
                     self.select_node(None)
                 else:
@@ -1468,11 +1471,22 @@ class AudioFlowCanvas(Gtk.DrawingArea):
             conn = self.connection_at(cx, cy)
             if conn:
                 self._selected_connection = conn
-                self.select_node(conn.src_port.node)
+                self.selected_node = None
+                for n in self.nodes.values():
+                    n.selected = False
+                self.update_signal_path_isolation(None)
+                if hasattr(self.view, "update_signal_strip"):
+                    self.view.update_signal_strip(node=None, conn=conn)
+                if hasattr(self.view, "btn_clear_sel"):
+                    self.view.btn_clear_sel.set_visible(True)
+                self._update_status(f"Selected Cable: {conn.src_port.node.label} → {conn.dst_port.node.label}")
+                self.queue_draw()
                 return
 
             self.select_node(None)
             self._selected_connection = None
+            if hasattr(self.view, "update_signal_strip"):
+                self.view.update_signal_strip(None, None)
 
     def _on_released(self, gesture, n_press, sx, sy):
         button = gesture.get_current_button()
@@ -1481,6 +1495,35 @@ class AudioFlowCanvas(Gtk.DrawingArea):
             return
 
         if button == 1 and self._connecting_active:
+            cx, cy = self.screen_to_canvas(sx, sy)
+            src_port = self._connecting_from
+            dest_port = self.port_at(cx, cy)
+            dest_node = self.node_at(cx, cy)
+
+            if src_port and (dest_port or dest_node):
+                target_node = dest_port.node if dest_port else dest_node
+
+                # Channel -> Mix linking
+                if src_port.node.stage == "channel" and target_node.stage == "mix":
+                    ch_id = src_port.node.node_id.replace("ch_", "")
+                    mix_id = target_node.node_id.replace("mix_", "")
+                    log.info(f"[AudioFlow] Routing Channel {ch_id} to Mix {mix_id}")
+                    if hasattr(self.view, "pipewire_mgr") and self.view.pipewire_mgr:
+                        self.view.pipewire_mgr.set_channel_mix_enabled(ch_id, mix_id, True)
+                        self.view._notify_topology_changed()
+                        self._update_status(f"Linked {src_port.node.label} to {target_node.label}")
+
+                # Mix -> Output routing
+                elif src_port.node.stage == "mix" and target_node.stage == "output":
+                    mix_id = src_port.node.node_id.replace("mix_", "")
+                    out_node_id = target_node.node_id
+                    target_device = "none" if out_node_id == "out_virtual_stream_target" else out_node_id.replace("out_", "")
+                    log.info(f"[AudioFlow] Routing Mix {mix_id} to Output {target_device}")
+                    if hasattr(self.view, "pipewire_mgr") and self.view.pipewire_mgr:
+                        self.view.pipewire_mgr.update_mix(mix_id, target_device=target_device)
+                        self.view._notify_topology_changed()
+                        self._update_status(f"Routed {src_port.node.label} to {target_node.label}")
+
             self._connecting_active = False
             self._connecting_from = None
             self._connect_preview = None
@@ -1566,8 +1609,26 @@ class AudioFlowCanvas(Gtk.DrawingArea):
                 self._connect_preview = None
                 self.queue_draw()
                 return True
-            self.select_node(None)
-            return True
+            else:
+                self.select_node(None)
+                self._selected_connection = None
+                if hasattr(self.view, "update_signal_strip"):
+                    self.view.update_signal_strip(None, None)
+                self.queue_draw()
+                return True
+        if keyval in (Gdk.KEY_Delete, Gdk.KEY_BackSpace):
+            if getattr(self, "_selected_connection", None):
+                conn = self._selected_connection
+                if conn.src_port.node.stage == "channel" and conn.dst_port.node.stage == "mix":
+                    ch_id = conn.src_port.node.node_id.replace("ch_", "")
+                    mix_id = conn.dst_port.node.node_id.replace("mix_", "")
+                    log.info(f"[AudioFlow] Unlinking Channel {ch_id} from Mix {mix_id} via Delete key")
+                    if hasattr(self.view, "pipewire_mgr") and self.view.pipewire_mgr:
+                        self.view.pipewire_mgr.set_channel_mix_enabled(ch_id, mix_id, False)
+                        self._selected_connection = None
+                        self.view._notify_topology_changed()
+                        self._update_status(f"Disconnected {conn.src_port.node.label} from {conn.dst_port.node.label}")
+                        return True
 
         if keyval == Gdk.KEY_0 and (state & Gdk.ModifierType.CONTROL_MASK):
             self.zoom_fit()
@@ -1582,7 +1643,26 @@ class AudioFlowCanvas(Gtk.DrawingArea):
 
         return False
 
-    # ── Context Menu ────────────────────────────────────────────────────
+    # ── Context Menu & Confirmation Dialog ──────────────────────────────
+
+    def _confirm_delete(self, heading: str, body: str, on_confirm):
+        root_win = self.get_root()
+        dialog = Adw.MessageDialog(
+            transient_for=root_win if isinstance(root_win, Gtk.Window) else None,
+            heading=heading,
+            body=body
+        )
+        dialog.add_response("cancel", "Cancel")
+        dialog.add_response("delete", "Delete")
+        dialog.set_response_appearance("delete", Adw.ResponseAppearance.DESTRUCTIVE)
+        dialog.set_default_response("cancel")
+
+        def _on_response(d, response):
+            if response == "delete":
+                on_confirm()
+
+        dialog.connect("response", _on_response)
+        dialog.present()
 
     def _show_context_menu(self, sx, sy, cx, cy):
         popover = Gtk.Popover()
@@ -1596,32 +1676,91 @@ class AudioFlowCanvas(Gtk.DrawingArea):
         box.set_margin_start(6)
         box.set_margin_end(6)
 
+        def make_menu_btn(icon_name: str, label_text: str, on_click, destructive: bool = False):
+            btn = Gtk.Button()
+            btn.add_css_class("flat")
+            if destructive:
+                btn.add_css_class("destructive-action")
+            row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+            row.set_margin_start(6)
+            row.set_margin_end(6)
+            img = Gtk.Image.new_from_icon_name(icon_name)
+            img.set_pixel_size(16)
+            lbl = Gtk.Label(label=label_text)
+            lbl.set_xalign(0)
+            lbl.set_hexpand(True)
+            row.append(img)
+            row.append(lbl)
+            btn.set_child(row)
+            btn.connect("clicked", lambda b: (popover.popdown(), on_click()))
+            return btn
+
+        conn = self.connection_at(cx, cy)
         node = self.node_at(cx, cy)
+
+        if conn and conn.src_port.node.stage == "channel" and conn.dst_port.node.stage == "mix":
+            ch_id = conn.src_port.node.node_id.replace("ch_", "")
+            mix_id = conn.dst_port.node.node_id.replace("mix_", "")
+            def unlink_route():
+                log.info(f"[AudioFlow] Disconnecting route {ch_id} -> {mix_id}")
+                if hasattr(self.view, "pipewire_mgr") and self.view.pipewire_mgr:
+                    self.view.pipewire_mgr.set_channel_mix_enabled(ch_id, mix_id, False)
+                    self._selected_connection = None
+                    self.view._notify_topology_changed()
+                    self._update_status(f"Disconnected {conn.src_port.node.label} from {conn.dst_port.node.label}")
+            box.append(make_menu_btn("edit-cut-symbolic", f"Disconnect Route ({conn.src_port.node.label} → {conn.dst_port.node.label})", unlink_route, destructive=True))
+
         if node:
-            def toggle_lock(b):
-                popover.popdown()
+            def toggle_lock():
                 node.locked = not node.locked
                 self._schedule_save()
                 self.queue_draw()
 
-            lock_btn = Gtk.Button(label="🔓 Unlock Position" if node.locked else "🔒 Lock Position")
-            lock_btn.add_css_class("flat")
-            lock_btn.connect("clicked", toggle_lock)
-            box.append(lock_btn)
+            lock_icon = "changes-allow-symbolic" if node.locked else "changes-prevent-symbolic"
+            lock_label = "Unlock Position" if node.locked else "Lock Position"
+            box.append(make_menu_btn(lock_icon, lock_label, toggle_lock))
 
-            def isolate(b):
-                popover.popdown()
+            def isolate():
                 self.select_node(node)
+            box.append(make_menu_btn("focus-windows-symbolic", "Isolate Signal Path", isolate))
 
-            iso_btn = Gtk.Button(label="⚡ Isolate Signal Path")
-            iso_btn.add_css_class("flat")
-            iso_btn.connect("clicked", isolate)
-            box.append(iso_btn)
+            if node.stage == "channel":
+                ch_id = node.node_id.replace("ch_", "")
+                def delete_channel():
+                    self._confirm_delete(
+                        heading=f"Delete '{node.label}' Channel?",
+                        body=f"Are you sure you want to delete the '{node.label}' channel? This will remove its channel strip and tear down its audio routing.",
+                        on_confirm=lambda: (
+                            self.view.pipewire_mgr.remove_channel(ch_id),
+                            self.view._notify_topology_changed()
+                        )
+                    )
+                box.append(make_menu_btn("user-trash-symbolic", f"Delete Channel '{node.label}'", delete_channel, destructive=True))
 
-        reset_btn = Gtk.Button(label="⟳ Reset 4-Stage Layout")
-        reset_btn.add_css_class("flat")
-        reset_btn.connect("clicked", lambda b: (popover.popdown(), self.reset_layout()))
-        box.append(reset_btn)
+            elif node.stage == "mix":
+                mix_id = node.node_id.replace("mix_", "")
+                if hasattr(self.view, "mixer_view") and self.view.mixer_view and mix_id in self.view.mixer_view.mix_headers:
+                    header = self.view.mixer_view.mix_headers[mix_id]
+                    if hasattr(header, "gear_btn") and header.gear_btn.get_popover():
+                        def open_mix_settings():
+                            header.gear_btn.get_popover().popup()
+                        box.append(make_menu_btn("preferences-system-symbolic", f"Edit Settings for '{node.label}'…", open_mix_settings))
+
+                is_system_default = self.view.pipewire_mgr.is_mix_system_default(mix_id) if hasattr(self.view, "pipewire_mgr") and self.view.pipewire_mgr else False
+                if mix_id not in ("personal_mix", "personal") and not is_system_default:
+                    def delete_mix():
+                        self._confirm_delete(
+                            heading=f"Delete '{node.label}' Mix?",
+                            body=f"Are you sure you want to delete the '{node.label}' submix? This will remove this mix bus from the mixer matrix.",
+                            on_confirm=lambda: (
+                                self.view.pipewire_mgr.remove_mix(mix_id),
+                                self.view._notify_topology_changed()
+                            )
+                        )
+                    box.append(make_menu_btn("user-trash-symbolic", f"Delete Mix '{node.label}'", delete_mix, destructive=True))
+
+        box.append(make_menu_btn("view-refresh-symbolic", "Reset Layout", self.reset_layout))
+        box.append(make_menu_btn("zoom-fit-best-symbolic", "Fit All Cards", self.zoom_fit))
 
         popover.set_child(box)
         rect = Gdk.Rectangle()
@@ -1739,64 +1878,590 @@ class AudioFlowView(Gtk.Box):
     Includes top toolbar, Cairo canvas, and bottom status/legend bar.
     """
 
-    def __init__(self, pipewire_mgr=None, hardware_mgr=None, peak_monitor=None):
+    def __init__(self, pipewire_mgr=None, hardware_mgr=None, peak_monitor=None, mixer_view=None, on_topology_changed=None):
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=0)
         self.pipewire_mgr = pipewire_mgr
         self.hardware_mgr = hardware_mgr
         self.peak_monitor = peak_monitor
+        self.mixer_view = mixer_view
+        self.on_topology_changed = on_topology_changed
         self.set_hexpand(True)
         self.set_vexpand(True)
 
         self._build_toolbar()
 
-        # Canvas
+        # Canvas & FX Inspector container
         self.canvas = AudioFlowCanvas(self)
-        self.append(self.canvas)
+
+        # FX Sidebar Slide-over Inspector
+        self.fx_sidebar = FXSidebar(
+            self.pipewire_mgr,
+            on_closed=self._hide_fx_sidebar,
+            on_fx_changed=self._on_fx_sidebar_changed,
+        )
+        self.fx_revealer = Gtk.Revealer()
+        self.fx_revealer.set_transition_type(Gtk.RevealerTransitionType.SLIDE_LEFT)
+        self.fx_revealer.set_transition_duration(240)
+        self.fx_revealer.set_child(self.fx_sidebar)
+        self.fx_revealer.set_hexpand(False)
+        self.fx_revealer.set_vexpand(True)
+        self.fx_revealer.set_halign(Gtk.Align.END)
+        self.fx_revealer.set_reveal_child(False)
+
+        # Overlay canvas and FX Sidebar
+        self.canvas_overlay = Gtk.Overlay()
+        self.canvas_overlay.set_hexpand(True)
+        self.canvas_overlay.set_vexpand(True)
+        self.canvas_overlay.set_child(self.canvas)
+        self.canvas_overlay.add_overlay(self.fx_revealer)
+
+        self.append(self.canvas_overlay)
 
         self._build_status_bar()
+
+        if self.mixer_view:
+            self._connect_popovers()
 
         # Load topology
         self.refresh()
         self.connect("map", lambda w: self.refresh())
+
+    def _show_fx_sidebar(self, channel_info):
+        if (
+            self.fx_revealer.get_reveal_child()
+            and self.fx_sidebar.channel_info
+            and self.fx_sidebar.channel_info.get("id") == channel_info.get("id")
+        ):
+            self._hide_fx_sidebar()
+            return
+        self.fx_sidebar.show_channel(channel_info)
+        self.fx_revealer.set_reveal_child(True)
+
+    def _hide_fx_sidebar(self):
+        self.fx_revealer.set_reveal_child(False)
+
+    def _on_fx_sidebar_changed(self, channel_id):
+        # Update badge styling in signal strip if currently displayed
+        if hasattr(self, "fx_strip_btn") and self.fx_strip_btn:
+            self._update_strip_fx_badge(self.fx_strip_btn, channel_id)
+        if hasattr(self, "mixer_view") and self.mixer_view:
+            card = self.mixer_view.channel_cards.get(channel_id)
+            if card:
+                card.update_fx_state()
+
+    def _update_strip_fx_badge(self, btn, channel_id):
+        is_active = False
+        if hasattr(self.pipewire_mgr, "fx_manager"):
+            is_active = self.pipewire_mgr.fx_manager.is_fx_enabled(channel_id)
+        if is_active:
+            btn.set_label("FX")
+            btn.add_css_class("active-fx")
+            btn.remove_css_class("dimmed-fx")
+            btn.set_tooltip_text("Audio Effects Active (Click to open FX Rack)")
+        else:
+            btn.set_label("FX")
+            btn.add_css_class("dimmed-fx")
+            btn.remove_css_class("active-fx")
+            btn.set_tooltip_text("Audio Effects Bypassed (Click to open FX Rack)")
+
+    def attach_mixer_view(self, mixer_view):
+        self.mixer_view = mixer_view
+        self._connect_popovers()
+
+    def _connect_popovers(self):
+        if not self.mixer_view:
+            return
+        if hasattr(self, "btn_add_channel") and hasattr(self.mixer_view, "setup_create_channel_popover"):
+            self.mixer_view.setup_create_channel_popover(self.btn_add_channel, on_added_callback=self._notify_topology_changed)
+        if hasattr(self, "btn_add_mix") and hasattr(self.mixer_view, "setup_create_mix_popover"):
+            self.mixer_view.setup_create_mix_popover(self.btn_add_mix, on_added_callback=self._notify_topology_changed)
+
+    def _notify_topology_changed(self):
+        self.refresh()
+        if callable(self.on_topology_changed):
+            GLib.idle_add(self.on_topology_changed)
+
+    def update_signal_strip(self, node=None, conn=None):
+        if not hasattr(self, "signal_strip"):
+            return
+
+        # Clear existing children
+        self.fx_strip_btn = None
+        while self.signal_strip.get_first_child():
+            self.signal_strip.remove(self.signal_strip.get_first_child())
+
+        if not node and not conn:
+            if hasattr(self, "sep_signal_strip"):
+                self.sep_signal_strip.set_visible(False)
+            self.signal_strip.set_visible(False)
+            self._hide_fx_sidebar()
+            return
+
+        if hasattr(self, "sep_signal_strip"):
+            self.sep_signal_strip.set_visible(True)
+        self.signal_strip.set_visible(True)
+
+        if node and node.stage == "mix":
+            mix_id = node.node_id.replace("mix_", "")
+            mix = next((m for m in self.pipewire_mgr.mixes if m["id"] == mix_id), None)
+            if not mix:
+                return
+
+            m_type = mix.get("type", "sink")
+            m_st = self.pipewire_mgr.mix_states.get(mix_id, {})
+            vol = m_st.get("volume", 100)
+            muted = m_st.get("muted", False)
+
+            # Node Badge
+            badge = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+            badge.add_css_class("signal-strip-badge")
+            badge.add_css_class("mix-badge")
+            icon_name = "audio-headphones-symbolic" if m_type == "sink" else "audio-input-microphone-symbolic"
+            img = Gtk.Image.new_from_icon_name(icon_name)
+            img.set_pixel_size(14)
+            lbl = Gtk.Label(label=node.label)
+            badge.append(img)
+            badge.append(lbl)
+            self.signal_strip.append(badge)
+
+            # Target Output Dropdown (for sink mixes)
+            if m_type == "sink":
+                target_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+                tgt_lbl = Gtk.Label(label="Target:")
+                tgt_lbl.add_css_class("dim-label")
+                target_box.append(tgt_lbl)
+
+                target_options = [("none", "None (Virtual Only)"), ("default", "Default Output")]
+                if self.hardware_mgr:
+                    for d in self.hardware_mgr.get_tracked_output_devices():
+                        k = d.get("device_key", d.get("name", ""))
+                        d_name = d.get("display_name", d.get("name", "Audio Device"))
+                        target_options.append((k, d_name))
+
+                target_keys = [opt[0] for opt in target_options]
+                target_labels = [opt[1] for opt in target_options]
+                target_combo = Gtk.DropDown.new_from_strings(target_labels)
+
+                curr_target = mix.get("target_device", "default" if mix_id in ("personal", "personal_mix") else "none")
+                sel_idx = 0
+                for i, k in enumerate(target_keys):
+                    if k == curr_target or (curr_target and curr_target not in ("default", "none") and (k in curr_target or curr_target in k)):
+                        sel_idx = i
+                        break
+                target_combo.set_selected(sel_idx)
+
+                def on_target_changed(combo, *args):
+                    idx = combo.get_selected()
+                    if idx < len(target_keys):
+                        new_tgt = target_keys[idx]
+                        if new_tgt != mix.get("target_device"):
+                            log.info(f"[SignalStrip] Changing target for mix {mix_id} to {new_tgt}")
+                            self.pipewire_mgr.update_mix(mix_id, target_device=new_tgt)
+                            self._notify_topology_changed()
+
+                target_combo.connect("notify::selected", on_target_changed)
+                target_box.append(target_combo)
+                self.signal_strip.append(target_box)
+
+            # Master Mix Level & Mute
+            vol_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+            mute_btn = Gtk.Button.new_from_icon_name("audio-volume-muted-symbolic" if muted else "audio-volume-high-symbolic")
+            mute_btn.add_css_class("flat")
+            mute_btn.add_css_class("wave-icon-btn")
+            mute_btn.set_tooltip_text("Unmute Mix" if muted else "Mute Mix")
+
+            scale = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 0, 100, 1)
+            scale.set_value(vol)
+            scale.set_size_request(80, -1)
+            scale.set_draw_value(False)
+
+            def on_mix_mute(b):
+                new_m = self.pipewire_mgr.toggle_mix_master_mute(mix_id)
+                mute_btn.set_icon_name("audio-volume-muted-symbolic" if new_m else "audio-volume-high-symbolic")
+                self.refresh()
+
+            def on_mix_vol(sc):
+                self.pipewire_mgr.set_mix_master_volume(mix_id, int(sc.get_value()))
+
+            mute_btn.connect("clicked", on_mix_mute)
+            scale.connect("value-changed", on_mix_vol)
+            vol_box.append(mute_btn)
+            vol_box.append(scale)
+            self.signal_strip.append(vol_box)
+
+            # Edit Mix Settings button
+            if hasattr(self, "mixer_view") and self.mixer_view and mix_id in self.mixer_view.mix_headers:
+                header = self.mixer_view.mix_headers[mix_id]
+                edit_btn = Gtk.MenuButton()
+                edit_btn.add_css_class("flat")
+                edit_btn.set_icon_name("preferences-system-symbolic")
+                edit_btn.set_tooltip_text(f"Edit Settings for '{node.label}'")
+                header._setup_edit_popover(edit_btn)
+                self.signal_strip.append(edit_btn)
+
+            # Delete Mix (for custom mixes)
+            is_system_default = self.pipewire_mgr.is_mix_system_default(mix_id)
+            if mix_id not in ("personal_mix", "personal") and not is_system_default:
+                del_btn = Gtk.Button.new_from_icon_name("user-trash-symbolic")
+                del_btn.add_css_class("flat")
+                del_btn.add_css_class("destructive-action")
+                del_btn.set_tooltip_text(f"Delete Mix '{node.label}'")
+                def on_del_m(b):
+                    self.canvas._confirm_delete(
+                        heading=f"Delete '{node.label}' Mix?",
+                        body=f"Are you sure you want to delete the '{node.label}' submix? This will remove this mix bus from the mixer matrix.",
+                        on_confirm=lambda: (
+                            self.pipewire_mgr.remove_mix(mix_id),
+                            self._notify_topology_changed()
+                        )
+                    )
+                del_btn.connect("clicked", on_del_m)
+                self.signal_strip.append(del_btn)
+
+        elif node and node.stage == "channel":
+            ch_id = node.node_id.replace("ch_", "")
+            ch = next((c for c in self.pipewire_mgr.channels if c["id"] == ch_id), None)
+            if not ch:
+                return
+
+            ch_type = ch.get("type", "app")
+            is_mic = ch_type in ("source", "mic") or "mic" in ch_id.lower() or "wave" in ch_id.lower()
+            is_group = ch_type == "group"
+            is_virtual = ch_type == "virtual" or "desktop" in ch_id.lower()
+
+            m_st = self.pipewire_mgr.channel_master_states.get(ch_id, {})
+            vol = m_st.get("volume", 80)
+            muted = m_st.get("muted", False)
+
+            # Node Badge
+            badge = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+            badge.add_css_class("signal-strip-badge")
+            badge.add_css_class("channel-badge")
+            icon_name = "audio-input-microphone-symbolic" if is_mic else ("folder-symbolic" if is_group else ("audio-card-symbolic" if is_virtual else "applications-multimedia-symbolic"))
+            img = Gtk.Image.new_from_icon_name(icon_name)
+            img.set_pixel_size(14)
+            lbl = Gtk.Label(label=node.label)
+            badge.append(img)
+            badge.append(lbl)
+            self.signal_strip.append(badge)
+
+            # Hardware Pre-Amp Controls (ONLY for hardware mic / Wave device)
+            if is_mic and self.hardware_mgr and getattr(self.hardware_mgr, "is_connected", False):
+                hw_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+                gain_val = self.hardware_mgr.get_gain_db() if hasattr(self.hardware_mgr, "get_gain_db") else 46.0
+                gain_lbl = Gtk.Label(label=f"Gain: {gain_val:.0f}dB")
+                gain_lbl.add_css_class("dim-label")
+                hw_box.append(gain_lbl)
+
+                gain_scale = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 0, 75, 1)
+                gain_scale.set_value(gain_val)
+                gain_scale.set_size_request(80, -1)
+                gain_scale.set_draw_value(False)
+
+                def on_gain_changed(sc):
+                    g = sc.get_value()
+                    gain_lbl.set_text(f"Gain: {g:.0f}dB")
+                    if hasattr(self.hardware_mgr, "set_gain_db"):
+                        self.hardware_mgr.set_gain_db(g)
+
+                gain_scale.connect("value-changed", on_gain_changed)
+                hw_box.append(gain_scale)
+
+                if hasattr(self.hardware_mgr, "get_phantom_power") and hasattr(self.hardware_mgr, "set_phantom_power"):
+                    btn_48v = Gtk.ToggleButton(label="48V")
+                    is_48v = bool(self.hardware_mgr.get_phantom_power())
+                    btn_48v.set_active(is_48v)
+                    btn_48v.add_css_class("flat")
+                    btn_48v.add_css_class("wave-48v-badge")
+                    btn_48v.set_valign(Gtk.Align.CENTER)
+                    if is_48v:
+                        btn_48v.add_css_class("active-48v")
+                    else:
+                        btn_48v.add_css_class("dimmed-48v")
+                    btn_48v.set_tooltip_text("48V Phantom Power")
+                    def on_48v_toggled(b):
+                        act = b.get_active()
+                        if act:
+                            b.add_css_class("active-48v")
+                            b.remove_css_class("dimmed-48v")
+                        else:
+                            b.add_css_class("dimmed-48v")
+                            b.remove_css_class("active-48v")
+                        self.hardware_mgr.set_phantom_power(act)
+                    btn_48v.connect("toggled", on_48v_toggled)
+                    hw_box.append(btn_48v)
+
+                if hasattr(self.hardware_mgr, "get_clipguard") and hasattr(self.hardware_mgr, "set_clipguard"):
+                    btn_clip = Gtk.ToggleButton(label="Clipguard")
+                    btn_clip.set_active(self.hardware_mgr.get_clipguard())
+                    btn_clip.add_css_class("flat")
+                    btn_clip.set_valign(Gtk.Align.CENTER)
+                    btn_clip.set_tooltip_text("Elgato Clipguard")
+                    btn_clip.connect("toggled", lambda b: self.hardware_mgr.set_clipguard(b.get_active()))
+                    hw_box.append(btn_clip)
+
+                self.signal_strip.append(hw_box)
+
+            # Channel Master Volume & Mute
+            vol_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+            mute_btn = Gtk.Button.new_from_icon_name("audio-volume-muted-symbolic" if muted else "audio-volume-high-symbolic")
+            mute_btn.add_css_class("flat")
+            mute_btn.add_css_class("wave-icon-btn")
+            mute_btn.set_tooltip_text("Unmute Channel" if muted else "Mute Channel")
+
+            scale = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 0, 100, 1)
+            scale.set_value(vol)
+            scale.set_size_request(80, -1)
+            scale.set_draw_value(False)
+
+            def on_ch_mute(b):
+                new_m = self.pipewire_mgr.toggle_channel_master_mute(ch_id)
+                mute_btn.set_icon_name("audio-volume-muted-symbolic" if new_m else "audio-volume-high-symbolic")
+                self.refresh()
+
+            def on_ch_vol(sc):
+                self.pipewire_mgr.set_channel_master_volume(ch_id, int(sc.get_value()))
+
+            mute_btn.connect("clicked", on_ch_mute)
+            scale.connect("value-changed", on_ch_vol)
+            vol_box.append(mute_btn)
+            vol_box.append(scale)
+            self.signal_strip.append(vol_box)
+
+            # FX Button: STRICTLY ONLY FOR MIC / INPUT CHANNELS!
+            if is_mic:
+                fx_btn = Gtk.Button(label="FX")
+                fx_btn.add_css_class("flat")
+                fx_btn.add_css_class("wave-fx-badge")
+                fx_btn.set_valign(Gtk.Align.CENTER)
+                self._update_strip_fx_badge(fx_btn, ch_id)
+                self.fx_strip_btn = fx_btn
+
+                def on_fx_clicked(b):
+                    self._show_fx_sidebar(ch)
+                fx_btn.connect("clicked", on_fx_clicked)
+                self.signal_strip.append(fx_btn)
+
+            # Delete / Remove Channel Button (for custom groups, apps, virtual channels)
+            if ch_id not in ("mic",):
+                del_btn = Gtk.Button.new_from_icon_name("user-trash-symbolic")
+                del_btn.add_css_class("flat")
+                del_btn.add_css_class("destructive-action")
+                del_btn.set_tooltip_text(f"Delete Channel '{node.label}'")
+                def on_del_c(b):
+                    self.canvas._confirm_delete(
+                        heading=f"Delete '{node.label}' Channel?",
+                        body=f"Are you sure you want to delete the '{node.label}' channel? This will remove its channel strip and tear down its audio routing.",
+                        on_confirm=lambda: (
+                            self.pipewire_mgr.remove_channel(ch_id),
+                            self._notify_topology_changed()
+                        )
+                    )
+                del_btn.connect("clicked", on_del_c)
+                self.signal_strip.append(del_btn)
+
+        elif node and node.stage == "output":
+            badge = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+            badge.add_css_class("signal-strip-badge")
+            badge.add_css_class("output-badge")
+            is_virtual = "virtual" in node.node_id
+            icon_name = "audio-headphones-symbolic" if not is_virtual else "audio-input-microphone-symbolic"
+            img = Gtk.Image.new_from_icon_name(icon_name)
+            img.set_pixel_size(14)
+            lbl = Gtk.Label(label=node.label)
+            badge.append(img)
+            badge.append(lbl)
+            self.signal_strip.append(badge)
+
+            # Hardware Headphone / Output Volume (if physical output)
+            if not is_virtual and self.hardware_mgr:
+                hp_vol = self.hardware_mgr.get_headphone_volume() if hasattr(self.hardware_mgr, "get_headphone_volume") else 65
+                hp_muted = self.hardware_mgr.get_headphone_mute() if hasattr(self.hardware_mgr, "get_headphone_mute") else False
+
+                out_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+                mute_btn = Gtk.Button.new_from_icon_name("audio-volume-muted-symbolic" if hp_muted else "audio-volume-high-symbolic")
+                mute_btn.add_css_class("flat")
+                mute_btn.add_css_class("wave-icon-btn")
+                mute_btn.set_tooltip_text("Mute Headphone Output")
+
+                scale = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 0, 100, 1)
+                scale.set_value(hp_vol)
+                scale.set_size_request(80, -1)
+                scale.set_draw_value(False)
+
+                def on_hp_mute(b):
+                    if hasattr(self.hardware_mgr, "toggle_headphone_mute"):
+                        new_m = self.hardware_mgr.toggle_headphone_mute()
+                        mute_btn.set_icon_name("audio-volume-muted-symbolic" if new_m else "audio-volume-high-symbolic")
+
+                def on_hp_vol(sc):
+                    if hasattr(self.hardware_mgr, "set_headphone_volume"):
+                        self.hardware_mgr.set_headphone_volume(int(sc.get_value()))
+
+                mute_btn.connect("clicked", on_hp_mute)
+                scale.connect("value-changed", on_hp_vol)
+                out_box.append(mute_btn)
+                out_box.append(scale)
+                self.signal_strip.append(out_box)
+
+        elif conn:
+            src_node = conn.src_port.node
+            dst_node = conn.dst_port.node
+            if src_node.stage == "channel" and dst_node.stage == "mix":
+                ch_id = src_node.node_id.replace("ch_", "")
+                mix_id = dst_node.node_id.replace("mix_", "")
+
+                st = self.pipewire_mgr.get_channel_state(ch_id, mix_id)
+                vol = st.get("volume", 80)
+                muted = st.get("muted", False)
+
+                badge = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+                badge.add_css_class("signal-strip-badge")
+                badge.add_css_class("link-badge")
+                img = Gtk.Image.new_from_icon_name("insert-link-symbolic")
+                img.set_pixel_size(14)
+                lbl = Gtk.Label(label=f"{src_node.label} → {dst_node.label}")
+                badge.append(img)
+                badge.append(lbl)
+                self.signal_strip.append(badge)
+
+                # Send Level Fader & Mute
+                vol_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+                mute_btn = Gtk.Button.new_from_icon_name("audio-volume-muted-symbolic" if muted else "audio-volume-high-symbolic")
+                mute_btn.add_css_class("flat")
+                mute_btn.set_tooltip_text("Mute Send")
+
+                scale = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 0, 100, 1)
+                scale.set_value(vol)
+                scale.set_size_request(80, -1)
+                scale.set_draw_value(False)
+
+                def on_send_mute(b):
+                    new_m = self.pipewire_mgr.toggle_channel_mute(ch_id, mix_id)
+                    mute_btn.set_icon_name("audio-volume-muted-symbolic" if new_m else "audio-volume-high-symbolic")
+                    self.refresh()
+
+                def on_send_vol(sc):
+                    self.pipewire_mgr.set_channel_volume(ch_id, mix_id, int(sc.get_value()))
+
+                mute_btn.connect("clicked", on_send_mute)
+                scale.connect("value-changed", on_send_vol)
+                vol_box.append(mute_btn)
+                vol_box.append(scale)
+                self.signal_strip.append(vol_box)
+
+                # Disconnect button
+                disc_btn = Gtk.Button()
+                disc_btn.add_css_class("flat")
+                disc_btn.add_css_class("destructive-action")
+                disc_btn.set_tooltip_text("Disconnect Route")
+                disc_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+                disc_icon = Gtk.Image.new_from_icon_name("edit-cut-symbolic")
+                disc_icon.set_pixel_size(14)
+                disc_lbl = Gtk.Label(label="Disconnect")
+                disc_row.append(disc_icon)
+                disc_row.append(disc_lbl)
+                disc_btn.set_child(disc_row)
+                def on_disc_clicked(b):
+                    self.pipewire_mgr.set_channel_mix_enabled(ch_id, mix_id, False)
+                    self.canvas._selected_connection = None
+                    self._notify_topology_changed()
+                disc_btn.connect("clicked", on_disc_clicked)
+                self.signal_strip.append(disc_btn)
 
     def _build_toolbar(self):
         toolbar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         toolbar.add_css_class("graph-toolbar")
         toolbar.set_margin_start(14)
         toolbar.set_margin_end(14)
-        toolbar.set_margin_top(8)
+        toolbar.set_margin_top(6)
         toolbar.set_margin_bottom(6)
+        toolbar.set_size_request(-1, 46)
 
-        title_lbl = Gtk.Label(label="Audio Flow")
-        title_lbl.add_css_class("title-label")
-        toolbar.append(title_lbl)
+        # Add Channel Node Button
+        self.btn_add_channel = Gtk.MenuButton()
+        self.btn_add_channel.set_valign(Gtk.Align.CENTER)
+        self.btn_add_channel.set_tooltip_text("Add Audio Channel (Apps, Inputs, Virtual, Groups)")
+        self.btn_add_channel.add_css_class("flat")
+        self.btn_add_channel.add_css_class("wave-action-btn")
+        add_ch_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        add_ch_box.set_valign(Gtk.Align.CENTER)
+        add_ch_icon = Gtk.Image.new_from_icon_name("list-add-symbolic")
+        add_ch_icon.set_pixel_size(16)
+        add_ch_lbl = Gtk.Label(label="Add Channel")
+        add_ch_box.append(add_ch_icon)
+        add_ch_box.append(add_ch_lbl)
+        self.btn_add_channel.set_child(add_ch_box)
+        toolbar.append(self.btn_add_channel)
+
+        # Add Mix Node Button
+        self.btn_add_mix = Gtk.MenuButton()
+        self.btn_add_mix.set_valign(Gtk.Align.CENTER)
+        self.btn_add_mix.set_tooltip_text("Add Audio Mix (Virtual Source or Output Sink)")
+        self.btn_add_mix.add_css_class("flat")
+        self.btn_add_mix.add_css_class("wave-action-btn")
+        add_mix_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        add_mix_box.set_valign(Gtk.Align.CENTER)
+        add_mix_icon = Gtk.Image.new_from_icon_name("list-add-symbolic")
+        add_mix_icon.set_pixel_size(16)
+        add_mix_lbl = Gtk.Label(label="Add Mix")
+        add_mix_box.append(add_mix_icon)
+        add_mix_box.append(add_mix_lbl)
+        self.btn_add_mix.set_child(add_mix_box)
+        toolbar.append(self.btn_add_mix)
+
+        sep_btns = Gtk.Separator(orientation=Gtk.Orientation.VERTICAL)
+        sep_btns.set_valign(Gtk.Align.CENTER)
+        sep_btns.set_size_request(-1, 20)
+        sep_btns.set_margin_start(4)
+        sep_btns.set_margin_end(4)
+        toolbar.append(sep_btns)
 
         # Search filter
         self.search_entry = Gtk.SearchEntry()
+        self.search_entry.set_valign(Gtk.Align.CENTER)
         self.search_entry.set_placeholder_text("Filter audio nodes…")
         self.search_entry.set_size_request(210, -1)
         self.search_entry.connect("search-changed", lambda e: self.canvas.search_filter(e.get_text()))
         toolbar.append(self.search_entry)
 
-        # Clear selection button
-        self.btn_clear_sel = Gtk.Button.new_with_label("✕  Clear selection")
+        # Clear selection button (Strictly symbolic icon)
+        self.btn_clear_sel = Gtk.Button()
+        self.btn_clear_sel.set_valign(Gtk.Align.CENTER)
         self.btn_clear_sel.add_css_class("clear-sel-btn")
         self.btn_clear_sel.set_tooltip_text("Clear signal path isolation (Esc)")
         self.btn_clear_sel.set_visible(False)
-        self.btn_clear_sel.connect("clicked", lambda _: self.canvas.select_node(None))
+        sel_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        sel_box.set_valign(Gtk.Align.CENTER)
+        sel_icon = Gtk.Image.new_from_icon_name("edit-clear-symbolic")
+        sel_icon.set_pixel_size(14)
+        sel_lbl = Gtk.Label(label="Clear selection")
+        sel_box.append(sel_icon)
+        sel_box.append(sel_lbl)
+        self.btn_clear_sel.set_child(sel_box)
+        def on_clear_selection(_):
+            self.canvas.select_node(None)
+            self.canvas._selected_connection = None
+            self.update_signal_strip(None, None)
+            self.canvas.queue_draw()
+        self.btn_clear_sel.connect("clicked", on_clear_selection)
         toolbar.append(self.btn_clear_sel)
 
         sep_style = Gtk.Separator(orientation=Gtk.Orientation.VERTICAL)
+        sep_style.set_valign(Gtk.Align.CENTER)
+        sep_style.set_size_request(-1, 20)
         sep_style.set_margin_start(4)
         sep_style.set_margin_end(4)
         toolbar.append(sep_style)
 
         # Line style toggle
         style_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
+        style_box.set_valign(Gtk.Align.CENTER)
         style_box.add_css_class("line-style-box")
 
         self._style_buttons = {}
         btn_bezier = Gtk.ToggleButton(label="Curves")
+        btn_bezier.set_valign(Gtk.Align.CENTER)
         btn_bezier.set_active(True)
         btn_bezier.add_css_class("active-style")
         btn_bezier.set_tooltip_text("Smooth flowing audio cables")
@@ -1805,11 +2470,27 @@ class AudioFlowView(Gtk.Box):
         self._style_buttons[LINE_STYLE_BEZIER] = btn_bezier
 
         btn_manual = Gtk.ToggleButton(label="Orthogonal")
+        btn_manual.set_valign(Gtk.Align.CENTER)
         btn_manual.set_tooltip_text("Clean right-angle cables")
         btn_manual.connect("toggled", self._on_line_style_toggled, LINE_STYLE_STRAIGHT)
         style_box.append(btn_manual)
         self._style_buttons[LINE_STYLE_STRAIGHT] = btn_manual
         toolbar.append(style_box)
+
+        # Signal Strip — Contextual property bar for active node/cable
+        self.sep_signal_strip = Gtk.Separator(orientation=Gtk.Orientation.VERTICAL)
+        self.sep_signal_strip.set_valign(Gtk.Align.CENTER)
+        self.sep_signal_strip.set_size_request(-1, 20)
+        self.sep_signal_strip.set_margin_start(4)
+        self.sep_signal_strip.set_margin_end(4)
+        self.sep_signal_strip.set_visible(False)
+        toolbar.append(self.sep_signal_strip)
+
+        self.signal_strip = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        self.signal_strip.set_valign(Gtk.Align.CENTER)
+        self.signal_strip.add_css_class("signal-strip")
+        self.signal_strip.set_visible(False)
+        toolbar.append(self.signal_strip)
 
         # Spacer
         spacer = Gtk.Box()
@@ -1818,23 +2499,28 @@ class AudioFlowView(Gtk.Box):
 
         # Zoom controls
         zoom_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+        zoom_box.set_valign(Gtk.Align.CENTER)
         btn_zoom_out = Gtk.Button.new_from_icon_name("zoom-out-symbolic")
+        btn_zoom_out.set_valign(Gtk.Align.CENTER)
         btn_zoom_out.add_css_class("flat")
         btn_zoom_out.set_tooltip_text("Zoom Out (−)")
         btn_zoom_out.connect("clicked", lambda _: self.canvas.zoom_out())
         zoom_box.append(btn_zoom_out)
 
         self.zoom_label = Gtk.Label(label="100%")
+        self.zoom_label.set_valign(Gtk.Align.CENTER)
         self.zoom_label.add_css_class("zoom-label")
         zoom_box.append(self.zoom_label)
 
         btn_zoom_in = Gtk.Button.new_from_icon_name("zoom-in-symbolic")
+        btn_zoom_in.set_valign(Gtk.Align.CENTER)
         btn_zoom_in.add_css_class("flat")
         btn_zoom_in.set_tooltip_text("Zoom In (+)")
         btn_zoom_in.connect("clicked", lambda _: self.canvas.zoom_in())
         zoom_box.append(btn_zoom_in)
 
         btn_zoom_fit = Gtk.Button.new_from_icon_name("zoom-fit-best-symbolic")
+        btn_zoom_fit.set_valign(Gtk.Align.CENTER)
         btn_zoom_fit.add_css_class("flat")
         btn_zoom_fit.set_tooltip_text("Fit All Nodes")
         btn_zoom_fit.connect("clicked", lambda _: self.canvas.zoom_fit())
@@ -1842,12 +2528,15 @@ class AudioFlowView(Gtk.Box):
         toolbar.append(zoom_box)
 
         sep = Gtk.Separator(orientation=Gtk.Orientation.VERTICAL)
+        sep.set_valign(Gtk.Align.CENTER)
+        sep.set_size_request(-1, 20)
         sep.set_margin_start(4)
         sep.set_margin_end(4)
         toolbar.append(sep)
 
         # Lock toggle
         self.lock_btn = Gtk.ToggleButton()
+        self.lock_btn.set_valign(Gtk.Align.CENTER)
         self.lock_btn.set_icon_name("changes-prevent-symbolic")
         self.lock_btn.add_css_class("flat")
         self.lock_btn.set_tooltip_text("Lock All Node Positions")
@@ -1856,6 +2545,7 @@ class AudioFlowView(Gtk.Box):
 
         # Refresh topology
         btn_reload = Gtk.Button.new_from_icon_name("view-refresh-symbolic")
+        btn_reload.set_valign(Gtk.Align.CENTER)
         btn_reload.add_css_class("flat")
         btn_reload.set_tooltip_text("Refresh Audio Flow from PipeWire")
         btn_reload.connect("clicked", lambda _: self.refresh())

@@ -1,0 +1,24 @@
+Package: wavecontroller
+Version: 0.0.4.1
+Section: sound
+Priority: optional
+Architecture: all
+Maintainer: Oscar Parada <oparada1988@gmail.com>
+Depends: python3 (>= 3.10),
+         python3-gi,
+         python3-gi-cairo,
+         gir1.2-gtk-4.0,
+         gir1.2-adw-1,
+         python3-pil,
+         libusb-1.0-0,
+         pipewire,
+         pipewire-bin,
+         wireplumber,
+         udev
+Recommends: ladspa-sdk
+Homepage: https://github.com/oparada1988/WaveController
+Description: Elgato Wave Link & Advanced Multi-Track Virtual Mixer for Linux
+ WaveController provides hardware DSP control for Elgato Wave devices (Wave XLR,
+ Wave:3, Wave:1) and a full virtual multi-track audio routing mixer using
+ PipeWire and WirePlumber. Features include submixing, zero-latency monitoring,
+ rotary dial synchronization, and studio audio profiles.

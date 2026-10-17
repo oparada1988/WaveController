@@ -80,14 +80,14 @@ class SubmixSinkManager:
 
             is_personal = m_id in ("personal", "personal_mix") or (m_type == "sink" and "personal" in m_id)
             if is_personal:
-                target_dev = getattr(self.pipewire_mgr, "selected_monitor_device", None) or config_manager.get("default_output_device", "") or m.get("target_device", "") or "default"
+                target_dev = m.get("target_device") or getattr(self.pipewire_mgr, "selected_monitor_device", None) or config_manager.get("default_output_device", "") or "default"
                 if not target_dev or "wavecontroller" in str(target_dev).lower():
-                    target_dev = config_manager.get("default_output_device", "") or m.get("target_device", "") or "default"
+                    target_dev = config_manager.get("default_output_device", "") or "default"
                     if "wavecontroller" in str(target_dev).lower():
                         target_dev = "default"
                 m["target_device"] = target_dev
             else:
-                target_dev = m.get("target_device", "none" if not is_personal else "default")
+                target_dev = m.get("target_device", "none")
 
             if m_type != "sink" and not is_personal:
                 continue
@@ -103,7 +103,7 @@ class SubmixSinkManager:
                 desired_fl, desired_fr = resolve_physical_device_ports(target_dev, clean_in_ports)
                 
                 # Resilient fallback for Personal Mix to ensure headphones are NEVER left unlinked
-                if is_personal and (not desired_fl or not desired_fr):
+                if is_personal and (not desired_fl or not desired_fr) and target_dev != "none":
                     alsa_playback_ports = [p for p in clean_in_ports if p.startswith("alsa_output.") and ":playback_" in p]
                     wave_ports = [p for p in alsa_playback_ports if "wave" in p.lower() or "elgato" in p.lower()]
                     candidate_ports = wave_ports or alsa_playback_ports

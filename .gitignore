@@ -10,3 +10,5 @@ __pycache__/
 .env
 .secrets
 tests.bak/
+build/
+dist/

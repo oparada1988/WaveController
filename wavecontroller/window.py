@@ -124,10 +124,17 @@ class WaveMainWindow(Adw.ApplicationWindow):
         )
         self.stack.add_named(self.effects_view, "effects")
 
+        def _on_audio_flow_topology_changed():
+            self._on_mix_list_changed()
+            if hasattr(self, "mixer_view") and hasattr(self.mixer_view, "_rebuild_grid"):
+                GLib.idle_add(self.mixer_view._rebuild_grid)
+
         self.audio_flow_view = AudioFlowView(
             pipewire_mgr=self.pipewire_mgr,
             hardware_mgr=self.hardware_mgr,
-            peak_monitor=self.peak_monitor
+            peak_monitor=self.peak_monitor,
+            mixer_view=self.mixer_view,
+            on_topology_changed=_on_audio_flow_topology_changed
         )
         self.stack.add_named(self.audio_flow_view, "audio_flow")
 
@@ -744,6 +751,9 @@ class WaveMainWindow(Adw.ApplicationWindow):
         if name == "audio_flow":
             if hasattr(self, "audio_flow_view") and hasattr(self.audio_flow_view, "refresh"):
                 self.audio_flow_view.refresh()
+        elif name == "mixes":
+            if hasattr(self, "mixer_view") and hasattr(self.mixer_view, "_rebuild_grid"):
+                self.mixer_view._rebuild_grid()
         elif name == "settings":
             if hasattr(self, "settings_view") and hasattr(self.settings_view, "refresh_device_list"):
                 self.settings_view.refresh_device_list()

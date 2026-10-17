@@ -430,7 +430,7 @@ class MixerMatrixView(Gtk.Box):
                 return False
             GLib.timeout_add(450, remove_highlight)
 
-    def _setup_create_mix_popover(self, menu_btn: Gtk.MenuButton):
+    def _setup_create_mix_popover(self, menu_btn: Gtk.MenuButton, on_added_callback=None):
         popover = Gtk.Popover()
         popover.set_autohide(False)
         popover.set_cascade_popdown(False)
@@ -681,6 +681,8 @@ class MixerMatrixView(Gtk.Box):
                 GLib.idle_add(self._rebuild_grid)
                 if self.on_mix_list_changed:
                     self.on_mix_list_changed()
+                if callable(on_added_callback):
+                    GLib.idle_add(on_added_callback)
 
         add_btn.connect("clicked", on_add)
 
@@ -701,7 +703,7 @@ class MixerMatrixView(Gtk.Box):
         popover.set_child(box)
         menu_btn.set_popover(popover)
 
-    def _setup_create_channel_popover(self, menu_btn: Gtk.MenuButton):
+    def _setup_create_channel_popover(self, menu_btn: Gtk.MenuButton, on_added_callback=None):
         popover = Gtk.Popover()
         popover.set_autohide(True)
         popover.set_cascade_popdown(True)
@@ -931,6 +933,8 @@ class MixerMatrixView(Gtk.Box):
                             popover.popdown()
                             GLib.idle_add(self._rebuild_grid)
                             self._notify_channel_list_changed()
+                            if callable(on_added_callback):
+                                GLib.idle_add(on_added_callback)
                         return handler
 
                     item_btn.connect("clicked", make_app_click_handler(app_name, icon_name))
@@ -1022,6 +1026,8 @@ class MixerMatrixView(Gtk.Box):
                             popover.popdown()
                             GLib.idle_add(self._rebuild_grid)
                             self._notify_channel_list_changed()
+                            if callable(on_added_callback):
+                                GLib.idle_add(on_added_callback)
                         return handler
 
                     dev_item_btn.connect("clicked", make_dev_click_handler(dev_name, dev_icon, dev_info))
@@ -1088,6 +1094,8 @@ class MixerMatrixView(Gtk.Box):
                 popover.popdown()
                 GLib.idle_add(self._rebuild_grid)
                 self._notify_channel_list_changed()
+                if callable(on_added_callback):
+                    GLib.idle_add(on_added_callback)
 
         cust_app_btn.connect("clicked", on_cust_app_add)
         app_entry.connect("activate", on_cust_app_add)
@@ -1196,6 +1204,8 @@ class MixerMatrixView(Gtk.Box):
             popover.popdown()
             GLib.idle_add(self._rebuild_grid)
             self._notify_channel_list_changed()
+            if callable(on_added_callback):
+                GLib.idle_add(on_added_callback)
 
         create_virtual_btn.connect("clicked", on_create_virtual_clicked)
         virtual_name_entry.connect("activate", on_create_virtual_clicked)
@@ -1349,6 +1359,8 @@ class MixerMatrixView(Gtk.Box):
             popover.popdown()
             GLib.idle_add(self._rebuild_grid)
             self._notify_channel_list_changed()
+            if callable(on_added_callback):
+                GLib.idle_add(on_added_callback)
 
         create_group_btn.connect("clicked", on_create_group_clicked)
         group_actions_box.append(create_group_btn)
@@ -1722,3 +1734,6 @@ class MixerMatrixView(Gtk.Box):
         for mix_id, header in list(self.mix_headers.items()):
             if hasattr(header, "update_ui_state"):
                 header.update_ui_state()
+
+    setup_create_mix_popover = _setup_create_mix_popover
+    setup_create_channel_popover = _setup_create_channel_popover
