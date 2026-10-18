@@ -190,9 +190,15 @@ class IPCServer:
                             c_data["icon"] = dev_icon
                 if hasattr(self.pipewire_mgr, "fx_manager"):
                     c_data["fx_enabled"] = self.pipewire_mgr.fx_manager.is_fx_enabled(c_data.get("id", ""))
+                c_data["linked"] = self.pipewire_mgr.is_channel_linked(c_data.get("id", ""))
                 channels_list.append(c_data)
             res["channels"] = channels_list
-            res["mixes"] = self.pipewire_mgr.mixes
+            mixes_list = []
+            for m in self.pipewire_mgr.mixes:
+                m_data = dict(m)
+                m_data["is_default"] = self.pipewire_mgr.is_mix_system_default(m_data.get("id", ""))
+                mixes_list.append(m_data)
+            res["mixes"] = mixes_list
             res["states"] = self.pipewire_mgr.channel_states
             res["master_states"] = self.pipewire_mgr.channel_master_states
             res["mix_states"] = self.pipewire_mgr.mix_states
@@ -296,6 +302,10 @@ class IPCServer:
                     res["channel_states"] = {
                         k: dict(v) for k, v in self.pipewire_mgr.channel_states.items()
                     }
+                    res["channel_links"] = {
+                        c["id"]: self.pipewire_mgr.is_channel_linked(c["id"])
+                        for c in self.pipewire_mgr.channels
+                    }
             if hasattr(self, "hardware_mgr") and self.hardware_mgr:
                 res["hardware"] = {
                     "device_name": getattr(self.hardware_mgr, "device_name", ""),
@@ -383,6 +393,32 @@ class IPCServer:
                 if self.pipewire_mgr.on_external_change_callback:
                     from gi.repository import GLib
                     GLib.idle_add(self.pipewire_mgr.on_external_change_callback)
+        elif cmd in ["toggle_channel_link", "toggle_link"]:
+            raw_target = req.get("channel_id") or req.get("target") or "mic"
+            ch = self._match_channel_id(raw_target)
+            curr = self.pipewire_mgr.is_channel_linked(ch)
+            new_val = not curr
+            self.pipewire_mgr.set_channel_linked(ch, new_val)
+            res["channel_id"] = ch
+            res["linked"] = new_val
+            if self.pipewire_mgr.on_external_change_callback:
+                from gi.repository import GLib
+                GLib.idle_add(self.pipewire_mgr.on_external_change_callback, "channel", ch)
+        elif cmd in ["set_channel_link", "set_link"]:
+            raw_target = req.get("channel_id") or req.get("target") or "mic"
+            ch = self._match_channel_id(raw_target)
+            val = bool(req.get("linked", True))
+            self.pipewire_mgr.set_channel_linked(ch, val)
+            res["channel_id"] = ch
+            res["linked"] = val
+            if self.pipewire_mgr.on_external_change_callback:
+                from gi.repository import GLib
+                GLib.idle_add(self.pipewire_mgr.on_external_change_callback, "channel", ch)
+        elif cmd in ["get_channel_link", "get_link"]:
+            raw_target = req.get("channel_id") or req.get("target") or "mic"
+            ch = self._match_channel_id(raw_target)
+            res["channel_id"] = ch
+            res["linked"] = self.pipewire_mgr.is_channel_linked(ch)
         elif cmd == "get_fx_status":
             raw_target = req.get("channel_id") or "mic"
             ch = self._match_channel_id(raw_target)
