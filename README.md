@@ -15,6 +15,17 @@ WaveController is actively developed, human-tested, and audited on production Li
 <img width="1750" height="1185" alt="Screenshot From 2026-08-25 13-45-00" src="https://github.com/user-attachments/assets/ab713660-c190-4dc0-9c23-c9409d873834" />
 <img width="1750" height="1185" alt="Screenshot From 2026-08-25 13-45-06" src="https://github.com/user-attachments/assets/ea92b5b0-ddcb-46d2-90d4-3115ebcae015" />
 
+
+<p align="center"><strong>Audio Flow</strong>
+<img width="2050" height="1234" alt="Screenshot From 2026-10-19 06-35-16" src="https://github.com/user-attachments/assets/926d0511-aadb-4048-a130-430cf833329c" />
+
+<p align="center"><strong>Compact Mode</strong>
+  | Image 1 | Image 2 |
+| :---: | :---: |
+| ![Vertical](<img width="570" height="473" alt="Screenshot From 2026-10-17 09-17-58" src="https://github.com/user-attachments/assets/889f6103-2616-4acf-a830-df2bd6c4b707" />
+) | ![Horizontal](<img width="480" height="510" alt="Screenshot From 2026-10-17 09-18-06" src="https://github.com/user-attachments/assets/e24a5a8a-fe74-4030-8d07-246737e0684d" />
+) |
+
 ---
 
 ### Supported Hardware Devices
