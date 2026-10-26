@@ -96,16 +96,18 @@ class ConfigManager:
     def schedule_save(self, delay_ms: int = 400):
         """Debounced save to avoid disk thrashing during rapid slider movements."""
         def _trigger_save():
-            self._debounce_source_id = None
+            with self._lock:
+                self._debounce_source_id = None
             self.save_now()
             return False
 
-        try:
-            if self._debounce_source_id is not None:
-                GLib.source_remove(self._debounce_source_id)
-            self._debounce_source_id = GLib.timeout_add(delay_ms, _trigger_save)
-        except Exception:
-            self.save_now()
+        with self._lock:
+            try:
+                if self._debounce_source_id is not None:
+                    GLib.source_remove(self._debounce_source_id)
+                self._debounce_source_id = GLib.timeout_add(delay_ms, _trigger_save)
+            except Exception:
+                self.save_now()
 
     def save(self, immediate: bool = True):
         """Alias for save_now() to ensure backward compatibility."""

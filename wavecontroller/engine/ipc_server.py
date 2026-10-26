@@ -17,10 +17,11 @@ class IPCServer:
     Unix Domain Socket IPC Server allowing WaveController Plugin and StreamController
     to interact directly with WaveController sub-mixes, faders, and meters.
     """
-    def __init__(self, pipewire_mgr, peak_monitor, hardware_mgr):
+    def __init__(self, pipewire_mgr, peak_monitor, hardware_mgr, app=None):
         self.pipewire_mgr = pipewire_mgr
         self.peak_monitor = peak_monitor
         self.hardware_mgr = hardware_mgr
+        self.app = app
         self.running = False
         self.server_sock = None
         self.thread = None
@@ -559,6 +560,26 @@ class IPCServer:
             if self.pipewire_mgr.on_external_change_callback:
                 from gi.repository import GLib
                 GLib.idle_add(self.pipewire_mgr.on_external_change_callback)
+        elif cmd == "get_view_mode":
+            mode = "full"
+            if self.app:
+                win = getattr(self.app.props, "active_window", None)
+                if win and hasattr(win, "compact_window") and win.compact_window and win.compact_window.is_visible():
+                    mode = "compact"
+            res["mode"] = mode
+        elif cmd == "toggle_compact_mode":
+            if self.app:
+                from gi.repository import GLib
+                def _do_toggle():
+                    win = getattr(self.app.props, "active_window", None)
+                    if win and hasattr(win, "_enter_compact_mode") and hasattr(win, "_restore_from_compact"):
+                        if win.compact_window and win.compact_window.is_visible():
+                            win._restore_from_compact()
+                        else:
+                            win._enter_compact_mode()
+                    return False
+                GLib.idle_add(_do_toggle)
+            res["status"] = "ok"
         else:
             res["status"] = "unknown_command"
 

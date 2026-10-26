@@ -136,6 +136,27 @@ class MixHeaderCard(Gtk.Box):
         self.scale.set_hexpand(True)
         self.scale.add_css_class("wave-mix-master-fader")
         self._scale_handler_id = self.scale.connect("value-changed", self._on_scale_value_changed)
+
+        # Double-click reset to 100% (0 dB unity gain)
+        click_gesture = Gtk.GestureClick.new()
+        def _on_scale_clicked(gesture, n_press, x, y):
+            if n_press == 2:
+                self.scale.set_value(100)
+        click_gesture.connect("released", _on_scale_clicked)
+        self.scale.add_controller(click_gesture)
+
+        # Mouse scroll wheel controller (±2% volume, ±5% with Shift)
+        scroll_ctrl = Gtk.EventControllerScroll.new(
+            Gtk.EventControllerScrollFlags.VERTICAL | Gtk.EventControllerScrollFlags.DISCRETE
+        )
+        def _on_scale_scroll(ctrl, dx, dy):
+            step = 5 if ctrl.get_current_event_state() & Gdk.ModifierType.SHIFT_MASK else 2
+            new_v = max(0, min(100, int(self.scale.get_value()) - int(dy * step)))
+            self.scale.set_value(new_v)
+            return True
+        scroll_ctrl.connect("scroll", _on_scale_scroll)
+        self.scale.add_controller(scroll_ctrl)
+
         fader_box.append(self.scale)
 
         self.vol_lbl = Gtk.Label(label=f"{vol}%")

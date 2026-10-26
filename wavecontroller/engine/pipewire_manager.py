@@ -11,6 +11,7 @@ from wavecontroller.engine.graph.process_classifier import (
     KNOWN_AUDIO_BINARIES,
     get_match_tokens,
     get_active_port_metadata_map,
+    invalidate_port_metadata_cache,
     port_matches_tokens
 )
 from wavecontroller.engine.routing.source_manager import MicrophoneSourceManager
@@ -884,6 +885,7 @@ class PipeWireManager:
         def _fire():
             self._stream_watch_debounce_id = None
             try:
+                invalidate_port_metadata_cache()
                 self._reconcile_app_streams_fast()
             except Exception:
                 pass

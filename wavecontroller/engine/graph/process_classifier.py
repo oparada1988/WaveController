@@ -8,6 +8,8 @@ Ensures authoritative process binary disambiguation (Discord, Slack, Teams, Chro
 import re
 import json
 import subprocess
+import time
+import threading
 
 KNOWN_AUDIO_BINARIES = {
     # Discord & Community Clients (Native, Flatpak, Snap, WebCord, Vesktop)
@@ -147,8 +149,25 @@ def get_match_tokens(name_or_id: str) -> set:
     tokens.update(words)
     return tokens
 
-def get_active_port_metadata_map() -> dict:
-    """Extracts live process binary, application name, and node information for all PipeWire ports."""
+_PORT_METADATA_CACHE = {}
+_PORT_METADATA_CACHE_TIME = 0.0
+_PORT_METADATA_LOCK = threading.Lock()
+
+def invalidate_port_metadata_cache():
+    """Forces immediate invalidation of cached PipeWire port metadata."""
+    global _PORT_METADATA_CACHE_TIME
+    with _PORT_METADATA_LOCK:
+        _PORT_METADATA_CACHE_TIME = 0.0
+
+def get_active_port_metadata_map(force_refresh: bool = False, max_age_s: float = 0.8) -> dict:
+    """Extracts live process binary, application name, and node information for all PipeWire ports.
+    Employs a short thread-safe TTL cache (default 0.8s) to eliminate redundant pw-dump forks."""
+    global _PORT_METADATA_CACHE, _PORT_METADATA_CACHE_TIME
+    now = time.time()
+    with _PORT_METADATA_LOCK:
+        if not force_refresh and (now - _PORT_METADATA_CACHE_TIME) < max_age_s and _PORT_METADATA_CACHE:
+            return dict(_PORT_METADATA_CACHE)
+
     port_map = {}
     try:
         out = subprocess.check_output(["pw-dump"], text=True, stderr=subprocess.DEVNULL)
@@ -181,6 +200,14 @@ def get_active_port_metadata_map() -> dict:
                 port_map[f"{n_name}:{p_name}".lower()] = meta
     except Exception:
         pass
+
+    with _PORT_METADATA_LOCK:
+        if port_map:
+            _PORT_METADATA_CACHE = port_map
+            _PORT_METADATA_CACHE_TIME = now
+        elif _PORT_METADATA_CACHE:
+            return dict(_PORT_METADATA_CACHE)
+
     return port_map
 
 def _word_match(token: str, text: str) -> bool:

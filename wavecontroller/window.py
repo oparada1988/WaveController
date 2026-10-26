@@ -11,6 +11,7 @@ from .views.audio_flow_view import AudioFlowView
 from .views.settings_view import SettingsView
 from .views.setup_wizard import SetupWizardDialog
 from .views.compact_mixer import CompactMixerWindow
+from .views.shortcuts_dialog import ShortcutsManager
 from .engine.config_manager import config_manager
 from .utils.logger import get_logger
 
@@ -31,6 +32,7 @@ class WaveMainWindow(Adw.ApplicationWindow):
             self.pipewire_mgr.hardware_mgr = self.hardware_mgr
 
         self.compact_window = None
+        self._shortcuts_mgr = ShortcutsManager(self)
         self.device_views = {}
         self.device_buttons = {}
         self._sidebar_text_widgets = []
@@ -84,12 +86,13 @@ class WaveMainWindow(Adw.ApplicationWindow):
         
         # 1. Left Compact Sidebar
         sidebar = self._build_sidebar()
+        self.sidebar = sidebar
         main_box.append(sidebar)
 
         sidebar_toggle = Gtk.Button.new_from_icon_name("sidebar-show-symbolic")
         sidebar_toggle.add_css_class("flat")
         sidebar_toggle.add_css_class("wave-icon-btn")
-        sidebar_toggle.set_tooltip_text("Collapse Sidebar")
+        sidebar_toggle.set_tooltip_text("Collapse Sidebar (Ctrl+B)")
         sidebar_toggle.connect("clicked", lambda btn: self._toggle_sidebar(btn, sidebar))
         header_bar.pack_start(sidebar_toggle)
         self._sidebar_toggle_btn = sidebar_toggle
@@ -99,7 +102,7 @@ class WaveMainWindow(Adw.ApplicationWindow):
         compact_btn = Gtk.Button.new_from_icon_name("compact-mode-symbolic")
         compact_btn.add_css_class("flat")
         compact_btn.add_css_class("wave-icon-btn")
-        compact_btn.set_tooltip_text("Compact Mode")
+        compact_btn.set_tooltip_text("Compact Mode (Ctrl+M)")
         compact_btn.connect("clicked", lambda btn: self._enter_compact_mode())
         header_bar.pack_end(compact_btn)
         self.compact_btn = compact_btn
@@ -164,6 +167,43 @@ class WaveMainWindow(Adw.ApplicationWindow):
 
         # Check for untracked connected devices (such as Wave XLR) on launch
         GLib.timeout_add(800, self._check_initial_untracked_devices)
+
+        # Register desktop keyboard accelerators
+        self._setup_keyboard_shortcuts()
+
+    def _setup_keyboard_shortcuts(self):
+        """Registers desktop keyboard accelerators for seamless navigation and mode switching."""
+        ctrl = Gtk.ShortcutController.new()
+        ctrl.set_scope(Gtk.ShortcutScope.LOCAL)
+
+        def _action_wrap(cb):
+            return Gtk.CallbackAction.new(lambda *a: (cb(), True)[1])
+
+        shortcuts = [
+            ("<Control>m", lambda: self._enter_compact_mode()),
+            ("<Control>b", lambda: self._toggle_sidebar(self._sidebar_toggle_btn, self.sidebar)),
+            ("<Control>1", lambda: self._switch_view("mixes", self.mixes_btn)),
+            ("<Control>2", lambda: self._switch_view("effects", self.fx_btn)),
+            ("<Control>3", lambda: self._switch_view("audio_flow", self.audio_flow_btn)),
+            ("<Control>4", lambda: self._switch_view("settings", self.settings_btn)),
+            ("<Control>q", lambda: self.close()),
+            ("<Control>w", lambda: self.close()),
+            ("F1", lambda: self.show_shortcuts_window()),
+            ("<Control>question", lambda: self.show_shortcuts_window()),
+            ("<Control>slash", lambda: self.show_shortcuts_window()),
+        ]
+
+        for trigger_str, cb in shortcuts:
+            trigger = Gtk.ShortcutTrigger.parse_string(trigger_str)
+            if trigger:
+                shortcut = Gtk.Shortcut.new(trigger, _action_wrap(cb))
+                ctrl.add_shortcut(shortcut)
+
+        self.add_controller(ctrl)
+
+    def show_shortcuts_window(self):
+        """Displays the native GTK4/Libadwaita Keyboard Shortcuts overview dialog."""
+        self._shortcuts_mgr.show(transient_parent=self)
 
     def _apply_theme(self):
         """Applies either the default Midnight Dark theme or follows standard GTK/Libadwaita system theme."""

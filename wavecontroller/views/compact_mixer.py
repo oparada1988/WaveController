@@ -5,6 +5,7 @@ from gi.repository import Gtk, Gdk, Adw, GLib, Pango
 import cairo
 import math
 from .stereo_slider import StereoSlider
+from .shortcuts_dialog import ShortcutsManager
 from ..engine.config_manager import config_manager
 from ..utils.logger import get_logger
 
@@ -731,6 +732,7 @@ class CompactMixerWindow(Adw.Window):
         self.mix_widget = None
         self.current_layout = config_manager.get("compact_mode_layout", "horizontal")
         self.current_target = config_manager.get("compact_mode_target", "all")
+        self._shortcuts_mgr = ShortcutsManager(self)
 
         self.set_title("WaveController")
         self.set_resizable(True)
@@ -759,7 +761,7 @@ class CompactMixerWindow(Adw.Window):
         self.full_mode_btn = Gtk.Button.new_from_icon_name("full-mode-symbolic")
         self.full_mode_btn.add_css_class("flat")
         self.full_mode_btn.add_css_class("wave-icon-btn")
-        self.full_mode_btn.set_tooltip_text("Return to Full Mode")
+        self.full_mode_btn.set_tooltip_text("Return to Full Mode (Ctrl+M / Esc)")
         self.full_mode_btn.connect("clicked", lambda b: self._restore_full_mode())
         self.header_bar.pack_end(self.full_mode_btn)
 
@@ -784,6 +786,27 @@ class CompactMixerWindow(Adw.Window):
         toolbar_view.set_content(self.scrolled)
 
         self.set_content(toolbar_view)
+
+        # Register keyboard accelerators (Ctrl+M and Esc to return to Full Mode, F1 for Shortcuts)
+        shortcut_ctrl = Gtk.ShortcutController.new()
+        shortcut_ctrl.set_scope(Gtk.ShortcutScope.LOCAL)
+
+        def _action_wrap(cb):
+            return Gtk.CallbackAction.new(lambda *a: (cb(), True)[1])
+
+        shortcuts = [
+            ("<Control>m", lambda: self._restore_full_mode()),
+            ("Escape", lambda: self._restore_full_mode()),
+            ("F1", lambda: self.show_shortcuts_window()),
+            ("<Control>question", lambda: self.show_shortcuts_window()),
+            ("<Control>slash", lambda: self.show_shortcuts_window()),
+        ]
+
+        for trig_str, cb in shortcuts:
+            trigger = Gtk.ShortcutTrigger.parse_string(trig_str)
+            if trigger:
+                shortcut_ctrl.add_shortcut(Gtk.Shortcut.new(trigger, _action_wrap(cb)))
+        self.add_controller(shortcut_ctrl)
 
         # Initial layout build and window geometry
         self._rebuild_content()
@@ -952,15 +975,32 @@ class CompactMixerWindow(Adw.Window):
         full_btn.add_css_class("compact-target-row")
         full_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         full_box.append(Gtk.Image.new_from_icon_name("full-mode-symbolic"))
-        f_lbl = Gtk.Label(label="Full Mode")
+        f_lbl = Gtk.Label(label="Full Mode (Ctrl+M)")
         f_lbl.set_halign(Gtk.Align.START)
         full_box.append(f_lbl)
         full_btn.set_child(full_box)
         full_btn.connect("clicked", lambda b: (menu_popover.popdown(), self._restore_full_mode()))
         menu_box.append(full_btn)
 
+        # Keyboard Shortcuts Row
+        sc_btn = Gtk.Button()
+        sc_btn.add_css_class("flat")
+        sc_btn.add_css_class("compact-target-row")
+        sc_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        sc_box.append(Gtk.Image.new_from_icon_name("help-about-symbolic"))
+        sc_lbl = Gtk.Label(label="Shortcuts (F1)")
+        sc_lbl.set_halign(Gtk.Align.START)
+        sc_box.append(sc_lbl)
+        sc_btn.set_child(sc_box)
+        sc_btn.connect("clicked", lambda b: (menu_popover.popdown(), self.show_shortcuts_window()))
+        menu_box.append(sc_btn)
+
         menu_popover.set_child(menu_box)
         self.menu_btn.set_popover(menu_popover)
+
+    def show_shortcuts_window(self):
+        """Displays the native GTK4/Libadwaita Keyboard Shortcuts overview dialog."""
+        self._shortcuts_mgr.show(transient_parent=self)
 
     def _update_layout_btn_icon(self):
         if self.current_layout == "horizontal":
