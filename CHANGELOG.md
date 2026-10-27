@@ -2,6 +2,28 @@
 
 All notable changes to WaveController are documented in this file.
 
+## [0.0.4.3] - 2026-10-27 (Pre-Alpha)
+
+### Added
+- **Native Keyboard Shortcuts Dialog & Desktop Accelerators**:
+  - Integrated native GTK4/Libadwaita shortcuts window (`ShortcutsManager`) accessible via `F1`, `Ctrl+?`, or `Ctrl+/`.
+  - Added global view switching accelerators: `Ctrl+1` (Mixes), `Ctrl+2` (Effects Rack), `Ctrl+3` (Audio Flow), and `Ctrl+4` (Settings).
+  - Added window management shortcuts: `Ctrl+M` to toggle Compact Mode, `Ctrl+B` to toggle the left navigation sidebar, and `Escape` to exit Compact Mode.
+- **Mixer Header Quality-of-Life Controls**:
+  - Implemented mouse scroll wheel volume adjustments directly over `MixHeaderCard` headers for fast, precise volume trimming.
+  - Added double-click reset to return mix master levels back to 100% instantly.
+- **Compact Mode IPC Integration**:
+  - Added IPC server endpoints (`get_compact_mode`, `toggle_compact_mode`, `set_compact_mode`) in `IPCServer` for programmatic control and Stream Deck plugin integration.
+- **Comprehensive Documentation & Visual Showcases**:
+  - Updated `README.md` with high-resolution visual guides for Audio Flow (patchbay routing graph) and Compact Mode (Horizontal & Vertical layouts).
+  - Expanded the hardware compatibility and feature support matrix.
+
+### Performance & Optimization
+- **Port Metadata Caching & CPU Overhead Reduction**:
+  - Added an 800ms thread-safe TTL cache in `get_active_port_metadata_map` to prevent repetitive `pw-dump` subprocess executions during audio graph changes, significantly reducing idle and active CPU usage.
+- **Thread-Safe Debounced Configuration Saving**:
+  - Hardened `ConfigManager.schedule_save` with mutex locking to prevent disk thrashing and race conditions during rapid volume fader movements.
+
 ## [0.0.4.2] - 2026-10-17 (Pre-Alpha)
 
 ### Added

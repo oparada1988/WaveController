@@ -1,5 +1,5 @@
 Name:           wavecontroller
-Version:        0.0.4.2
+Version:        0.0.4.3
 Release:        1%{?dist}
 Summary:        Elgato Wave Link & Advanced Multi-Track Virtual Mixer for Linux
 License:        GPL-3.0-or-later
@@ -122,5 +122,8 @@ fi
 %{_prefix}/lib/ladspa/*.so
 
 %changelog
+* Tue Oct 27 2026 Oscar Parada <oparada1988@gmail.com> - 0.0.4.3-1
+- Release v0.0.4.3 (Pre-Alpha): Keyboard shortcuts dialog, mixer QoL, IPC controls, CPU optimizations
+
 * Sat Oct 17 2026 Oscar Parada <oparada1988@gmail.com> - 0.0.4.2-1
 - Release v0.0.4.2 (Pre-Alpha): Audio Flow Signal Strip, embedded FX rack, and packaging
