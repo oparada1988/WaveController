@@ -24,6 +24,7 @@ SNI_XML = """
     <property name="WindowId" type="u" access="read"/>
     <property name="IconName" type="s" access="read"/>
     <property name="IconThemePath" type="s" access="read"/>
+    <property name="IconPixmap" type="a(iiay)" access="read"/>
     <property name="Menu" type="o" access="read"/>
     <property name="ItemIsMenu" type="b" access="read"/>
     <method name="ContextMenu">
@@ -128,6 +129,51 @@ class TrayManager:
 
         self._sni_interface = Gio.DBusNodeInfo.new_for_xml(SNI_XML).interfaces[0]
         self._menu_interface = Gio.DBusNodeInfo.new_for_xml(DBUS_MENU_XML).interfaces[0]
+        self._icon_pixmap_variant = self._load_icon_pixmap()
+
+    def _load_icon_pixmap(self) -> GLib.Variant:
+        """
+        Generate raw ARGB32 pixmaps (network byte order) for the IconPixmap property
+        in org.kde.StatusNotifierItem. Guarantees KDE Plasma and other SNI hosts display
+        the tray icon directly from memory with zero dependency on filesystem icon themes.
+        """
+        pixmaps = []
+        try:
+            from PIL import Image
+
+            # Prefer wctray.png or com.oparada.WaveController-tray.png
+            tray_png = os.path.join(self.icons_dir, "wctray.png")
+            if not os.path.isfile(tray_png):
+                tray_png = os.path.join(self.icons_dir, "com.oparada.WaveController-tray.png")
+
+            if os.path.isfile(tray_png):
+                base_img = Image.open(tray_png).convert("RGBA")
+                for target_size in [None, 22, 32, 48]:
+                    if target_size is None:
+                        img = base_img
+                    else:
+                        img = base_img.resize((target_size, target_size), Image.Resampling.LANCZOS)
+
+                    w, h = img.size
+                    pixels = img.tobytes("raw", "RGBA")
+                    raw = bytearray(len(pixels))
+                    # Convert RGBA to big-endian ARGB network byte order:
+                    # Each pixel is 4 bytes: Alpha, Red, Green, Blue
+                    for i in range(0, len(pixels), 4):
+                        r, g, b, a = pixels[i : i + 4]
+                        raw[i] = a
+                        raw[i + 1] = r
+                        raw[i + 2] = g
+                        raw[i + 3] = b
+
+                    pixmaps.append((w, h, bytes(raw)))
+        except Exception as e:
+            logger.warning(f"Could not build IconPixmap for system tray: {e}")
+
+        if not pixmaps:
+            return GLib.Variant("a(iiay)", [])
+
+        return GLib.Variant("a(iiay)", pixmaps)
 
     def start(self):
         """Connect to session DBus and export the StatusNotifierItem and DBusMenu interfaces."""
@@ -206,6 +252,7 @@ class TrayManager:
             "WindowId": GLib.Variant("u", 0),
             "IconName": GLib.Variant("s", "wavecontroller-tray-symbolic"),
             "IconThemePath": GLib.Variant("s", self.icons_dir),
+            "IconPixmap": self._icon_pixmap_variant,
             "Menu": GLib.Variant("o", "/MenuBar"),
             "ItemIsMenu": GLib.Variant("b", False),
         }

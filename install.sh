@@ -256,12 +256,17 @@ EOF
 
     mkdir -p "${HOME}/.local/share/icons/hicolor/scalable/apps"
     mkdir -p "${HOME}/.local/share/icons/hicolor/symbolic/apps"
-    rm -f "${HOME}/.local/share/icons/hicolor/scalable/apps/com.oparada.WaveController.svg"
+    mkdir -p "${HOME}/.local/share/icons/hicolor/scalable/status"
+    mkdir -p "${HOME}/.local/share/icons/hicolor/symbolic/status"
+    mkdir -p "${HOME}/.local/share/icons/hicolor/scalable/panel"
+    mkdir -p "${HOME}/.local/share/icons/hicolor/22x22/status"
 
     for sym_file in "${INSTALL_DIR}"/assets/icons/*-symbolic.svg; do
         if [ -f "${sym_file}" ]; then
             cp "${sym_file}" "${HOME}/.local/share/icons/hicolor/scalable/apps/"
             cp "${sym_file}" "${HOME}/.local/share/icons/hicolor/symbolic/apps/"
+            cp "${sym_file}" "${HOME}/.local/share/icons/hicolor/scalable/status/"
+            cp "${sym_file}" "${HOME}/.local/share/icons/hicolor/symbolic/status/"
         fi
     done
     for svg_file in "${INSTALL_DIR}"/assets/icons/*.svg; do
@@ -269,9 +274,22 @@ EOF
             cp "${svg_file}" "${HOME}/.local/share/icons/hicolor/scalable/apps/"
         fi
     done
+    for tray_file in "${INSTALL_DIR}"/assets/icons/*tray*; do
+        if [ -f "${tray_file}" ]; then
+            cp "${tray_file}" "${HOME}/.local/share/icons/hicolor/scalable/status/" 2>/dev/null || true
+            cp "${tray_file}" "${HOME}/.local/share/icons/hicolor/symbolic/status/" 2>/dev/null || true
+            cp "${tray_file}" "${HOME}/.local/share/icons/hicolor/scalable/panel/" 2>/dev/null || true
+            cp "${tray_file}" "${HOME}/.local/share/icons/hicolor/22x22/status/" 2>/dev/null || true
+        fi
+    done
 
     if command -v gtk-update-icon-cache &>/dev/null; then
         gtk-update-icon-cache -f -t "${HOME}/.local/share/icons/hicolor" 2>/dev/null || true
+    fi
+    if command -v kbuildsycoca6 &>/dev/null; then
+        kbuildsycoca6 --noincremental >/dev/null 2>&1 || true
+    elif command -v kbuildsycoca5 &>/dev/null; then
+        kbuildsycoca5 --noincremental >/dev/null 2>&1 || true
     fi
 
     # Create Desktop Launcher
