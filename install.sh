@@ -25,12 +25,41 @@ WIREPLUMBER_CONF_DIR="${HOME}/.config/wireplumber/wireplumber.conf.d"
 CONFIG_DIR="${HOME}/.config/WaveController"
 AUTOSTART_DIR="${HOME}/.config/autostart"
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-if [ -f "${SCRIPT_DIR}/main.py" ]; then
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd || pwd)"
+if [ -f "${SCRIPT_DIR}/main.py" ] && [ -d "${SCRIPT_DIR}/wavecontroller" ]; then
     REPO_DIR="${SCRIPT_DIR}"
-else
+elif [ -f "${SCRIPT_DIR}/../main.py" ] && [ -d "${SCRIPT_DIR}/../wavecontroller" ]; then
     REPO_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+else
+    REPO_DIR=""
 fi
+
+# Ensure repository source directory exists (auto-fetches from GitHub if running via curl | bash)
+ensure_repo_dir() {
+    if [ -n "${REPO_DIR}" ] && [ -f "${REPO_DIR}/main.py" ] && [ -d "${REPO_DIR}/wavecontroller" ]; then
+        return 0
+    fi
+
+    echo -e "${BLUE}Downloading latest WaveController release from GitHub...${NC}"
+    local temp_dir
+    temp_dir="$(mktemp -d -t wavecontroller-install-XXXXXX)"
+
+    # Clean up temporary directory upon script termination or completion
+    trap 'rm -rf "${temp_dir}"' EXIT INT TERM
+
+    if command -v git &>/dev/null; then
+        git clone --depth 1 https://github.com/oparada1988/WaveController.git "${temp_dir}/WaveController" --quiet
+        REPO_DIR="${temp_dir}/WaveController"
+    else
+        curl -fsSL https://github.com/oparada1988/WaveController/archive/refs/heads/main.tar.gz | tar -xz -C "${temp_dir}"
+        REPO_DIR="${temp_dir}/WaveController-main"
+    fi
+
+    if [ ! -f "${REPO_DIR}/main.py" ] || [ ! -d "${REPO_DIR}/wavecontroller" ]; then
+        echo -e "${RED}[ERROR] Failed to download and extract WaveController repository from GitHub.${NC}"
+        exit 1
+    fi
+}
 
 # Banner
 print_banner() {
@@ -140,6 +169,7 @@ check_dependencies() {
 
 # Install / Update Udev Rules & Boot Pre-Init Helper
 install_udev_rules() {
+    ensure_repo_dir
     echo -e "${BLUE}[2/6] Checking hardware USB permissions & boot pre-init helper (udev rules)...${NC}"
     local udev_file="${REPO_DIR}/data/99-elgato-wave.rules"
     local udev_dest="/etc/udev/rules.d/99-elgato-wave.rules"
@@ -329,6 +359,7 @@ upgrade_app() {
     print_banner
     echo -e "${BLUE}Upgrading WaveController to latest version...${NC}"
     check_dependencies
+    ensure_repo_dir
 
     # If inside git repo, pull latest and install pre-commit regression guard
     if [ -d "${REPO_DIR}/.git" ]; then
@@ -415,6 +446,7 @@ case "$1" in
     --install|-i|"")
         print_banner
         check_dependencies
+        ensure_repo_dir
         install_udev_rules
         install_core_files
         install_wireplumber_config
