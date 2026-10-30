@@ -243,16 +243,27 @@ EOF
 
     # Install Desktop Icons
     echo -e "${BLUE}Installing desktop application icons...${NC}"
-    for res in 48x48 64x64 128x128 256x256 512x512; do
-        mkdir -p "${HOME}/.local/share/icons/hicolor/${res}/apps"
-        if [ -f "${INSTALL_DIR}/assets/icons/com.oparada.WaveController.png" ]; then
-            cp "${INSTALL_DIR}/assets/icons/com.oparada.WaveController.png" "${HOME}/.local/share/icons/hicolor/${res}/apps/com.oparada.WaveController.png"
-            cp "${INSTALL_DIR}/assets/icons/com.oparada.WaveController.png" "${HOME}/.local/share/icons/hicolor/${res}/apps/WaveController.png"
-        elif [ -f "${INSTALL_DIR}/assets/icons/WaveController.png" ]; then
-            cp "${INSTALL_DIR}/assets/icons/WaveController.png" "${HOME}/.local/share/icons/hicolor/${res}/apps/com.oparada.WaveController.png"
-            cp "${INSTALL_DIR}/assets/icons/WaveController.png" "${HOME}/.local/share/icons/hicolor/${res}/apps/WaveController.png"
-        fi
-    done
+    # Clean up legacy/broken scalable app icons
+    rm -f "${HOME}/.local/share/icons/hicolor/scalable/apps/com.oparada.WaveController.svg"
+    rm -f "${HOME}/.local/share/icons/hicolor/scalable/apps/WaveController.svg"
+
+    src_png=""
+    if [ -f "${INSTALL_DIR}/assets/icons/com.oparada.WaveController.png" ]; then
+        src_png="${INSTALL_DIR}/assets/icons/com.oparada.WaveController.png"
+    elif [ -f "${INSTALL_DIR}/assets/icons/WaveController.png" ]; then
+        src_png="${INSTALL_DIR}/assets/icons/WaveController.png"
+    fi
+
+    if [ -n "${src_png}" ]; then
+        for res in 48 64 128 256 512; do
+            res_dir="${HOME}/.local/share/icons/hicolor/${res}x${res}/apps"
+            mkdir -p "${res_dir}"
+            python3 -c "from PIL import Image; img = Image.open('${src_png}').resize((${res}, ${res}), Image.Resampling.LANCZOS); img.save('${res_dir}/com.oparada.WaveController.png'); img.save('${res_dir}/WaveController.png')" 2>/dev/null || {
+                cp "${src_png}" "${res_dir}/com.oparada.WaveController.png"
+                cp "${src_png}" "${res_dir}/WaveController.png"
+            }
+        done
+    fi
 
     mkdir -p "${HOME}/.local/share/icons/hicolor/scalable/apps"
     mkdir -p "${HOME}/.local/share/icons/hicolor/symbolic/apps"
@@ -271,7 +282,10 @@ EOF
     done
     for svg_file in "${INSTALL_DIR}"/assets/icons/*.svg; do
         if [ -f "${svg_file}" ]; then
-            cp "${svg_file}" "${HOME}/.local/share/icons/hicolor/scalable/apps/"
+            base_svg=$(basename "${svg_file}")
+            if [ "${base_svg}" != "WaveController.svg" ] && [ "${base_svg}" != "com.oparada.WaveController.svg" ]; then
+                cp "${svg_file}" "${HOME}/.local/share/icons/hicolor/scalable/apps/"
+            fi
         fi
     done
     for tray_file in "${INSTALL_DIR}"/assets/icons/*tray*; do
