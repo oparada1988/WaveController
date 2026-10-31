@@ -7,7 +7,7 @@
 WaveController is actively developed, human-tested, and audited on production Linux audio workstations. Hardware support currently centers on the **Elgato Wave XLR (MK1)**, with scaffolded support and milestones planned for the Wave XLR MK2, Wave:3, and Wave:1.
 
 <p align="center">
-  <a href="https://discord.gg/Mhu29PcPJ">
+  <a href="https://discord.gg/NAH2n96UqW">
     <img src="assets/discord-server-banner.png" alt="Join the Discord Server" />
   </a>
 </p>
