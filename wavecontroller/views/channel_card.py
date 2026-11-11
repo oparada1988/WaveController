@@ -356,6 +356,9 @@ class ChannelCard(Gtk.Box):
             dev_icon = self.hardware_mgr.get_device_icon(self.hardware_mgr.device_name)
             if dev_icon and dev_icon not in ("audio-input-microphone-symbolic", "network-offline-symbolic"):
                 return dev_icon
+            dev_name_low = str(getattr(self.hardware_mgr, "device_name", "")).lower()
+            if any(x in dev_name_low for x in ("wave:3", "wave 3", "wave_3", "wave:1", "wave 1", "0070", "006f")):
+                return "elgato-wave-3-symbolic"
             return "elgato-wave-xlr-symbolic"
 
         if str(self.channel_info.get("type", "")).lower() == "virtual":
@@ -367,16 +370,16 @@ class ChannelCard(Gtk.Box):
             return "computer-symbolic" if is_system_default else "audio-card-symbolic"
 
         ch_icon = self.channel_info.get("icon")
-        if ch_icon and ch_icon not in ("network-offline-symbolic", "elgato-wave-xlr-symbolic"):
+        if ch_icon and ch_icon not in ("network-offline-symbolic", "elgato-wave-xlr-symbolic", "elgato-wave-3-symbolic"):
             return ch_icon
-        elif ch_icon == "elgato-wave-xlr-symbolic" and self.is_wave_channel:
+        elif ch_icon in ("elgato-wave-xlr-symbolic", "elgato-wave-3-symbolic") and self.is_wave_channel:
             return ch_icon
 
         assigned = self.pipewire_mgr.get_assigned_apps(self.channel_info["id"]) if self.pipewire_mgr else []
         primary_app = assigned[0] if assigned else self.channel_info.get("name", "")
         resolved = self.pipewire_mgr.resolve_icon_for_app(primary_app) if self.pipewire_mgr else None
         if not resolved or resolved in ("network-offline-symbolic", "audio-card-symbolic", "audio-x-generic-symbolic"):
-            if ch_icon and ch_icon != "network-offline-symbolic" and (ch_icon != "elgato-wave-xlr-symbolic" or self.is_wave_channel):
+            if ch_icon and ch_icon != "network-offline-symbolic" and (ch_icon not in ("elgato-wave-xlr-symbolic", "elgato-wave-3-symbolic") or self.is_wave_channel):
                 return ch_icon
             return "audio-input-microphone-symbolic" if self.channel_info.get("type") == "source" else "audio-card-symbolic"
         return resolved

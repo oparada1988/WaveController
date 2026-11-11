@@ -61,26 +61,56 @@ class USBHardwareManager:
         self._device_missing_since = {}
         self.on_device_disconnected_callback = None
         self._startup_capture_recovery_done = False
+        self._profile_enforced_cards = set()
 
     def _ensure_elgato_card_profile(self, card_id: int):
-        """Ensures the ALSA device profile is locked to 'Analog Stereo Output + Mono Input'."""
+        """Ensures the ALSA device profile is locked to an active duplex profile (both playback and capture)."""
+        if card_id in self._profile_enforced_cards:
+            return
         try:
-            out = subprocess.check_output(["pw-dump"], text=True, stderr=subprocess.DEVNULL)
-            data = json.loads(out)
+            raw_out = subprocess.check_output(["pw-dump"], text=True, stderr=subprocess.DEVNULL).strip()
+            if raw_out.startswith("["):
+                end_idx = raw_out.rfind("]")
+                if end_idx != -1:
+                    raw_out = raw_out[:end_idx + 1]
+            data = json.loads(raw_out)
             card = next((obj for obj in data if obj.get("id") == card_id), None)
             if not card:
                 return
             params = card.get("info", {}).get("params", {})
             active_list = params.get("Profile", [])
-            if active_list and active_list[0].get("name") == "output:analog-stereo+input:mono-fallback":
+            active_name = active_list[0].get("name", "") if active_list else ""
+
+            valid_duplex_names = (
+                "output:analog-stereo+input:mono-fallback",
+                "output:analog-stereo+input:stereo-fallback",
+                "pro-audio",
+                "analog-stereo-duplex",
+            )
+            if active_name in valid_duplex_names:
+                self._profile_enforced_cards.add(card_id)
                 return
+
+            if active_list:
+                classes = str(active_list[0].get("classes", []))
+                if "Audio/Source" in classes and "Audio/Sink" in classes and active_name != "off":
+                    self._profile_enforced_cards.add(card_id)
+                    return
+
             enum_profs = params.get("EnumProfile", [])
-            for p in enum_profs:
-                if p.get("name") == "output:analog-stereo+input:mono-fallback":
-                    idx = p.get("index")
-                    if idx is not None:
-                        subprocess.run(["wpctl", "set-profile", str(card_id), str(idx)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            chosen_idx = None
+            for target_name in valid_duplex_names:
+                for p in enum_profs:
+                    if p.get("name") == target_name:
+                        chosen_idx = p.get("index")
+                        break
+                if chosen_idx is not None:
                     break
+
+            if chosen_idx is not None:
+                subprocess.run(["wpctl", "set-profile", str(card_id), str(chosen_idx)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+            self._profile_enforced_cards.add(card_id)
         except Exception:
             pass
 
@@ -126,17 +156,42 @@ class USBHardwareManager:
             return
 
         try:
-            profiles = json.loads(
-                subprocess.check_output(["pw-dump"], text=True, stderr=subprocess.DEVNULL)
-            )
+            raw_out = subprocess.check_output(["pw-dump"], text=True, stderr=subprocess.DEVNULL).strip()
+            if raw_out.startswith("["):
+                end_idx = raw_out.rfind("]")
+                if end_idx != -1:
+                    raw_out = raw_out[:end_idx + 1]
+            profiles = json.loads(raw_out)
             card = next((obj for obj in profiles if obj.get("id") == card_id), None)
             if not card:
                 return
-            profiles = card.get("info", {}).get("params", {}).get("EnumProfile", [])
-            preferred = next(
-                (profile.get("index") for profile in profiles if profile.get("name") == "output:analog-stereo+input:mono-fallback"),
-                None,
+
+            params = card.get("info", {}).get("params", {})
+            active_list = params.get("Profile", [])
+            active_name = active_list[0].get("name", "") if active_list else ""
+
+            # If already active in a working duplex profile, no need to bounce the card
+            if active_list and active_name != "off":
+                classes = str(active_list[0].get("classes", []))
+                if "Audio/Source" in classes and "Audio/Sink" in classes:
+                    return
+
+            enum_profs = params.get("EnumProfile", [])
+            valid_targets = (
+                "output:analog-stereo+input:mono-fallback",
+                "output:analog-stereo+input:stereo-fallback",
+                "pro-audio",
+                "analog-stereo-duplex",
             )
+            preferred = None
+            for target_name in valid_targets:
+                for profile in enum_profs:
+                    if profile.get("name") == target_name:
+                        preferred = profile.get("index")
+                        break
+                if preferred is not None:
+                    break
+
             if preferred is None:
                 return
 
@@ -503,8 +558,10 @@ class USBHardwareManager:
                 except Exception:
                     pass
         else:
-            self.device_type = "generic"
-            self._elgato_initialized = False
+            dev = elgato_manager.get_device()
+            if not (dev and dev.is_connected()):
+                self.device_type = "generic"
+                self._elgato_initialized = False
 
     def apply_saved_hardware_settings(self, dev=None):
         """Applies all saved persistent hardware configurations (phantom power, gain, clipguard, low cut, LED colors, headphone volume, monitor mix) to the physical Elgato device."""
@@ -755,14 +812,20 @@ class USBHardwareManager:
         form_factor = form_factor.lower()
         icon_name = icon_name.lower()
 
-        # 0. Elgato Wave XLR / XLR MK2 Dedicated Hardware
+        # 0a. Elgato Wave XLR MK2
         if any(token in name_low for token in ("wave xlr mk2", "wave_xlr_mk2", "mk2")) or "00b6" in name_low:
             return "elgato-wave-xlr-mk2-symbolic"
-        if "wave xlr" in name_low or "wave_xlr" in name_low or "0fd9" in name_low:
+
+        # 0b. Elgato Wave XLR
+        if any(token in name_low for token in ("wave xlr", "wave_xlr")) or "007d" in name_low:
             return "elgato-wave-xlr-symbolic"
 
-        # 1. Desktop Standalone Microphones (Fifine, Wave, Blue Yeti, Rode, Shure, QuadCast, etc.)
-        if form_factor == "microphone" or any(x in name_low for x in ["mic", "fifine", "wave", "yeti", "shure", "rode", "quadcast", "seiren"]):
+        # 0c. Elgato Wave USB Microphones (Wave:3, Wave:1, Wave Neo)
+        if any(token in name_low for token in ("wave:3", "wave 3", "wave_3", "wave:1", "wave 1", "wave_1", "wave neo", "wave_neo", "elgato wave")) or any(pid in name_low for pid in ("0070", "006f", "009c")):
+            return "elgato-wave-3-symbolic"
+
+        # 1. Desktop Standalone Microphones (Fifine, Blue Yeti, Rode, Shure, QuadCast, etc.)
+        if form_factor == "microphone" or any(x in name_low for x in ["mic", "fifine", "yeti", "shure", "rode", "quadcast", "seiren"]):
             return "audio-input-microphone-symbolic"
 
         # 2. Integrated Headsets (Gaming headphones with attached boom mic)
@@ -791,7 +854,14 @@ class USBHardwareManager:
     def get_device_icon(self, dev_key_or_name: str) -> str:
         """Returns the custom icon if set by user, else the smart detected icon."""
         if not dev_key_or_name:
-            return "elgato-wave-xlr-symbolic" if self.device_type == "elgato" else "audio-input-microphone-symbolic"
+            if self.device_type == "elgato":
+                dev_name_low = str(getattr(self, "device_name", "")).lower()
+                if any(x in dev_name_low for x in ("wave:3", "wave 3", "wave_3", "wave:1", "wave 1", "wave neo", "0070", "006f", "009c")):
+                    return "elgato-wave-3-symbolic"
+                elif any(x in dev_name_low for x in ("mk2", "00b6")):
+                    return "elgato-wave-xlr-mk2-symbolic"
+                return "elgato-wave-xlr-symbolic"
+            return "audio-input-microphone-symbolic"
         k_str = str(dev_key_or_name)
         custom_icons = config_manager.get("device_icons", {})
         if k_str in custom_icons and custom_icons[k_str]:
@@ -804,7 +874,12 @@ class USBHardwareManager:
         k_lower = k_str.lower()
         if any(w in k_lower for w in ("wave xlr mk2", "wave_xlr_mk2", "00b6", "mk2")):
             return "elgato-wave-xlr-mk2-symbolic"
-        if any(w in k_lower for w in ("wave xlr", "wave_xlr", "wave:3", "wave_3", "wave:1", "wave_1", "wave neo", "wave_neo", "elgato wave")) or (k_str == self.device_name and self.device_type == "elgato") or "0fd9" in k_lower:
+        if any(w in k_lower for w in ("wave:3", "wave 3", "wave_3", "wave:1", "wave 1", "wave_1", "wave neo", "wave_neo")) or any(pid in k_lower for pid in ("0070", "006f", "009c")):
+            return "elgato-wave-3-symbolic"
+        if any(w in k_lower for w in ("wave xlr", "wave_xlr")) or "007d" in k_lower or (k_str == self.device_name and self.device_type == "elgato"):
+            dev_name_low = str(getattr(self, "device_name", "")).lower()
+            if any(x in dev_name_low for x in ("wave:3", "wave 3", "wave_3", "wave:1", "wave 1", "0070", "006f", "009c")):
+                return "elgato-wave-3-symbolic"
             return "elgato-wave-xlr-symbolic"
         if any(m in k_str.lower() for m in ("mic", "fefine", "fifine", "capture", "input")):
             return "audio-input-microphone-symbolic"

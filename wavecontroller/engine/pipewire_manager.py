@@ -3936,7 +3936,11 @@ class PipeWireManager:
             return "slack"
         elif "teams" in app_low:
             return "teams"
-        elif app_low in ("elgato wave xlr", "wave xlr", "wave:3", "wave:1", "wave neo", "elgato") or app_low.startswith("elgato wave"):
+        elif any(token in app_low for token in ("wave:3", "wave 3", "wave_3", "wave:1", "wave 1", "wave neo")) or any(pid in app_low for pid in ("0070", "006f", "009c")):
+            return "elgato-wave-3-symbolic"
+        elif any(token in app_low for token in ("wave xlr mk2", "wave_xlr_mk2", "mk2")) or "00b6" in app_low:
+            return "elgato-wave-xlr-mk2-symbolic"
+        elif app_low in ("elgato wave xlr", "wave xlr") or "007d" in app_low or app_low.startswith("elgato wave"):
             return "elgato-wave-xlr-symbolic"
         elif app_low in ("mic", "microphone", "input"):
             return "audio-input-microphone-symbolic"
