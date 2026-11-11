@@ -16,6 +16,7 @@ from ..config_manager import config_manager
 from .models import PluginFormat
 from .scanner import plugin_scanner
 from wavecontroller.utils.logger import get_logger
+from wavecontroller.utils.pipewire_utils import safe_pw_dump
 
 log = get_logger("FXChainManager")
 
@@ -173,19 +174,8 @@ class ChannelFXChain:
 
     def _live_control_node_id(self) -> Optional[int]:
         try:
-            raw = subprocess.check_output(["pw-dump"], text=True, stderr=subprocess.DEVNULL, timeout=2).strip()
-            data = []
-            if raw:
-                try:
-                    data = json.loads(raw)
-                except json.JSONDecodeError as err:
-                    if err.pos:
-                        data = json.loads(raw[:err.pos])
-                    elif raw.startswith("["):
-                        end_idx = raw.rfind("]")
-                        if end_idx != -1:
-                            data = json.loads(raw[:end_idx + 1])
-            if not isinstance(data, list):
+            data = safe_pw_dump(timeout=2)
+            if not data:
                 return None
         except Exception:
             return None

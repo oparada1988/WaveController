@@ -11,6 +11,7 @@ import subprocess
 from wavecontroller.engine.graph.process_classifier import get_match_tokens, port_matches_tokens
 from wavecontroller.engine.graph.stream_resolver import get_multi_stream_numeric_ports
 from wavecontroller.utils.logger import get_logger
+from wavecontroller.utils.pipewire_utils import safe_pw_dump
 
 log = get_logger("AppStreamTracker")
 
@@ -35,20 +36,7 @@ class AppStreamTracker:
         """Extracts all currently active playback audio stream nodes from PipeWire."""
         streams = []
         try:
-            raw = subprocess.check_output(["pw-dump"], text=True, stderr=subprocess.DEVNULL, timeout=3).strip()
-            data = []
-            if raw:
-                try:
-                    data = json.loads(raw)
-                except json.JSONDecodeError as err:
-                    if err.pos:
-                        data = json.loads(raw[:err.pos])
-                    elif raw.startswith("["):
-                        end_idx = raw.rfind("]")
-                        if end_idx != -1:
-                            data = json.loads(raw[:end_idx + 1])
-            if not isinstance(data, list):
-                data = []
+            data = safe_pw_dump(timeout=3)
             for obj in data:
                 if isinstance(obj, dict) and obj.get("type") == "PipeWire:Interface:Node":
                     props = (obj.get("info") or {}).get("props") or {}

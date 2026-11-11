@@ -10,38 +10,9 @@ import select
 from .config_manager import config_manager
 from .elgato_wave import elgato_manager
 from wavecontroller.utils.logger import get_logger
+from wavecontroller.utils.pipewire_utils import safe_pw_dump
 
 log = get_logger("HardwareManager")
-
-def safe_pw_dump(timeout: float = 3.0) -> list:
-    """Executes pw-dump and parses the JSON array, gracefully handling trailing extra data or multiple documents."""
-    try:
-        raw = subprocess.check_output(["pw-dump"], text=True, stderr=subprocess.DEVNULL, timeout=timeout).strip()
-        if not raw:
-            return []
-        data = None
-        try:
-            data = json.loads(raw)
-        except json.JSONDecodeError as err:
-            if err.pos:
-                data = json.loads(raw[:err.pos])
-            elif raw.startswith("["):
-                end_idx = raw.rfind("]")
-                if end_idx != -1:
-                    data = json.loads(raw[:end_idx + 1])
-        if not isinstance(data, list):
-            return []
-        for obj in data:
-            if isinstance(obj, dict):
-                if not isinstance(obj.get("info"), dict):
-                    obj["info"] = {}
-                if not isinstance(obj["info"].get("props"), dict):
-                    obj["info"]["props"] = {}
-                if not isinstance(obj["info"].get("params"), dict):
-                    obj["info"]["params"] = {}
-        return data
-    except Exception:
-        return []
 
 class USBHardwareManager:
     """
@@ -1340,8 +1311,7 @@ class USBHardwareManager:
         # 4. Fallback: Search pw-dump for node objects matching s_key or numeric ID
         clean_key = s_key.replace("alsa_card.", "").replace("alsa_output.", "").replace("usb-", "").lower().split("-00")[0]
         try:
-            out = subprocess.check_output(["pw-dump"], text=True, stderr=subprocess.DEVNULL)
-            objs = json.loads(out)
+            objs = safe_pw_dump()
             for o in objs:
                 if o.get("type") == "PipeWire:Interface:Node":
                     props = o.get("info", {}).get("props", {})
@@ -1380,8 +1350,7 @@ class USBHardwareManager:
 
         clean_key = s_key.replace("alsa_card.", "").replace("alsa_input.", "").replace("usb-", "").lower().split("-00")[0]
         try:
-            out = subprocess.check_output(["pw-dump"], text=True, stderr=subprocess.DEVNULL)
-            objs = json.loads(out)
+            objs = safe_pw_dump()
             for o in objs:
                 if o.get("type") == "PipeWire:Interface:Node":
                     props = o.get("info", {}).get("props", {})
@@ -1542,8 +1511,7 @@ class USBHardwareManager:
         alsa_driver = "snd_usb_audio" if bus_type == "usb" else "snd_hda_intel"
 
         try:
-            out = subprocess.check_output(["pw-dump"], text=True, stderr=subprocess.DEVNULL)
-            objs = json.loads(out)
+            objs = safe_pw_dump()
             for o in objs:
                 if o.get("type") == "PipeWire:Interface:Device":
                     props = o.get("info", {}).get("props", {})

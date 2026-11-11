@@ -10,6 +10,7 @@ import json
 import subprocess
 import time
 import threading
+from wavecontroller.utils.pipewire_utils import safe_pw_dump
 
 KNOWN_AUDIO_BINARIES = {
     # Discord & Community Clients (Native, Flatpak, Snap, WebCord, Vesktop)
@@ -170,20 +171,7 @@ def get_active_port_metadata_map(force_refresh: bool = False, max_age_s: float =
 
     port_map = {}
     try:
-        raw = subprocess.check_output(["pw-dump"], text=True, stderr=subprocess.DEVNULL, timeout=3).strip()
-        data = []
-        if raw:
-            try:
-                data = json.loads(raw)
-            except json.JSONDecodeError as err:
-                if err.pos:
-                    data = json.loads(raw[:err.pos])
-                elif raw.startswith("["):
-                    end_idx = raw.rfind("]")
-                    if end_idx != -1:
-                        data = json.loads(raw[:end_idx + 1])
-        if not isinstance(data, list):
-            data = []
+        data = safe_pw_dump(timeout=3)
         nodes = {obj["id"]: obj for obj in data if isinstance(obj, dict) and obj.get("type") == "PipeWire:Interface:Node"}
         ports = [obj for obj in data if isinstance(obj, dict) and obj.get("type") == "PipeWire:Interface:Port"]
         for p in ports:

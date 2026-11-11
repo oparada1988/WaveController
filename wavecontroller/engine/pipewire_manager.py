@@ -19,38 +19,9 @@ from wavecontroller.engine.routing.sink_manager import SubmixSinkManager
 from wavecontroller.engine.routing.app_tracker import AppStreamTracker
 from wavecontroller.engine.plugins.fx_chain import fx_manager
 from wavecontroller.utils.logger import get_logger
+from wavecontroller.utils.pipewire_utils import safe_pw_dump
 
 log = get_logger("PipeWireManager")
-
-def safe_pw_dump(timeout: float = 3.0) -> list:
-    """Executes pw-dump and parses the JSON array, gracefully handling trailing extra data or multiple documents."""
-    try:
-        raw = subprocess.check_output(["pw-dump"], text=True, stderr=subprocess.DEVNULL, timeout=timeout).strip()
-        if not raw:
-            return []
-        data = None
-        try:
-            data = json.loads(raw)
-        except json.JSONDecodeError as err:
-            if err.pos:
-                data = json.loads(raw[:err.pos])
-            elif raw.startswith("["):
-                end_idx = raw.rfind("]")
-                if end_idx != -1:
-                    data = json.loads(raw[:end_idx + 1])
-        if not isinstance(data, list):
-            return []
-        for obj in data:
-            if isinstance(obj, dict):
-                if not isinstance(obj.get("info"), dict):
-                    obj["info"] = {}
-                if not isinstance(obj["info"].get("props"), dict):
-                    obj["info"]["props"] = {}
-                if not isinstance(obj["info"].get("params"), dict):
-                    obj["info"]["params"] = {}
-        return data
-    except Exception:
-        return []
 
 class PipeWireManager:
     """
@@ -362,6 +333,8 @@ class PipeWireManager:
                     valid_submix_names.add(f"WaveController_submix_{ch['id']}_{mx['id']}")
 
             for obj in data:
+                if obj.get("type") != "PipeWire:Interface:Node":
+                    continue
                 props = obj.get("info", {}).get("props", {})
                 n_name = props.get("node.name", "")
                 n_desc = props.get("node.description", "")
@@ -552,8 +525,7 @@ class PipeWireManager:
 
         # 3. Destroy virtual mixing and per-channel ingestion sink nodes
         try:
-            out = subprocess.check_output(["pw-dump"], text=True, stderr=subprocess.DEVNULL)
-            data = json.loads(out)
+            data = safe_pw_dump()
             phys_sink_id = None
             phys_source_id = None
 
@@ -616,8 +588,7 @@ class PipeWireManager:
                 pass
 
         try:
-            out_raw = subprocess.check_output(["pw-dump"], text=True, stderr=subprocess.DEVNULL)
-            data = json.loads(out_raw)
+            data = safe_pw_dump()
             for obj in data:
                 if obj.get("type") != "PipeWire:Interface:Node":
                     continue
@@ -665,8 +636,7 @@ class PipeWireManager:
                 pass
 
         try:
-            out_raw = subprocess.check_output(["pw-dump"], text=True, stderr=subprocess.DEVNULL)
-            data = json.loads(out_raw)
+            data = safe_pw_dump()
             for obj in data:
                 if obj.get("type") != "PipeWire:Interface:Node":
                     continue
@@ -970,8 +940,7 @@ class PipeWireManager:
         # Fallback to scanning pw-dump if discovered_devices is not fully populated yet
         if (excl_out and not out_node_ids) or (excl_mic and not in_node_ids):
             try:
-                out_raw = subprocess.check_output(["pw-dump"], text=True, stderr=subprocess.DEVNULL)
-                objs = json.loads(out_raw)
+                objs = safe_pw_dump()
                 for obj in objs:
                     if obj.get("type") != "PipeWire:Interface:Node":
                         continue
@@ -1019,9 +988,10 @@ class PipeWireManager:
         if getattr(self, "_is_sleeping", False) or getattr(self, "_resume_mute_shield", False):
             return
         try:
-            out = subprocess.check_output(["pw-dump"], text=True, stderr=subprocess.DEVNULL)
-            data = json.loads(out)
+            data = safe_pw_dump()
             for obj in data:
+                if obj.get("type") != "PipeWire:Interface:Node":
+                    continue
                 props = obj.get("info", {}).get("props", {})
                 n_name = props.get("node.name", "")
                 if n_name.startswith("WaveController_") and n_name.endswith("_Sink"):
@@ -1040,8 +1010,7 @@ class PipeWireManager:
     def _ensure_client_streams_unity_volume(self):
         """Ensures that client playback streams (Discord, Chrome, Spotify) are at 1.00 unity volume and unmuted."""
         try:
-            out = subprocess.check_output(["pw-dump"], text=True, stderr=subprocess.DEVNULL)
-            data = json.loads(out)
+            data = safe_pw_dump()
             for obj in data:
                 if obj.get("type") == "PipeWire:Interface:Node":
                     props = obj.get("info", {}).get("props", {})
@@ -1098,8 +1067,7 @@ class PipeWireManager:
                 target_sink = f"WaveController_Channel_{channel_id}"
             else:
                 target_sink = None
-            out = subprocess.check_output(["pw-dump"], text=True, stderr=subprocess.DEVNULL)
-            data = json.loads(out)
+            data = safe_pw_dump()
             tokens = self._get_match_tokens(app_name)
             for obj in data:
                 if obj.get("type") == "PipeWire:Interface:Node":
@@ -1129,8 +1097,7 @@ class PipeWireManager:
     def _unbind_app_from_wireplumber_target(self, app_name: str, channel_id: str = None):
         """Clears WirePlumber target.object and target.node metadata for an application stream, resetting to unity volume."""
         try:
-            out = subprocess.check_output(["pw-dump"], text=True, stderr=subprocess.DEVNULL)
-            data = json.loads(out)
+            data = safe_pw_dump()
             tokens = self._get_match_tokens(app_name)
             for obj in data:
                 if obj.get("type") == "PipeWire:Interface:Node":
@@ -1156,8 +1123,7 @@ class PipeWireManager:
     def _release_all_apps_to_system_default(self):
         """Releases all application streams from WaveController and routes them directly to the system-wide physical default sink."""
         try:
-            out = subprocess.check_output(["pw-dump"], text=True, stderr=subprocess.DEVNULL)
-            data = json.loads(out)
+            data = safe_pw_dump()
             for obj in data:
                 if obj.get("type") == "PipeWire:Interface:Node":
                     props = obj.get("info", {}).get("props", {})
@@ -1311,9 +1277,8 @@ class PipeWireManager:
             target_fr = [p for p in target_ports if any(s in p.lower().split(":")[-1] for s in ("_fr", "playback_1", "playback_fr"))]
 
             # 3. Enumerate all live Stream/Output/Audio nodes from pw-dump
-            try:
-                pw_data = json.loads(subprocess.check_output(["pw-dump"], text=True, stderr=subprocess.DEVNULL))
-            except Exception:
+            pw_data = safe_pw_dump()
+            if not pw_data:
                 return
 
             if not hasattr(self, "_bound_unassigned_nodes"):
@@ -1595,8 +1560,7 @@ class PipeWireManager:
         """Scans PipeWire graph and caches active playback stream Node IDs."""
         cache = {}
         try:
-            out = subprocess.check_output(["pw-dump"], text=True, stderr=subprocess.DEVNULL)
-            data = json.loads(out)
+            data = safe_pw_dump()
             for obj in data:
                 if obj.get("type") != "PipeWire:Interface:Node":
                     continue
@@ -1637,9 +1601,10 @@ class PipeWireManager:
 
         # 1. Active PipeWire Audio Streams
         try:
-            out = subprocess.check_output(["pw-dump"], text=True, stderr=subprocess.DEVNULL)
-            data = json.loads(out)
+            data = safe_pw_dump()
             for obj in data:
+                if obj.get("type") != "PipeWire:Interface:Node":
+                    continue
                 props = obj.get("info", {}).get("props", {})
                 media_class = props.get("media.class", "")
                 node_name = props.get("node.name", "")
@@ -1816,8 +1781,8 @@ class PipeWireManager:
                     self._app_volume_overrides.pop(canon_app, None)
             try:
                 tokens = self._get_match_tokens(app_name)
-                out = subprocess.check_output(["pw-dump"], text=True, stderr=subprocess.DEVNULL)
-                for obj in json.loads(out):
+                data = safe_pw_dump()
+                for obj in data:
                     if obj.get("type") == "PipeWire:Interface:Node":
                         props = obj.get("info", {}).get("props", {})
                         if self._node_matches_tokens(props, tokens):
@@ -1895,8 +1860,8 @@ class PipeWireManager:
                     self._app_volume_overrides.pop(canon_app, None)
             try:
                 tokens = self._get_match_tokens(app_name)
-                out = subprocess.check_output(["pw-dump"], text=True, stderr=subprocess.DEVNULL)
-                for obj in json.loads(out):
+                data = safe_pw_dump()
+                for obj in data:
                     if obj.get("type") == "PipeWire:Interface:Node":
                         props = obj.get("info", {}).get("props", {})
                         if self._node_matches_tokens(props, tokens):
@@ -2257,8 +2222,7 @@ class PipeWireManager:
             m_type = mix_obj.get("type", "source") if mix_obj else "source"
 
         try:
-            out = subprocess.check_output(["pw-dump"], text=True, stderr=subprocess.DEVNULL)
-            data = json.loads(out)
+            data = safe_pw_dump()
             for obj in data:
                 if obj.get("type") == "PipeWire:Interface:Node":
                     props = obj.get("info", {}).get("props", {})
@@ -2383,8 +2347,7 @@ class PipeWireManager:
         node_ids = self._submix_node_ids.get(key, [])
         if not node_ids:
             try:
-                out = subprocess.check_output(["pw-dump"], text=True, stderr=subprocess.DEVNULL)
-                data = json.loads(out)
+                data = safe_pw_dump()
                 found = []
                 for obj in data:
                     if obj.get("type") == "PipeWire:Interface:Node":
@@ -2563,8 +2526,8 @@ class PipeWireManager:
                             ch_tokens.update(self._get_match_tokens(a))
 
                         try:
-                            out = subprocess.check_output(["pw-dump"], text=True, stderr=subprocess.DEVNULL)
-                            for obj in json.loads(out):
+                            data = safe_pw_dump()
+                            for obj in data:
                                 if obj.get("type") == "PipeWire:Interface:Node":
                                     props = obj.get("info", {}).get("props", {})
                                     m_class = props.get("media.class", "")
@@ -3389,8 +3352,8 @@ class PipeWireManager:
                             self._app_volume_overrides.pop(canon_app, None)
                     try:
                         tokens = self._get_match_tokens(app)
-                        out = subprocess.check_output(["pw-dump"], text=True, stderr=subprocess.DEVNULL)
-                        for obj in json.loads(out):
+                        data = safe_pw_dump()
+                        for obj in data:
                             if obj.get("type") == "PipeWire:Interface:Node":
                                 props = obj.get("info", {}).get("props", {})
                                 if self._node_matches_tokens(props, tokens):
@@ -3716,7 +3679,7 @@ class PipeWireManager:
             def _apply_default_node():
                 for attempt in range(20):
                     try:
-                        data = json.loads(subprocess.check_output(["pw-dump"], text=True, stderr=subprocess.DEVNULL))
+                        data = safe_pw_dump()
                         node_id = next(
                             (
                                 str(obj["id"])
@@ -3788,9 +3751,9 @@ class PipeWireManager:
             def _apply_default_node():
                 for attempt in range(20):
                     try:
-                        out = subprocess.check_output(["pw-dump"], text=True, stderr=subprocess.DEVNULL)
+                        data = safe_pw_dump()
                         node_id = None
-                        for obj in json.loads(out):
+                        for obj in data:
                             if obj.get("type") == "PipeWire:Interface:Node":
                                 props = obj.get("info", {}).get("props", {})
                                 if props.get("node.name") == target_node_name:
@@ -3841,7 +3804,7 @@ class PipeWireManager:
         media_class = "Audio/Source" if media_type == "source" else "Audio/Sink"
         node_prefix = "alsa_input." if media_type == "source" else "alsa_output."
         try:
-            data = json.loads(subprocess.check_output(["pw-dump"], text=True, stderr=subprocess.DEVNULL))
+            data = safe_pw_dump()
             for obj in data:
                 if obj.get("type") != "PipeWire:Interface:Node":
                     continue
@@ -3931,8 +3894,7 @@ class PipeWireManager:
                 pass
 
             try:
-                out = subprocess.check_output(["pw-dump"], text=True, stderr=subprocess.DEVNULL)
-                data = json.loads(out)
+                data = safe_pw_dump()
                 for obj in data:
                     props = obj.get("info", {}).get("props", {})
                     n_name = props.get("node.name", "")
@@ -4069,8 +4031,8 @@ class PipeWireManager:
         tokens = self._get_match_tokens(app_name)
         g_val = self._pct_to_pipewire_gain(vol)
         try:
-            out = subprocess.check_output(["pw-dump"], text=True, stderr=subprocess.DEVNULL)
-            for obj in json.loads(out):
+            data = safe_pw_dump()
+            for obj in data:
                 if obj.get("type") == "PipeWire:Interface:Node":
                     props = obj.get("info", {}).get("props", {})
                     if self._node_matches_tokens(props, tokens):
@@ -4101,8 +4063,8 @@ class PipeWireManager:
         vol = self.get_app_volume(app_name)
         g_val = self._pct_to_pipewire_gain(vol)
         try:
-            out = subprocess.check_output(["pw-dump"], text=True, stderr=subprocess.DEVNULL)
-            for obj in json.loads(out):
+            data = safe_pw_dump()
+            for obj in data:
                 if obj.get("type") == "PipeWire:Interface:Node":
                     props = obj.get("info", {}).get("props", {})
                     if self._node_matches_tokens(props, tokens):
@@ -4244,9 +4206,10 @@ class PipeWireManager:
             self._notify_peak_monitor_refresh()
 
         def _bg_provision():
-            self._ensure_virtual_mix_nodes()
-            self._refresh_node_cache()
-            self._sync_channel_audio_routing()
+            with self._virtual_nodes_lock:
+                self._synchronize_virtual_mix_nodes()
+                self._refresh_node_cache()
+                self._sync_channel_audio_routing()
 
         threading.Thread(target=_bg_provision, daemon=True).start()
 
