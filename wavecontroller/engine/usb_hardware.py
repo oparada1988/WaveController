@@ -13,6 +13,25 @@ from wavecontroller.utils.logger import get_logger
 
 log = get_logger("HardwareManager")
 
+def safe_pw_dump(timeout: float = 3.0) -> list:
+    """Executes pw-dump and parses the JSON array, gracefully handling trailing extra data or multiple documents."""
+    try:
+        raw = subprocess.check_output(["pw-dump"], text=True, stderr=subprocess.DEVNULL, timeout=timeout).strip()
+        if not raw:
+            return []
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError as err:
+            if err.pos:
+                return json.loads(raw[:err.pos])
+            elif raw.startswith("["):
+                end_idx = raw.rfind("]")
+                if end_idx != -1:
+                    return json.loads(raw[:end_idx + 1])
+            return []
+    except Exception:
+        return []
+
 class USBHardwareManager:
     """
     Hardware integration layer managing physical Audio Input, Output, and Duplex devices.
@@ -68,12 +87,7 @@ class USBHardwareManager:
         if card_id in self._profile_enforced_cards:
             return
         try:
-            raw_out = subprocess.check_output(["pw-dump"], text=True, stderr=subprocess.DEVNULL).strip()
-            if raw_out.startswith("["):
-                end_idx = raw_out.rfind("]")
-                if end_idx != -1:
-                    raw_out = raw_out[:end_idx + 1]
-            data = json.loads(raw_out)
+            data = safe_pw_dump()
             card = next((obj for obj in data if obj.get("id") == card_id), None)
             if not card:
                 return
@@ -156,12 +170,7 @@ class USBHardwareManager:
             return
 
         try:
-            raw_out = subprocess.check_output(["pw-dump"], text=True, stderr=subprocess.DEVNULL).strip()
-            if raw_out.startswith("["):
-                end_idx = raw_out.rfind("]")
-                if end_idx != -1:
-                    raw_out = raw_out[:end_idx + 1]
-            profiles = json.loads(raw_out)
+            profiles = safe_pw_dump()
             card = next((obj for obj in profiles if obj.get("id") == card_id), None)
             if not card:
                 return
@@ -380,11 +389,7 @@ class USBHardwareManager:
         Uses pw-dump with fallback to wpctl status.
         """
         hw_map = {}
-        try:
-            out = subprocess.check_output(["pw-dump"], text=True, stderr=subprocess.DEVNULL)
-            objects = json.loads(out)
-        except Exception:
-            objects = []
+        objects = safe_pw_dump()
 
         devices = {}
         nodes = []

@@ -361,8 +361,8 @@ class MultiChannelPeakMonitor:
                         clean_p = re.sub(r'^\d+\s+', '', p).strip()
                         if ":capture_" in clean_p and clean_p.startswith("alsa_input."):
                             p_low = clean_p.lower()
-                            if "wave" in ch_id_low or "elgato" in ch_id_low or "wave" in ch_name_low:
-                                if "wave" in p_low or "elgato" in p_low or "0fd9" in p_low:
+                            if ch_id in ("mic", "elgato_wave_xlr", "microphone") or "wave" in ch_id_low or "elgato" in ch_id_low or "wave" in ch_name_low:
+                                if "wave" in p_low or "elgato" in p_low or "0fd9" in p_low or "0070" in p_low or "007d" in p_low or "00b6" in p_low:
                                     matched_node = clean_p.split(":")[0]
                                     is_mono = "mono" in p_low
                                     break

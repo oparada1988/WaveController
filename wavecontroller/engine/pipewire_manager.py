@@ -22,6 +22,25 @@ from wavecontroller.utils.logger import get_logger
 
 log = get_logger("PipeWireManager")
 
+def safe_pw_dump(timeout: float = 3.0) -> list:
+    """Executes pw-dump and parses the JSON array, gracefully handling trailing extra data or multiple documents."""
+    try:
+        raw = subprocess.check_output(["pw-dump"], text=True, stderr=subprocess.DEVNULL, timeout=timeout).strip()
+        if not raw:
+            return []
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError as err:
+            if err.pos:
+                return json.loads(raw[:err.pos])
+            elif raw.startswith("["):
+                end_idx = raw.rfind("]")
+                if end_idx != -1:
+                    return json.loads(raw[:end_idx + 1])
+            return []
+    except Exception:
+        return []
+
 class PipeWireManager:
     """
     High-performance PipeWire manager with stream node caching, debounced
@@ -325,8 +344,7 @@ class PipeWireManager:
 
         existing_active_names = set()
         try:
-            out = subprocess.check_output(["pw-dump"], text=True, stderr=subprocess.DEVNULL)
-            data = json.loads(out)
+            data = safe_pw_dump()
             valid_submix_names = set()
             for ch in channels_copy:
                 for mx in mixes_copy:
@@ -398,7 +416,7 @@ class PipeWireManager:
             registered = {}
             for _ in range(10):
                 try:
-                    data = json.loads(subprocess.check_output(["pw-dump"], text=True, stderr=subprocess.DEVNULL))
+                    data = safe_pw_dump()
                     registered = {}
                     for obj in data:
                         name = obj.get("info", {}).get("props", {}).get("node.name")
@@ -406,7 +424,7 @@ class PipeWireManager:
                             registered.setdefault(name, []).append(obj.get("id"))
                     if all(len(registered.get(name, [])) == 1 for name in needed_nodes):
                         break
-                except (OSError, ValueError, subprocess.CalledProcessError):
+                except Exception:
                     pass
                 time.sleep(0.05)
 
@@ -2758,8 +2776,7 @@ class PipeWireManager:
         # subprocess calls) in the Stage-2 verification/retry step below.
         active_port_pairs = set()
         try:
-            live_links_raw = subprocess.check_output(["pw-dump"], text=True, stderr=subprocess.DEVNULL, timeout=3)
-            live_links_data = json.loads(live_links_raw)
+            live_links_data = safe_pw_dump()
             for _obj in live_links_data:
                 if _obj.get("type") == "PipeWire:Interface:Link":
                     _info = _obj.get("info", {})
@@ -2791,6 +2808,16 @@ class PipeWireManager:
                 for dev in assigned_devs:
                     input_tokens.update(self._get_match_tokens(dev))
 
+                # Include primary hardware microphone if assigned_devs is unassigned or primary mic channel
+                if not assigned_devs or ch_id in ("mic", "elgato_wave_xlr", "microphone"):
+                    if self.hardware_mgr and getattr(self.hardware_mgr, "device_name", None):
+                        input_tokens.update(self._get_match_tokens(self.hardware_mgr.device_name))
+                    if self.hardware_mgr and getattr(self.hardware_mgr, "input_devices", None):
+                        for in_dev in self.hardware_mgr.input_devices:
+                            dev_name = in_dev.get("name") or in_dev.get("description")
+                            if dev_name:
+                                input_tokens.update(self._get_match_tokens(dev_name))
+
                 matched_ports = []
                 for p in out_ports:
                     p_clean = re.sub(r'^\s*\d+\s+', '', p).strip()
@@ -2799,6 +2826,17 @@ class PipeWireManager:
                     if ":capture_" in p_clean:
                         if self._port_matches_tokens(p, input_tokens, port_meta):
                             matched_ports.append(p)
+
+                # Direct hardware fallback: if primary mic channel still has no matched ports,
+                # bind directly to active physical Elgato/Wave capture ports
+                if not matched_ports and ch_id in ("mic", "elgato_wave_xlr", "microphone"):
+                    for p in out_ports:
+                        p_clean = re.sub(r'^\s*\d+\s+', '', p).strip()
+                        if p_clean.startswith("output.WaveController_") or p_clean.startswith("WaveController_") or ":monitor_" in p_clean:
+                            continue
+                        if ":capture_" in p_clean and any(k in p_clean.lower() for k in ("elgato", "wave", "0fd9", "0070", "007d", "00b6")):
+                            matched_ports.append(p)
+
                 ch_out_ports = matched_ports
             else:
                 # Direct Submix Ingestion: Find actual application output ports
