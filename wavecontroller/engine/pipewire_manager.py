@@ -28,16 +28,27 @@ def safe_pw_dump(timeout: float = 3.0) -> list:
         raw = subprocess.check_output(["pw-dump"], text=True, stderr=subprocess.DEVNULL, timeout=timeout).strip()
         if not raw:
             return []
+        data = None
         try:
-            return json.loads(raw)
+            data = json.loads(raw)
         except json.JSONDecodeError as err:
             if err.pos:
-                return json.loads(raw[:err.pos])
+                data = json.loads(raw[:err.pos])
             elif raw.startswith("["):
                 end_idx = raw.rfind("]")
                 if end_idx != -1:
-                    return json.loads(raw[:end_idx + 1])
+                    data = json.loads(raw[:end_idx + 1])
+        if not isinstance(data, list):
             return []
+        for obj in data:
+            if isinstance(obj, dict):
+                if not isinstance(obj.get("info"), dict):
+                    obj["info"] = {}
+                if not isinstance(obj["info"].get("props"), dict):
+                    obj["info"]["props"] = {}
+                if not isinstance(obj["info"].get("params"), dict):
+                    obj["info"]["params"] = {}
+        return data
     except Exception:
         return []
 

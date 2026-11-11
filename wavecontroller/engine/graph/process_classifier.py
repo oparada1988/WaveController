@@ -170,17 +170,29 @@ def get_active_port_metadata_map(force_refresh: bool = False, max_age_s: float =
 
     port_map = {}
     try:
-        out = subprocess.check_output(["pw-dump"], text=True, stderr=subprocess.DEVNULL)
-        data = json.loads(out)
-        nodes = {obj["id"]: obj for obj in data if obj.get("type") == "PipeWire:Interface:Node"}
-        ports = [obj for obj in data if obj.get("type") == "PipeWire:Interface:Port"]
+        raw = subprocess.check_output(["pw-dump"], text=True, stderr=subprocess.DEVNULL, timeout=3).strip()
+        data = []
+        if raw:
+            try:
+                data = json.loads(raw)
+            except json.JSONDecodeError as err:
+                if err.pos:
+                    data = json.loads(raw[:err.pos])
+                elif raw.startswith("["):
+                    end_idx = raw.rfind("]")
+                    if end_idx != -1:
+                        data = json.loads(raw[:end_idx + 1])
+        if not isinstance(data, list):
+            data = []
+        nodes = {obj["id"]: obj for obj in data if isinstance(obj, dict) and obj.get("type") == "PipeWire:Interface:Node"}
+        ports = [obj for obj in data if isinstance(obj, dict) and obj.get("type") == "PipeWire:Interface:Port"]
         for p in ports:
-            props = p.get("info", {}).get("props", {})
+            props = (p.get("info") or {}).get("props") or {}
             p_name = props.get("port.name", "")
             p_alias = props.get("port.alias", "")
             node_id = props.get("node.id")
             n_obj = nodes.get(node_id, {})
-            n_props = n_obj.get("info", {}).get("props", {})
+            n_props = (n_obj.get("info") or {}).get("props") or {}
             n_name = n_props.get("node.name", "")
             app_name = n_props.get("application.name", "")
             app_bin = n_props.get("application.process.binary", "")

@@ -173,15 +173,28 @@ class ChannelFXChain:
 
     def _live_control_node_id(self) -> Optional[int]:
         try:
-            data = json.loads(subprocess.check_output(["pw-dump"], text=True, stderr=subprocess.DEVNULL, timeout=2))
+            raw = subprocess.check_output(["pw-dump"], text=True, stderr=subprocess.DEVNULL, timeout=2).strip()
+            data = []
+            if raw:
+                try:
+                    data = json.loads(raw)
+                except json.JSONDecodeError as err:
+                    if err.pos:
+                        data = json.loads(raw[:err.pos])
+                    elif raw.startswith("["):
+                        end_idx = raw.rfind("]")
+                        if end_idx != -1:
+                            data = json.loads(raw[:end_idx + 1])
+            if not isinstance(data, list):
+                return None
         except Exception:
             return None
         target_name = f"input.{self.node_tag}"
         fallback_id = None
         for obj in data:
-            if obj.get("type") != "PipeWire:Interface:Node":
+            if not isinstance(obj, dict) or obj.get("type") != "PipeWire:Interface:Node":
                 continue
-            props = obj.get("info", {}).get("props", {})
+            props = (obj.get("info") or {}).get("props") or {}
             if props.get("node.name") == target_name:
                 return obj.get("id")
             if props.get("media.name") == self.node_tag:

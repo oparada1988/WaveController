@@ -35,11 +35,23 @@ class AppStreamTracker:
         """Extracts all currently active playback audio stream nodes from PipeWire."""
         streams = []
         try:
-            out = subprocess.check_output(["pw-dump"], text=True, stderr=subprocess.DEVNULL)
-            data = json.loads(out)
+            raw = subprocess.check_output(["pw-dump"], text=True, stderr=subprocess.DEVNULL, timeout=3).strip()
+            data = []
+            if raw:
+                try:
+                    data = json.loads(raw)
+                except json.JSONDecodeError as err:
+                    if err.pos:
+                        data = json.loads(raw[:err.pos])
+                    elif raw.startswith("["):
+                        end_idx = raw.rfind("]")
+                        if end_idx != -1:
+                            data = json.loads(raw[:end_idx + 1])
+            if not isinstance(data, list):
+                data = []
             for obj in data:
-                if obj.get("type") == "PipeWire:Interface:Node":
-                    props = obj.get("info", {}).get("props", {})
+                if isinstance(obj, dict) and obj.get("type") == "PipeWire:Interface:Node":
+                    props = (obj.get("info") or {}).get("props") or {}
                     media_class = props.get("media.class", "")
                     media_role = props.get("media.role", "")
                     if media_class == "Stream/Output/Audio" and media_role != "DSP":
