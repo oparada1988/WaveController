@@ -715,7 +715,8 @@ class UnifiedDeviceSettingsView(Gtk.Box):
 
     def _on_icon_selected(self, popover, icon_name: str):
         self.hardware_mgr.set_device_custom_icon(self.device_key, icon_name)
-        self.header_icon_img.set_from_icon_name(icon_name)
+        if hasattr(self, "header_icon_img") and self.header_icon_img:
+            self.header_icon_img.set_from_icon_name(icon_name)
         self.icon_btn.set_icon_name(icon_name)
         popover.popdown()
         if self.on_device_renamed:
@@ -724,7 +725,8 @@ class UnifiedDeviceSettingsView(Gtk.Box):
     def _on_icon_reset(self, popover):
         self.hardware_mgr.set_device_custom_icon(self.device_key, "")
         smart_icon = self.hardware_mgr.get_device_icon(self.device_key)
-        self.header_icon_img.set_from_icon_name(smart_icon)
+        if hasattr(self, "header_icon_img") and self.header_icon_img:
+            self.header_icon_img.set_from_icon_name(smart_icon)
         self.icon_btn.set_icon_name(smart_icon)
         popover.popdown()
         if self.on_device_renamed:

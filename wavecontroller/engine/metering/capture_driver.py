@@ -55,9 +55,11 @@ def open_pw_record(node_name: str, target: str = None, channels: int = 2, is_sin
         f'--channels={channels}',
         '--latency=20ms'
     ]
-    if is_sink or (target and ('sink' in target.lower() or 'wavecontroller_submix_' in target.lower() or 'wavecontroller_channel_' in target.lower())):
+    is_target_sink = is_sink or bool(target and ('sink' in target.lower() or 'wavecontroller_submix_' in target.lower() or 'wavecontroller_channel_' in target.lower()))
+    is_target_alsa_source = bool(target and target.lower().startswith('alsa_input.'))
+    if is_target_sink:
         cmd.extend(['-P', 'stream.capture.sink=true'])
-    if target:
+    if target and (is_target_sink or is_target_alsa_source):
         cmd.extend(['--target', target])
     cmd.append('-')
     try:

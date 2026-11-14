@@ -9,17 +9,21 @@ from gi.repository import GLib
 from .config_manager import config_manager
 from wavecontroller.engine.graph.process_classifier import (
     KNOWN_AUDIO_BINARIES,
+    GENERIC_COMPATIBILITY_RUNNERS,
+    DEDICATED_NON_GAME_BINARIES,
+    _word_match,
     get_match_tokens,
     get_active_port_metadata_map,
     invalidate_port_metadata_cache,
-    port_matches_tokens
+    port_matches_tokens,
+    resolve_pid_game_metadata,
+    resolve_steam_game_icon
 )
 from wavecontroller.engine.routing.source_manager import MicrophoneSourceManager
 from wavecontroller.engine.routing.sink_manager import SubmixSinkManager
-from wavecontroller.engine.routing.app_tracker import AppStreamTracker
 from wavecontroller.engine.plugins.fx_chain import fx_manager
 from wavecontroller.utils.logger import get_logger
-from wavecontroller.utils.pipewire_utils import safe_pw_dump
+from wavecontroller.utils.pipewire_utils import safe_pw_dump, invalidate_pw_dump_cache
 
 log = get_logger("PipeWireManager")
 
@@ -102,6 +106,10 @@ class PipeWireManager:
         self._mix_node_ids_cache = {} # {mix_id: [node_id, ...]}
         self._in_flight_nodes = set()
         self._pending_node_dispatches = {}
+        self._last_dispatched_node_vol = {} # {node_id_str: (gain_rounded, is_muted)}
+        self._unmuted_mix_sink_ids = set()
+        self._proc_apps_cache = []
+        self._proc_apps_cache_ts = 0.0
         self._bound_stream_nodes = set()
         self._bound_unassigned_nodes = set()   # tracks unassigned streams bound to physical fallback
         self._external_change_listeners = []
@@ -112,7 +120,6 @@ class PipeWireManager:
         # Dedicated Isolated Routing Sub-Managers
         self.source_manager = MicrophoneSourceManager(self, hardware_mgr=self.hardware_mgr)
         self.sink_manager = SubmixSinkManager(self)
-        self.app_tracker = AppStreamTracker(self)
 
         self._init_default_states()
 
@@ -175,6 +182,23 @@ class PipeWireManager:
             config_manager.update(data, immediate=immediate)
         
     def _init_default_states(self):
+        # Sanitize any legacy channel or mix IDs containing invalid PipeWire characters (e.g. colons ':')
+        used_ch_ids = set()
+        for ch in self.channels:
+            old_id = str(ch.get("id", ""))
+            clean_id = re.sub(r'[^a-z0-9_]+', '_', old_id.lower()).strip('_') or "ch"
+            if clean_id != old_id:
+                while clean_id in used_ch_ids:
+                    clean_id = f"{clean_id}_1"
+                ch["id"] = clean_id
+                if old_id in self.assigned_apps and clean_id not in self.assigned_apps:
+                    self.assigned_apps[clean_id] = self.assigned_apps.pop(old_id)
+                if old_id in self.channel_states and clean_id not in self.channel_states:
+                    self.channel_states[clean_id] = self.channel_states.pop(old_id)
+                if old_id in self.channel_master_states and clean_id not in self.channel_master_states:
+                    self.channel_master_states[clean_id] = self.channel_master_states.pop(old_id)
+            used_ch_ids.add(ch["id"])
+
         # Query real initial mic volume
         init_mic_vol, init_mic_muted = self._query_system_source_status()
         mic_vol = init_mic_vol if init_mic_vol is not None else 80
@@ -209,6 +233,21 @@ class PipeWireManager:
                         "muted": False,
                         "linked": True
                     }
+            # Upgrade generic icons for saved application/game channels (e.g. Steam games)
+            if ch.get("type") in ("app", "sink") and ch.get("icon") in (
+                "", None, "audio-x-generic-symbolic", "audio-x-generic",
+                "applications-multimedia-symbolic", "input-gaming-symbolic",
+                "application-default-icon"
+            ):
+                new_ic = self.resolve_icon_for_app(ch.get("name", ""))
+                if new_ic and new_ic not in ("audio-x-generic-symbolic", "audio-card-symbolic"):
+                    ch["icon"] = new_ic
+                else:
+                    for assigned_app in self.assigned_apps.get(ch_id, []):
+                        new_ic = self.resolve_icon_for_app(assigned_app)
+                        if new_ic and new_ic not in ("audio-x-generic-symbolic", "audio-card-symbolic"):
+                            ch["icon"] = new_ic
+                            break
         self._save_state_to_config(immediate=False)
 
     def _query_system_source_status(self):
@@ -495,16 +534,8 @@ class PipeWireManager:
         except Exception:
             pass
 
-        # 2. Cleanly terminate all submix and fallback loopback processes
+        # 2. Cleanly terminate all submix loopback processes
         with self._lock:
-            if hasattr(self, "_fallback_proc") and self._fallback_proc:
-                try:
-                    self._fallback_proc.terminate()
-                    self._fallback_proc.wait(timeout=0.2)
-                except Exception:
-                    pass
-                self._fallback_proc = None
-
             for p in list(self._submix_procs.values()):
                 try:
                     p.terminate()
@@ -515,6 +546,8 @@ class PipeWireManager:
             self._submix_volume_queue.clear()
             self._mix_node_ids_cache.clear()
             self._mix_volume_queue.clear()
+            self._last_dispatched_node_vol.clear()
+            self._unmuted_mix_sink_ids.clear()
 
         # Stop any running DSP FX filter chains
         try:
@@ -739,40 +772,12 @@ class PipeWireManager:
 
         # 6. Trigger volume event to dispatch to PipeWire nodes immediately
         with self._lock:
+            self._last_dispatched_node_vol.clear()
+            self._unmuted_mix_sink_ids.clear()
             self._volume_event.set()
 
         # 7. Re-synchronize channel audio routing
         self._sync_channel_audio_routing()
-
-    def get_application_volume_status(self, app_name: str) -> tuple:
-        """Queries volume and mute status of an application from its PipeWire node."""
-        if not app_name:
-            return None, None
-        app_low = app_name.lower().strip()
-        nodes = []
-        with self._lock:
-            for k, ids in self._node_cache.items():
-                if app_low in k or k in app_low:
-                    nodes.extend(ids)
-        if not nodes:
-            self._refresh_node_cache()
-            with self._lock:
-                for k, ids in self._node_cache.items():
-                    if app_low in k or k in app_low:
-                        nodes.extend(ids)
-                        
-        for node_id in nodes:
-            try:
-                out = subprocess.check_output(["wpctl", "get-volume", str(node_id)], text=True, stderr=subprocess.DEVNULL).strip()
-                import re
-                m = re.search(r'Volume:\s*([\d\.]+)', out)
-                if m:
-                    vol = int(round(float(m.group(1)) * 100))
-                    muted = "[MUTED]" in out
-                    return vol, muted
-            except Exception:
-                pass
-        return None, None
 
     def _external_sync_loop(self):
         """Monitors system source changes in real-time (e.g. system default microphone)."""
@@ -989,6 +994,7 @@ class PipeWireManager:
             return
         try:
             data = safe_pw_dump()
+            active_sink_ids = set()
             for obj in data:
                 if obj.get("type") != "PipeWire:Interface:Node":
                     continue
@@ -997,13 +1003,18 @@ class PipeWireManager:
                 if n_name.startswith("WaveController_") and n_name.endswith("_Sink"):
                     obj_id = obj.get("id")
                     if obj_id:
+                        active_sink_ids.add(obj_id)
                         m_id = n_name.replace("WaveController_", "").replace("_Sink", "")
                         mix_muted = self.mix_states.get(m_id, {}).get("muted", False)
-                        if not mix_muted:
+                        if mix_muted:
+                            self._unmuted_mix_sink_ids.discard(obj_id)
+                        elif obj_id not in self._unmuted_mix_sink_ids:
                             try:
                                 subprocess.run(["wpctl", "set-mute", str(obj_id), "0"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                                self._unmuted_mix_sink_ids.add(obj_id)
                             except Exception:
                                 pass
+            self._unmuted_mix_sink_ids.intersection_update(active_sink_ids)
         except Exception:
             pass
 
@@ -1043,18 +1054,45 @@ class PipeWireManager:
         """Checks if a PipeWire node's metadata matches target application tokens, prioritizing process binary."""
         if not props or not tokens:
             return False
-        n_app = str(props.get("application.name", "")).lower()
-        n_bin = str(props.get("application.process.binary", "")).lower()
-        n_name = str(props.get("node.name", "")).lower()
-        n_id = str(props.get("application.id", "")).lower()
+        n_app = str(props.get("application.name", "")).lower().strip()
+        n_bin = str(props.get("application.process.binary", "")).lower().strip()
+        n_name = str(props.get("node.name", "")).lower().strip()
+        n_desc = str(props.get("node.description", "")).lower().strip()
+        n_media = str(props.get("media.name", "")).lower().strip()
+        n_id = str(props.get("application.id", "") or props.get("pipewire.access.portal.app_id", "")).lower().strip()
+
+        pid = props.get("application.process.id") or props.get("pipewire.sec.pid")
+        pid_meta = resolve_pid_game_metadata(pid) if pid else {}
+        exe_name = str(pid_meta.get("exe_name", "")).lower().strip()
+        steam_game = str(pid_meta.get("steam_game_name", "")).lower().strip()
 
         bin_file = n_bin.split("/")[-1].split("\\")[-1] if n_bin else ""
         if bin_file:
-            return any(t in bin_file or bin_file == t or t in n_bin for t in tokens if len(t) >= 3)
-        elif n_app and n_app not in ("chromium", "playback", "webrtc voiceengine", "webrtc_audio_sink"):
-            return any(t in n_app or n_app == t for t in tokens if len(t) >= 3)
-        else:
-            return any(t in n_name or t in n_id for t in tokens if len(t) >= 3)
+            matches_binary = any(_word_match(t, bin_file) or _word_match(t, n_bin) or t in bin_file or bin_file == t for t in tokens if len(t) >= 3)
+            if matches_binary:
+                return True
+
+        if exe_name:
+            if any(_word_match(t, exe_name) or t in exe_name for t in tokens if len(t) >= 3):
+                return True
+
+        if steam_game:
+            if any(_word_match(t, steam_game) or (t in steam_game and len(t) >= 4) for t in tokens if len(t) >= 3):
+                return True
+
+        if bin_file and bin_file in DEDICATED_NON_GAME_BINARIES and not steam_game and not exe_name:
+            return False
+
+        if n_app and n_app not in ("chromium", "playback", "webrtc voiceengine", "webrtc_audio_sink"):
+            if any(_word_match(t, n_app) or (t in n_app and len(t) >= 4) for t in tokens if len(t) >= 3):
+                return True
+
+        for candidate in (n_name, n_desc, n_media, n_id):
+            if candidate:
+                if any(_word_match(t, candidate) or (t in candidate and len(t) >= 4) for t in tokens if len(t) >= 3):
+                    return True
+
+        return False
 
     def _bind_app_to_wireplumber_target(self, app_name: str, channel_id: str):
         """Notifies WirePlumber via PipeWire metadata that an application belongs to its dedicated channel sink."""
@@ -1082,15 +1120,18 @@ class PipeWireManager:
                                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
                                     )
                                 else:
+                                    # Clear stale target bindings without setting target.node=-1 (which causes
+                                    # WirePlumber/pipewire-pulse to unlink and pause/cork non-exposed game streams).
                                     subprocess.run(
                                         ["pw-metadata", "-n", "default", "-d", str(nid), "target.object"],
                                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
                                     )
                                     subprocess.run(
-                                        ["pw-metadata", "-n", "default", str(nid), "target.node", "-1"],
+                                        ["pw-metadata", "-n", "default", "-d", str(nid), "target.node"],
                                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
                                     )
                                 self._bound_stream_nodes.add(nid)
+                                self._bound_unassigned_nodes.discard(nid)
         except Exception:
             pass
 
@@ -1114,6 +1155,7 @@ class PipeWireManager:
                                 ["pw-metadata", "-n", "default", "-d", str(nid), "target.node"],
                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
                             )
+                            self._bound_unassigned_nodes.discard(nid)
                             # Ensure stream is audible at unity gain
                             subprocess.run(["wpctl", "set-volume", str(nid), "1.00"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                             subprocess.run(["wpctl", "set-mute", str(nid), "0"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -1165,18 +1207,6 @@ class PipeWireManager:
             pass
         return ""
 
-    def _get_fallback_sink_playback_ports(self) -> list:
-        """Finds input/playback ports of WaveController_Fallback_Sink."""
-        try:
-            in_ports_raw = subprocess.check_output(["pw-link", "-i"], text=True, stderr=subprocess.DEVNULL)
-            in_ports = [l.strip() for l in in_ports_raw.splitlines() if l.strip()]
-            matched = [p for p in in_ports if p.startswith("WaveController_Fallback_Sink:") and (":playback_" in p or ":input_" in p)]
-            if matched:
-                return matched[:2]
-        except Exception:
-            pass
-        return []
-
     def _get_default_sink_playback_ports(self) -> list:
         """Finds input/playback ports for fallback/unassigned audio routing (System Default Physical Sink)."""
         sys_def = self._get_system_default_sink_name()
@@ -1194,10 +1224,6 @@ class PipeWireManager:
                 phys_matched = [p for p in in_ports if p.startswith("alsa_output.") and (":playback_" in p or ":input_" in p) and clean_target in p.lower()]
                 if phys_matched:
                     return phys_matched[:2]
-
-            fb_ports = self._get_fallback_sink_playback_ports()
-            if fb_ports:
-                return fb_ports
 
             return [p for p in in_ports if p.startswith("alsa_output.") and (":playback_" in p or ":input_" in p)][:2]
         except Exception:
@@ -1241,10 +1267,28 @@ class PipeWireManager:
             all_in_ports = in_ports
             if all_in_ports is None:
                 try:
-                    raw_ports = subprocess.check_output(["pw-link", "-i"], text=True, stderr=subprocess.DEVNULL)
+                    try:
+                        raw_ports = subprocess.check_output(["pw-link", "-I", "-i"], text=True, stderr=subprocess.DEVNULL)
+                    except Exception:
+                        raw_ports = subprocess.check_output(["pw-link", "-i"], text=True, stderr=subprocess.DEVNULL)
                     all_in_ports = [line.strip() for line in raw_ports.splitlines() if line.strip()]
                 except Exception:
                     all_in_ports = []
+
+            if out_ports is None:
+                try:
+                    try:
+                        raw_out = subprocess.check_output(["pw-link", "-I", "-o"], text=True, stderr=subprocess.DEVNULL)
+                    except Exception:
+                        raw_out = subprocess.check_output(["pw-link", "-o"], text=True, stderr=subprocess.DEVNULL)
+                    out_ports = [line.strip() for line in raw_out.splitlines() if line.strip()]
+                except Exception:
+                    out_ports = []
+
+            if links_map is None:
+                links_map = self._get_pw_links_map()
+            if port_meta is None:
+                port_meta = self._get_active_port_metadata_map()
 
             if target_node_name:
                 target_ports = [
@@ -1332,8 +1376,12 @@ class PipeWireManager:
                         break
 
                 if is_assigned:
-                    # If the app is now assigned, remove it from unassigned tracking so it can be
-                    # re-bound to the fallback in a future cycle if it becomes unassigned again.
+                    # If the app is now assigned, remove it from unassigned tracking and clear metadata fallback
+                    if nid in self._bound_unassigned_nodes:
+                        subprocess.run(
+                            ["pw-metadata", "-d", "-n", "default", str(nid), "target.object"],
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+                        )
                     self._bound_unassigned_nodes.discard(nid)
                     continue
 
@@ -1356,36 +1404,66 @@ class PipeWireManager:
                         clean_p = re.sub(r'^\d+\s+', '', p).strip()
                         if clean_p.startswith("WaveController_") or clean_p.startswith("output.WaveController_") or clean_p.startswith("wave_") or clean_p.startswith("alsa_"):
                             continue
-                        # Match port to this specific node by node_name prefix
-                        if not (clean_p.startswith(f"{node_name}:") or (app_name and clean_p.startswith(f"{app_name}:"))):
+                        p_id_str = p.split()[0] if p and p.split()[0].isdigit() else None
+                        meta_p = (port_meta.get(p_id_str) if (port_meta and p_id_str) else None) if port_meta else None
+                        if meta_p and meta_p.get("node_id") is not None:
+                            if meta_p.get("node_id") != nid:
+                                continue
+                        elif not (clean_p.startswith(f"{node_name}:") or (app_name and clean_p.startswith(f"{app_name}:"))):
                             continue
-                        p_low = clean_p.split(":")[-1].lower()
-                        if any(s in p_low for s in ("_fl", "output_fl", "playback_fl", "output_0", "_l")):
-                            app_fl_ports.append(clean_p)
+                        p_low = clean_p.rsplit(":", 1)[-1].lower()
+                        p_target = p_id_str if p_id_str else clean_p
+                        if "_mono" in p_low or p_low in ("output_mono", "playback_mono"):
+                            app_fl_ports.append((p_target, clean_p))
+                            app_fr_ports.append((p_target, clean_p))
+                        elif any(s in p_low for s in ("_fl", "output_fl", "playback_fl", "output_0", "_l")):
+                            app_fl_ports.append((p_target, clean_p))
                         elif any(s in p_low for s in ("_fr", "output_fr", "playback_fr", "output_1", "_r")):
-                            app_fr_ports.append(clean_p)
+                            app_fr_ports.append((p_target, clean_p))
 
-                # Resolve current links for these ports to avoid redundant pw-link calls
+                # Resolve current links for these ports by specific numeric port ID when available
+                # so multi-stream apps sharing the same node/port name (e.g. Halo's 4 streams)
+                # each get individually verified and linked to the fallback output.
                 cur_links = links_map or {}
-                for src_port in app_fl_ports:
-                    existing_dests = {re.sub(r'^\d+\s+', '', d).strip() for d in cur_links.get(src_port, set())}
-                    for stale_dest in existing_dests:
-                        if stale_dest.startswith(("alsa_output.", "WaveController_Channel_", "WaveController_personal_Sink:")) and not stale_dest.startswith(f"{target_node_name}:"):
-                            subprocess.run(["pw-link", "-d", src_port, stale_dest], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                for src_target, src_clean in app_fl_ports:
+                    if str(src_target).isdigit():
+                        raw_dests = set(cur_links.get(src_target, set())) | set(cur_links.get(f"{src_target} {src_clean}", set()))
+                    else:
+                        raw_dests = set(cur_links.get(src_target, set())) | set(cur_links.get(src_clean, set()))
+                    existing_dests = {re.sub(r'^\d+\s+', '', str(d)).strip() for d in raw_dests if not str(d).strip().isdigit()}
+                    for d in raw_dests:
+                        d_str = str(d).strip()
+                        if d_str.isdigit():
+                            continue
+                        stale_clean = re.sub(r'^\d+\s+', '', d_str).strip()
+                        stale_target = d_str.split()[0] if d_str.split()[0].isdigit() else stale_clean
+                        if stale_clean.startswith(("alsa_output.", "WaveController_Channel_", "WaveController_personal_Sink:", "input.WaveController_submix_")) and not stale_clean.startswith(f"{target_node_name}:"):
+                            subprocess.run(["pw-link", "-d", src_target, stale_target], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                     for dest in target_fl:
                         clean_dest = re.sub(r'^\d+\s+', '', dest).strip()
+                        dest_target = dest.split()[0] if dest and dest.split()[0].isdigit() else clean_dest
                         if clean_dest not in existing_dests:
-                            subprocess.run(["pw-link", src_port, clean_dest], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                            subprocess.run(["pw-link", src_target, dest_target], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
-                for src_port in app_fr_ports:
-                    existing_dests = {re.sub(r'^\d+\s+', '', d).strip() for d in cur_links.get(src_port, set())}
-                    for stale_dest in existing_dests:
-                        if stale_dest.startswith(("alsa_output.", "WaveController_Channel_", "WaveController_personal_Sink:")) and not stale_dest.startswith(f"{target_node_name}:"):
-                            subprocess.run(["pw-link", "-d", src_port, stale_dest], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                for src_target, src_clean in app_fr_ports:
+                    if str(src_target).isdigit():
+                        raw_dests = set(cur_links.get(src_target, set())) | set(cur_links.get(f"{src_target} {src_clean}", set()))
+                    else:
+                        raw_dests = set(cur_links.get(src_target, set())) | set(cur_links.get(src_clean, set()))
+                    existing_dests = {re.sub(r'^\d+\s+', '', str(d)).strip() for d in raw_dests if not str(d).strip().isdigit()}
+                    for d in raw_dests:
+                        d_str = str(d).strip()
+                        if d_str.isdigit():
+                            continue
+                        stale_clean = re.sub(r'^\d+\s+', '', d_str).strip()
+                        stale_target = d_str.split()[0] if d_str.split()[0].isdigit() else stale_clean
+                        if stale_clean.startswith(("alsa_output.", "WaveController_Channel_", "WaveController_personal_Sink:", "input.WaveController_submix_")) and not stale_clean.startswith(f"{target_node_name}:"):
+                            subprocess.run(["pw-link", "-d", src_target, stale_target], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                     for dest in target_fr:
                         clean_dest = re.sub(r'^\d+\s+', '', dest).strip()
+                        dest_target = dest.split()[0] if dest and dest.split()[0].isdigit() else clean_dest
                         if clean_dest not in existing_dests:
-                            subprocess.run(["pw-link", src_port, clean_dest], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                            subprocess.run(["pw-link", src_target, dest_target], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
         except Exception:
             pass
@@ -1449,11 +1527,10 @@ class PipeWireManager:
                     for sp in matched_ports:
                         clean_sp = re.sub(r'^\d+\s+', '', sp).strip()
                         sp_id = sp.split()[0] if sp and sp.split()[0].isdigit() else None
-                        connected_dests = set(links_map.get(sp, set()))
-                        if clean_sp:
-                            connected_dests.update(links_map.get(clean_sp, set()))
                         if sp_id:
-                            connected_dests.update(links_map.get(sp_id, set()))
+                            connected_dests = set(links_map.get(sp, set())) | set(links_map.get(sp_id, set()))
+                        else:
+                            connected_dests = set(links_map.get(sp, set())) | set(links_map.get(clean_sp, set()))
 
                         sp_target = sp_id if sp_id else clean_sp
                         # 1. Immediately sever direct leaks to physical hardware or unauthorized mix sinks
@@ -1638,26 +1715,57 @@ class PipeWireManager:
                     if any(kw in name_low or kw in bin_low or kw in node_low or kw in app_id_low or kw in portal_low for kw in internal_keywords):
                         continue
 
-                    # For Electron, Flatpak, and WebRTC streams, map process binary, app id, or portal app ID to human-readable application name
+                    # For Electron, Flatpak, WebRTC, and Steam/Proton streams, map process binary, app id, or PID metadata to human-readable application name
                     bin_file = bin_low.split("/")[-1].split("\\")[-1] if bin_low else ""
+                    pid = props.get("application.process.id") or props.get("pipewire.sec.pid")
+                    pid_meta = resolve_pid_game_metadata(pid) if pid else {}
+                    steam_game_name = pid_meta.get("steam_game_name", "")
+                    exe_name = pid_meta.get("exe_name", "")
                     matched_entry = None
 
-                    if bin_file in KNOWN_AUDIO_BINARIES:
+                    if bin_file in KNOWN_AUDIO_BINARIES and not steam_game_name and not exe_name:
                         matched_entry = KNOWN_AUDIO_BINARIES[bin_file]
-                    elif portal_low in KNOWN_AUDIO_BINARIES:
+                    elif portal_low in KNOWN_AUDIO_BINARIES and not steam_game_name:
                         matched_entry = KNOWN_AUDIO_BINARIES[portal_low]
-                    elif app_id_low in KNOWN_AUDIO_BINARIES:
+                    elif app_id_low in KNOWN_AUDIO_BINARIES and not steam_game_name:
                         matched_entry = KNOWN_AUDIO_BINARIES[app_id_low]
                     elif any(d in portal_low or d in bin_low or d in app_id_low for d in ("discord", "vesktop", "webcord")):
                         matched_entry = ("Discord", "discord")
                     elif any(s in portal_low or s in bin_low or s in app_id_low for s in ("spotify",)):
                         matched_entry = ("Spotify", "spotify")
 
+                    generic_stream_names = (
+                        "chromium", "webrtc voiceengine", "webrtc", "electron", "playback",
+                        "chromium input", "chromium output", "wine64-preloader", "wine-preloader",
+                        "wine", "wine64", "fmod ex app", "fmod", "sdl application", "wwise",
+                        "openal soft", "reaper", "pressure-vessel-adverb", "pv-adverb", "audio stream"
+                    )
+
                     if matched_entry:
                         known_name, known_icon = matched_entry
-                        if name_low in ("chromium", "webrtc voiceengine", "webrtc", "electron", "playback", "chromium input", "chromium output") or not name or name_low == bin_file or name_low == portal_low:
+                        if name_low in generic_stream_names or not name or name_low == bin_file or name_low == portal_low:
                             name = known_name
                         icon = known_icon
+                    elif steam_game_name and (name_low in generic_stream_names or name_low.endswith(".exe") or name_low == bin_file):
+                        name = steam_game_name
+                        steam_ic = resolve_steam_game_icon(name, pid_meta.get("steam_app_id"))
+                        if steam_ic:
+                            icon = steam_ic
+                        elif not icon:
+                            icon = "input-gaming-symbolic"
+                    elif exe_name and name_low in generic_stream_names:
+                        name = re.sub(r"\.exe$", "", exe_name, flags=re.IGNORECASE)
+                        steam_ic = resolve_steam_game_icon(name, pid_meta.get("steam_app_id"))
+                        if steam_ic:
+                            icon = steam_ic
+                        elif not icon:
+                            icon = "input-gaming-symbolic"
+
+                    if steam_game_name or pid_meta.get("steam_app_id"):
+                        if not icon or icon in ("input-gaming-symbolic", "audio-x-generic-symbolic", "audio-x-generic", "application-default-icon", "steam"):
+                            steam_ic = resolve_steam_game_icon(name or steam_game_name, pid_meta.get("steam_app_id"))
+                            if steam_ic:
+                                icon = steam_ic
 
                     # If icon is missing or generic (e.g. chromium on Electron apps), resolve from app name, portal ID, and binary
                     if not icon or (icon in ("chromium", "google-chrome", "audio-x-generic", "audio-x-generic-symbolic", "application-default-icon") and "chrome" not in name_low and "chromium" not in name_low):
@@ -1683,39 +1791,57 @@ class PipeWireManager:
                     if name not in seen and name.lower() not in seen:
                         seen.add(name)
                         seen.add(name.lower())
+                        effective_bin = binary or name.lower()
+                        if exe_name and (not binary or bin_file in GENERIC_COMPATIBILITY_RUNNERS):
+                            effective_bin = exe_name
                         apps.append({
                             "id": node_id,
                             "name": name,
-                            "binary": binary or name.lower(),
+                            "binary": effective_bin,
+                            "exe_name": exe_name,
+                            "steam_game_name": steam_game_name,
                             "icon": icon or self.resolve_icon_for_app(name)
                         })
         except Exception:
             pass
 
         # 2. Running desktop applications that are audio-capable, but not generic non-audio
+        # 2. Discover running desktop applications from /proc so idle apps can be pre-assigned
+        # Strictly exclude background helper sub-processes and non-audio messaging/notification
         # utilities such as Signal or browser renderer workers.
+        now_ts = time.monotonic()
+        cached_proc_ts = getattr(self, "_proc_apps_cache_ts", 0.0)
+        cached_proc_apps = getattr(self, "_proc_apps_cache", [])
+        if (now_ts - cached_proc_ts) < 2.0 and cached_proc_apps:
+            for p_app in cached_proc_apps:
+                app_title = p_app["name"]
+                if app_title not in seen and app_title.lower() not in seen:
+                    seen.add(app_title)
+                    seen.add(app_title.lower())
+                    apps.append(dict(p_app))
+            return apps
+
         non_audio_hints = (
             "--type=renderer", "--type=gpu-process", "--type=zygote", "gpu-process",
             "chrome-sandbox", "crashpad", "plugin-container", "sandboxed", "renderer-process",
             "signal-desktop", "signal"
         )
+        discovered_proc_apps = []
+        proc_seen = set()
         try:
             for proc_entry in os.listdir("/proc"):
                 if not proc_entry.isdigit():
                     continue
                 try:
                     comm_file = os.path.join("/proc", proc_entry, "comm")
-                    cmd_file = os.path.join("/proc", proc_entry, "cmdline")
-                    if not os.path.exists(comm_file) or not os.path.exists(cmd_file):
-                        continue
-
                     with open(comm_file, "r", encoding="utf-8", errors="ignore") as f:
                         comm = f.read().strip().lower()
+                    if not comm or comm in ("signal-desktop", "signal"):
+                        continue
+
+                    cmd_file = os.path.join("/proc", proc_entry, "cmdline")
                     with open(cmd_file, "rb") as f:
                         cmdline = f.read().replace(b'\x00', b' ').decode('utf-8', errors='ignore').lower()
-
-                    if not comm and not cmdline:
-                        continue
 
                     if any(token in cmdline for token in non_audio_hints):
                         continue
@@ -1736,19 +1862,25 @@ class PipeWireManager:
                         continue
 
                     app_title, app_icon = KNOWN_AUDIO_BINARIES[matched_key]
-                    if app_title in seen or app_title.lower() in seen or app_title.lower() == "signal":
+                    if app_title.lower() in proc_seen or app_title.lower() == "signal":
                         continue
 
-                    seen.add(app_title)
-                    seen.add(app_title.lower())
-                    apps.append({
+                    proc_seen.add(app_title.lower())
+                    item = {
                         "id": None,
                         "name": app_title,
                         "binary": comm or matched_key,
                         "icon": app_icon or self.resolve_icon_for_app(app_title)
-                    })
+                    }
+                    discovered_proc_apps.append(item)
+                    if app_title not in seen and app_title.lower() not in seen:
+                        seen.add(app_title)
+                        seen.add(app_title.lower())
+                        apps.append(dict(item))
                 except Exception:
                     pass
+            self._proc_apps_cache = discovered_proc_apps
+            self._proc_apps_cache_ts = now_ts
         except Exception:
             pass
 
@@ -1798,18 +1930,21 @@ class PipeWireManager:
                 links_map = self._get_pw_links_map()
                 for src_p, dests in links_map.items():
                     if ":output_" in src_p and self._port_matches_tokens(src_p, tokens, port_meta):
+                        src_target = src_p.split()[0] if src_p and src_p.split()[0].isdigit() else src_p
                         for dest_p in dests:
+                            dest_clean = re.sub(r'^\d+\s+', '', dest_p).strip()
+                            dest_target = dest_p.split()[0] if dest_p and dest_p.split()[0].isdigit() else dest_p
                             if (
-                                dest_p.startswith("WaveController_Fallback_Sink:")
-                                or "WaveController_fallback" in dest_p
-                                or dest_p.startswith("WaveController_personal_mix_Sink:")
+                                dest_clean.startswith("WaveController_Fallback_Sink:")
+                                or "WaveController_fallback" in dest_clean
+                                or dest_clean.startswith("WaveController_personal_mix_Sink:")
                                 or (
-                                    dest_p.startswith("WaveController_Channel_")
-                                    and not dest_p.startswith(f"WaveController_Channel_{channel_id}:")
+                                    dest_clean.startswith("WaveController_Channel_")
+                                    and not dest_clean.startswith(f"WaveController_Channel_{channel_id}:")
                                 )
                             ):
                                 try:
-                                    subprocess.run(["pw-link", "-d", src_p, dest_p], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                                    subprocess.run(["pw-link", "-d", src_target, dest_target], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                                 except Exception:
                                     pass
             except Exception:
@@ -1839,14 +1974,17 @@ class PipeWireManager:
             for src_p, dests in links_map.items():
                 if ":output_" in src_p and self._port_matches_tokens(src_p, tokens, port_meta):
                     app_out_ports.append(src_p)
+                    src_target = src_p.split()[0] if src_p and src_p.split()[0].isdigit() else src_p
                     for dest_p in dests:
+                        dest_clean = re.sub(r'^\d+\s+', '', dest_p).strip()
+                        dest_target = dest_p.split()[0] if dest_p and dest_p.split()[0].isdigit() else dest_p
                         if (
-                            f"input.WaveController_submix_{channel_id}_" in dest_p or
-                            dest_p.startswith(f"WaveController_Channel_{channel_id}:") or
-                            dest_p.startswith("WaveController_personal_mix_Sink:")
+                            f"input.WaveController_submix_{channel_id}_" in dest_clean or
+                            dest_clean.startswith(f"WaveController_Channel_{channel_id}:") or
+                            dest_clean.startswith("WaveController_personal_mix_Sink:")
                         ):
                             try:
-                                subprocess.run(["pw-link", "-d", src_p, dest_p], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                                subprocess.run(["pw-link", "-d", src_target, dest_target], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                             except Exception:
                                 pass
         except Exception:
@@ -1938,9 +2076,9 @@ class PipeWireManager:
                         continue
 
                     meta = port_meta.get(clean_src) or port_meta.get(clean_src.lower()) or port_meta.get(src_port) or {}
-                    app_name = meta.get("app_name")
+                    app_name = meta.get("steam_game_name") or meta.get("app_name")
                     if not app_name:
-                        bin_raw = meta.get("binary", "")
+                        bin_raw = meta.get("exe_name") or meta.get("binary", "")
                         if bin_raw:
                             bin_file = bin_raw.split("/")[-1].split("\\")[-1]
                             if bin_file in KNOWN_AUDIO_BINARIES:
@@ -1948,7 +2086,7 @@ class PipeWireManager:
                             else:
                                 app_name = bin_file
                     if not app_name:
-                        node_raw = meta.get("node_name") or clean_src.split(":")[0]
+                        node_raw = meta.get("node_name") or clean_src.rsplit(":", 1)[0]
                         node_clean = re.sub(r'^\d+\s+', '', node_raw.strip())
                         if node_clean.lower() in KNOWN_AUDIO_BINARIES:
                             app_name = KNOWN_AUDIO_BINARIES[node_clean.lower()][0]
@@ -2090,6 +2228,16 @@ class PipeWireManager:
                         if channel_id in self.channel_states and mx_id in self.channel_states[channel_id]:
                             self.channel_states[channel_id][mx_id]["volume"] = vol
                             self._submix_volume_queue[(channel_id, mx_id)] = (vol, is_muted)
+            elif not self.is_channel_sink_exposed(channel_id):
+                # For non-exposed app channels when unlinked, master volume scales submix loopbacks
+                # while keeping raw application stream at unity (1.00) for pre-fader VU metering
+                for mx in self.mixes:
+                    mx_id = mx["id"]
+                    if self.is_channel_mix_compatible(channel_id, mx_id):
+                        if channel_id in self.channel_states and mx_id in self.channel_states[channel_id]:
+                            sub_v = self.channel_states[channel_id][mx_id].get("volume", vol)
+                            sub_m = self.channel_states[channel_id][mx_id].get("muted", is_muted)
+                            self._submix_volume_queue[(channel_id, mx_id)] = (sub_v, sub_m)
 
             # Enqueue physical stream volume dispatch
             self._volume_queue[channel_id] = (vol, is_muted)
@@ -2278,12 +2426,6 @@ class PipeWireManager:
             self._volume_event.set()
             self._save_state_to_config(immediate=False)
 
-    def set_mix_volume(self, mix_id: str, volume: int):
-        self.set_mix_master_volume(mix_id, volume)
-
-    def get_mix_volume(self, mix_id: str) -> int:
-        return self.get_mix_master_volume(mix_id)
-
     def set_mix_master_mute(self, mix_id: str, muted: bool):
         canon_mix = self._match_mix_id(mix_id)
         with self._lock:
@@ -2293,7 +2435,7 @@ class PipeWireManager:
             self._mix_volume_queue[canon_mix] = (self.mix_states[canon_mix].get("volume", 100), muted)
             self._volume_event.set()
             self._save_state_to_config(immediate=False)
-        self._sync_mix_physical_output_routing(canon_mix)
+        threading.Thread(target=self._sync_mix_physical_output_routing, args=(canon_mix,), daemon=True).start()
 
     def toggle_mix_master_mute(self, mix_id: str) -> bool:
         canon_mix = self._match_mix_id(mix_id)
@@ -2306,16 +2448,19 @@ class PipeWireManager:
             self._mix_volume_queue[canon_mix] = (self.mix_states[canon_mix].get("volume", 100), new_mute)
             self._volume_event.set()
             self._save_state_to_config(immediate=False)
-        self._sync_mix_physical_output_routing(canon_mix)
+        threading.Thread(target=self._sync_mix_physical_output_routing, args=(canon_mix,), daemon=True).start()
         return new_mute
 
     def _dispatch_node_volume(self, node_id: str, gain: float, is_muted: bool):
         """
-        Dispatches volume to a PipeWire node with strict single in-flight queuing.
-        Prevents WirePlumber process backlog during high-speed mouse dragging (60-120 FPS).
+        Dispatches volume to a PipeWire node with strict single in-flight queuing and state deduplication.
+        Prevents WirePlumber process backlog during high-speed mouse dragging (60-120 FPS) and background syncs.
         """
         n_id_str = str(node_id)
+        quantized = (round(float(gain), 4), bool(is_muted))
         with self._lock:
+            if self._last_dispatched_node_vol.get(n_id_str) == quantized and n_id_str not in self._pending_node_dispatches:
+                return
             self._pending_node_dispatches[n_id_str] = (gain, is_muted)
             if n_id_str in self._in_flight_nodes:
                 return
@@ -2332,6 +2477,8 @@ class PipeWireManager:
                 try:
                     subprocess.run(["wpctl", "set-volume", nid, f"{g_val:.4f}"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                     subprocess.run(["wpctl", "set-mute", nid, "1" if m_val else "0"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    with self._lock:
+                        self._last_dispatched_node_vol[nid] = (round(float(g_val), 4), bool(m_val))
                 except Exception:
                     pass
 
@@ -2343,6 +2490,13 @@ class PipeWireManager:
         key = (ch_id, canon_mix)
         node_name = f"WaveController_submix_{ch_id}_{canon_mix}"
         gain = self._pct_to_pipewire_gain(vol_pct)
+        if not self.is_channel_linked(ch_id) and not self.is_channel_sink_exposed(ch_id):
+            ch_obj = next((c for c in self.channels if c.get("id") == ch_id), None)
+            if ch_obj and ch_obj.get("type") in ("app", "sink"):
+                master_vol = self.get_channel_master_volume(ch_id)
+                master_mute = self.get_channel_master_mute(ch_id)
+                gain = gain * self._pct_to_pipewire_gain(master_vol)
+                is_muted = is_muted or master_mute
         
         node_ids = self._submix_node_ids.get(key, [])
         if not node_ids:
@@ -2384,10 +2538,13 @@ class PipeWireManager:
         canon_mix = self._match_mix_id(m_id)
         key = (ch_id, canon_mix)
         node_name = f"WaveController_submix_{ch_id}_{canon_mix}"
+        spawned_new = False
         with self._lock:
             proc = self._submix_procs.get(key)
             if proc is None or proc.poll() is not None:
-                self._submix_node_ids.pop(key, None)
+                old_ids = self._submix_node_ids.pop(key, [])
+                for oid in old_ids:
+                    self._last_dispatched_node_vol.pop(str(oid), None)
                 is_source = (ch_id in ("mic", "elgato_wave_xlr")) or any(c.get("id") == ch_id and c.get("type") == "source" for c in self.channels)
                 target_lat = "1" if is_source else "5"
                 cmd = [
@@ -2400,9 +2557,12 @@ class PipeWireManager:
                 try:
                     p = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                     self._submix_procs[key] = p
-                    time.sleep(0.05)
+                    spawned_new = True
                 except Exception:
                     pass
+        if spawned_new:
+            time.sleep(0.01)
+            invalidate_pw_dump_cache()
         self._apply_submix_gain(ch_id, canon_mix, vol_pct, is_muted)
 
     def _stop_submix_loopback(self, ch_id: str, m_id: str):
@@ -2410,7 +2570,9 @@ class PipeWireManager:
         canon_mix = self._match_mix_id(m_id)
         key = (ch_id, canon_mix)
         with self._lock:
-            self._submix_node_ids.pop(key, None)
+            old_ids = self._submix_node_ids.pop(key, [])
+            for oid in old_ids:
+                self._last_dispatched_node_vol.pop(str(oid), None)
             proc = self._submix_procs.pop(key, None)
             if proc:
                 try:
@@ -2552,7 +2714,7 @@ class PipeWireManager:
                 # Virtual playback sinks (WaveController_Channel_<ch>):
                 # - When linked: virtual ingestion sink remains at unity (1.00) while submix loopback faders scale in lockstep.
                 # - When unlinked: apply master channel volume directly to the virtual ingestion sink as pre-fader channel attenuation.
-                is_virtual_sink = any(c.get("id") == channel_id and c.get("type") in ("sink", "group", "app", "virtual") for c in self.channels)
+                is_virtual_sink = self.is_channel_sink_exposed(channel_id)
                 target_node_ids = set()
                 ch_sink_name = f"wavecontroller_channel_{channel_id}".lower()
 
@@ -2571,6 +2733,10 @@ class PipeWireManager:
                     sink_gain = 1.00 if self.is_channel_linked(channel_id) else gain
                     for s_id in sink_node_ids:
                         self._dispatch_node_volume(str(s_id), sink_gain, is_muted)
+                    continue
+                elif ch_obj and ch_obj.get("type") in ("app", "sink"):
+                    # Non-exposed application channels route directly to submix loopbacks;
+                    # submix loopbacks handle both linked and unlinked master volume scaling.
                     continue
 
                 # Priority 1: Direct volume dispatch to the channel's dedicated virtual sink adapter
@@ -2653,23 +2819,59 @@ class PipeWireManager:
                 self._volume_event.set()
 
             self._save_state_to_config(immediate=True)
-        self._sync_channel_audio_routing(channel_id=channel_id)
+        threading.Thread(
+            target=self._sync_channel_audio_routing,
+            kwargs={"channel_id": channel_id},
+            daemon=True,
+        ).start()
 
-    def _link_stereo_ports(self, src_ports: list, dst_ports: list, unlink: bool = False):
+    def _link_stereo_ports(self, src_ports: list, dst_ports: list, unlink: bool = False, links_map: dict = None):
         """Helper to establish or destroy stereo/mono PipeWire link connections accurately using port names or integer IDs."""
         if not src_ports or not dst_ports:
             return
+        src_port_names = [s.split(":")[-1].lower() if ":" in s else s.lower() for s in src_ports]
+        dst_port_names = [d.split(":")[-1].lower() if ":" in d else d.lower() for d in dst_ports]
+        src_zero_indexed = any(p.endswith("_0") for p in src_port_names)
+        dst_zero_indexed = any(p.endswith("_0") for p in dst_port_names)
+
         for src_p in src_ports:
             port_name = src_p.split(":")[-1].lower() if ":" in src_p else src_p.lower()
-            is_fl = "_fl" in port_name or port_name.endswith("_1") or "_mono" in port_name or port_name.endswith("_l") or port_name in ("playback_l", "capture_l", "input_l", "output_l")
-            is_fr = "_fr" in port_name or port_name.endswith("_2") or port_name.endswith("_r") or port_name in ("playback_r", "capture_r", "input_r", "output_r")
+            is_fl = (
+                "_fl" in port_name
+                or port_name.endswith("_0")
+                or (port_name.endswith("_1") and not src_zero_indexed)
+                or "_mono" in port_name
+                or port_name.endswith("_l")
+                or port_name in ("playback_l", "capture_l", "input_l", "output_l")
+            )
+            is_fr = (
+                "_fr" in port_name
+                or port_name.endswith("_2")
+                or (port_name.endswith("_1") and src_zero_indexed)
+                or port_name.endswith("_r")
+                or port_name in ("playback_r", "capture_r", "input_r", "output_r")
+            )
             is_pure_mono = (len(src_ports) == 1) or ("_mono" in port_name) or (port_name in ("capture_mono", "playback_mono", "input_mono", "output_mono"))
             
             src_target = src_p.split()[0] if src_p and src_p.split()[0].isdigit() else src_p
+            src_clean = re.sub(r'^\d+\s+', '', src_p).strip()
             for dst_p in dst_ports:
                 dst_port_name = dst_p.split(":")[-1].lower() if ":" in dst_p else dst_p.lower()
-                dst_fl = "_fl" in dst_port_name or dst_port_name.endswith("_1") or "_mono" in dst_port_name or dst_port_name.endswith("_l") or dst_port_name in ("playback_l", "capture_l", "input_l", "output_l")
-                dst_fr = "_fr" in dst_port_name or dst_port_name.endswith("_2") or dst_port_name.endswith("_r") or dst_port_name in ("playback_r", "capture_r", "input_r", "output_r")
+                dst_fl = (
+                    "_fl" in dst_port_name
+                    or dst_port_name.endswith("_0")
+                    or (dst_port_name.endswith("_1") and not dst_zero_indexed)
+                    or "_mono" in dst_port_name
+                    or dst_port_name.endswith("_l")
+                    or dst_port_name in ("playback_l", "capture_l", "input_l", "output_l")
+                )
+                dst_fr = (
+                    "_fr" in dst_port_name
+                    or dst_port_name.endswith("_2")
+                    or (dst_port_name.endswith("_1") and dst_zero_indexed)
+                    or dst_port_name.endswith("_r")
+                    or dst_port_name in ("playback_r", "capture_r", "input_r", "output_r")
+                )
                 
                 match = False
                 if is_pure_mono:
@@ -2682,6 +2884,28 @@ class PipeWireManager:
 
                 if match:
                     dst_target = dst_p.split()[0] if dst_p and dst_p.split()[0].isdigit() else dst_p
+                    dst_clean = re.sub(r'^\d+\s+', '', dst_p).strip()
+                    if links_map is not None:
+                        if src_target.isdigit():
+                            existing_dests = links_map.get(src_p, set()) | links_map.get(src_target, set())
+                        else:
+                            existing_dests = (
+                                links_map.get(src_p, set())
+                                | links_map.get(src_target, set())
+                                | links_map.get(src_clean, set())
+                            )
+                        if dst_target.isdigit():
+                            already_linked = dst_p in existing_dests or dst_target in existing_dests
+                        else:
+                            already_linked = (
+                                dst_p in existing_dests
+                                or dst_target in existing_dests
+                                or dst_clean in existing_dests
+                            )
+                        if not unlink and already_linked:
+                            continue
+                        if unlink and not already_linked:
+                            continue
                     cmd = ["pw-link"]
                     if unlink:
                         cmd.append("-d")
@@ -2754,7 +2978,7 @@ class PipeWireManager:
             for _obj in live_links_data:
                 if _obj.get("type") == "PipeWire:Interface:Link":
                     _info = _obj.get("info", {})
-                    if _info.get("state") in ("active", "paused", "allocating"):
+                    if _info.get("state") in ("active", "paused", "allocating", "init"):
                         active_port_pairs.add((_info.get("output-port-id"), _info.get("input-port-id")))
         except Exception:
             pass
@@ -2795,7 +3019,7 @@ class PipeWireManager:
                 matched_ports = []
                 for p in out_ports:
                     p_clean = re.sub(r'^\s*\d+\s+', '', p).strip()
-                    if p_clean.startswith("output.WaveController_") or p_clean.startswith("WaveController_") or ":monitor_" in p_clean:
+                    if p_clean.startswith(("output.WaveController_", "WaveController_", "v4l2_", "libcamera_")) or ":monitor_" in p_clean:
                         continue
                     if ":capture_" in p_clean:
                         if self._port_matches_tokens(p, input_tokens, port_meta):
@@ -2806,7 +3030,7 @@ class PipeWireManager:
                 if not matched_ports and ch_id in ("mic", "elgato_wave_xlr", "microphone"):
                     for p in out_ports:
                         p_clean = re.sub(r'^\s*\d+\s+', '', p).strip()
-                        if p_clean.startswith("output.WaveController_") or p_clean.startswith("WaveController_") or ":monitor_" in p_clean:
+                        if p_clean.startswith(("output.WaveController_", "WaveController_", "v4l2_", "libcamera_")) or ":monitor_" in p_clean:
                             continue
                         if ":capture_" in p_clean and any(k in p_clean.lower() for k in ("elgato", "wave", "0fd9", "0070", "007d", "00b6")):
                             matched_ports.append(p)
@@ -2819,10 +3043,12 @@ class PipeWireManager:
                 for app in assigned:
                     tokens = self._get_match_tokens(app)
                     for p in out_ports:
-                        if p.startswith("output.WaveController_") or p.startswith("WaveController_"):
+                        p_clean = re.sub(r'^\s*\d+\s+', '', p).strip()
+                        if p_clean.startswith("output.WaveController_") or p_clean.startswith("WaveController_"):
                             continue
-                        if ":output_" in p and self._port_matches_tokens(p, tokens, port_meta):
-                            app_out_ports.append(p)
+                        if ":output_" in p_clean and self._port_matches_tokens(p, tokens, port_meta):
+                            if p not in app_out_ports:
+                                app_out_ports.append(p)
 
                 sink_node = f"WaveController_Channel_{ch_id}"
                 sink_play_ports = [p for p in in_ports if re.sub(r'^\d+\s+', '', p).strip().startswith(f"{sink_node}:")]
@@ -2832,7 +3058,7 @@ class PipeWireManager:
                 # receive system-default audio here even though they have no assigned apps.
                 if ch.get("expose_sink", False):
                     if app_out_ports and sink_play_ports:
-                        self._link_stereo_ports(app_out_ports, sink_play_ports, unlink=False)
+                        self._link_stereo_ports(app_out_ports, sink_play_ports, unlink=False, links_map=links_map)
                 ch_out_ports = self._get_playback_channel_output_ports(
                     ch.get("expose_sink", False),
                     app_out_ports,
@@ -2942,7 +3168,7 @@ class PipeWireManager:
 
                 # Use dedicated submix loopback faders with real-time attenuation for all active mixes
                 # 1. Sever any direct unattenuated link between channel output and mix target
-                self._link_stereo_ports(effective_ch_out_ports, target_in_ports, unlink=True)
+                self._link_stereo_ports(effective_ch_out_ports, target_in_ports, unlink=True, links_map=links_map)
 
                 if is_enabled and not is_muted:
                     self._ensure_submix_loopback(ch_id, m_id, vol_pct, is_muted=False)
@@ -2974,6 +3200,8 @@ class PipeWireManager:
                                     break
                             except Exception:
                                 pass
+                        if lb_in_ports and lb_out_ports:
+                            self._apply_submix_gain(ch_id, m_id, vol_pct, is_muted=False)
 
                     # Ingestion Audit: Sever any incoming links to lb_in_ports that are NOT in effective_ch_out_ports
                     clean_ch_ports = {re.sub(r'^\d+\s+', '', c).strip() for c in effective_ch_out_ports} | {c.split()[0] for c in effective_ch_out_ports if c} | set(effective_ch_out_ports)
@@ -2993,18 +3221,59 @@ class PipeWireManager:
 
                     # Link Stage 1: Effective Channel Output (processed FX or raw) -> Loopback Input
                     if effective_ch_out_ports:
-                        self._link_stereo_ports(effective_ch_out_ports, lb_in_ports, unlink=False)
+                        self._link_stereo_ports(effective_ch_out_ports, lb_in_ports, unlink=False, links_map=links_map)
                     else:
-                        self._link_stereo_ports(effective_ch_out_ports, lb_in_ports, unlink=True)
+                        self._link_stereo_ports(effective_ch_out_ports, lb_in_ports, unlink=True, links_map=links_map)
+
+                    # Link Stage 1 — Verification & Retry: ensure every effective_ch_out_port is linked to lb_in_ports
+                    if effective_ch_out_ports and lb_in_ports:
+                        try:
+                            ch_zero_indexed = any(p.split(":")[-1].lower().endswith("_0") for p in effective_ch_out_ports)
+                            for ch_p in effective_ch_out_ports:
+                                ch_id_str = ch_p.split()[0] if ch_p.split()[0].isdigit() else None
+                                if not ch_id_str:
+                                    continue
+                                ch_p_id = int(ch_id_str)
+                                ch_clean = re.sub(r'^\d+\s+', '', ch_p).strip()
+                                ch_suf = ch_clean.split(":")[-1].lower()
+                                is_ch_fl = "_fl" in ch_suf or ch_suf.endswith("_0") or (ch_suf.endswith("_1") and not ch_zero_indexed) or "_mono" in ch_suf or ch_suf.endswith("_l")
+                                is_ch_fr = "_fr" in ch_suf or ch_suf.endswith("_2") or (ch_suf.endswith("_1") and ch_zero_indexed) or ch_suf.endswith("_r")
+                                is_ch_mono = (len(effective_ch_out_ports) == 1) or "_mono" in ch_suf
+
+                                for lbi_p in lb_in_ports:
+                                    lbi_id_str = lbi_p.split()[0] if lbi_p.split()[0].isdigit() else None
+                                    if not lbi_id_str:
+                                        continue
+                                    lbi_id = int(lbi_id_str)
+                                    lbi_clean = re.sub(r'^\d+\s+', '', lbi_p).strip()
+                                    lbi_suf = lbi_clean.split(":")[-1].lower()
+                                    is_lbi_fl = "_fl" in lbi_suf
+                                    is_lbi_fr = "_fr" in lbi_suf
+
+                                    if not (is_ch_mono or (is_ch_fl and is_lbi_fl) or (is_ch_fr and is_lbi_fr)):
+                                        continue
+
+                                    ch_dests = links_map.get(ch_id_str, set()) | links_map.get(ch_p, set())
+                                    already_linked_s1 = (
+                                        (ch_p_id, lbi_id) in active_port_pairs
+                                        or lbi_id_str in ch_dests
+                                        or lbi_p in ch_dests
+                                    )
+                                    if not already_linked_s1:
+                                        subprocess.run(
+                                            ["pw-link", ch_id_str, lbi_id_str],
+                                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=3
+                                        )
+                        except Exception:
+                            pass
 
                     # Link Stage 2: Loopback Output -> Mix Target Input
-                    self._link_stereo_ports(lb_out_ports, target_in_ports, unlink=False)
+                    self._link_stereo_ports(lb_out_ports, target_in_ports, unlink=False, links_map=links_map)
 
                     # Link Stage 2 — Verification & Retry: pw-link sometimes silently drops FR links
                     # due to port ID ordering or graph state. Verify each lb_out port has a live
                     # link to the corresponding target_in port using the active_port_pairs snapshot
-                    # taken once at the top of this sync pass, then re-issue pw-link by numeric ID
-                    # if the link is missing.
+                    # and links_map, then re-issue pw-link by numeric ID only if truly missing.
                     try:
                         for lb_p in lb_out_ports:
                             lb_id_str = lb_p.split()[0] if lb_p.split()[0].isdigit() else None
@@ -3029,7 +3298,14 @@ class PipeWireManager:
                                 if not ((is_lb_fl and is_tgt_fl) or (is_lb_fr and is_tgt_fr)):
                                     continue
 
-                                if (lb_id, tgt_id) not in active_port_pairs:
+                                lb_dests = links_map.get(lb_id_str, set()) | links_map.get(lb_clean, set()) | links_map.get(lb_p, set())
+                                already_linked_s2 = (
+                                    (lb_id, tgt_id) in active_port_pairs
+                                    or tgt_id_str in lb_dests
+                                    or tgt_clean in lb_dests
+                                    or tgt_p in lb_dests
+                                )
+                                if not already_linked_s2:
                                     # Link is missing — re-issue by numeric ID
                                     subprocess.run(
                                         ["pw-link", lb_id_str, tgt_id_str],
@@ -3040,7 +3316,7 @@ class PipeWireManager:
                         pass
                 else:
                     self._stop_submix_loopback(ch_id, m_id)
-                    self._link_stereo_ports(ch_out_ports, target_in_ports, unlink=True)
+                    self._link_stereo_ports(ch_out_ports, target_in_ports, unlink=True, links_map=links_map)
 
         # Synchronize physical output target devices for all Sink mixes
         self._sync_mix_physical_output_routing(mix_id, out_ports, in_ports)
@@ -3065,18 +3341,24 @@ class PipeWireManager:
                     f"WaveController_{m_id}_Source:input_",
                 )
                 for src_p, dests in fresh_links.items():
-                    if not src_p.startswith("output.WaveController_submix_"):
+                    if src_p.strip().isdigit():
+                        continue
+                    src_clean = re.sub(r'^\d+\s+', '', src_p).strip()
+                    if not src_clean.startswith(("output.WaveController_submix_", "input.WaveController_submix_")):
                         # If the source belongs to an actively assigned channel or channel sink, sever the direct bypass link
                         is_assigned_src = (
-                            src_p.startswith("WaveController_Channel_") or
-                            src_p.startswith("output.WaveController_Channel_") or
+                            src_clean.startswith("WaveController_Channel_") or
+                            src_clean.startswith("output.WaveController_Channel_") or
                             (assigned_tokens and self._port_matches_tokens(src_p, assigned_tokens, port_meta))
                         )
                         if is_assigned_src:
+                            src_target = src_p.split()[0] if src_p and src_p.split()[0].isdigit() else src_p
                             for dest_p in dests:
-                                if any(dest_p.startswith(pref) for pref in target_prefixes):
+                                dest_clean = re.sub(r'^\d+\s+', '', dest_p).strip()
+                                dest_target = dest_p.split()[0] if dest_p and dest_p.split()[0].isdigit() else dest_p
+                                if any(dest_clean.startswith(pref) for pref in target_prefixes):
                                     try:
-                                        subprocess.run(["pw-link", "-d", src_p, dest_p], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                                        subprocess.run(["pw-link", "-d", src_target, dest_target], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                                     except Exception:
                                         pass
 
@@ -3120,6 +3402,7 @@ class PipeWireManager:
                         d_name = m_tgt_id.group(2).strip()
                         keys = [k for k in (curr_id, curr_name, f"{curr_id} {curr_name}" if curr_id else None) if k]
                         for k in keys:
+                            links.setdefault(k, set()).add(d_id)
                             links.setdefault(k, set()).add(d_name)
                             links.setdefault(k, set()).add(f"{d_id} {d_name}")
                     else:
@@ -3133,8 +3416,6 @@ class PipeWireManager:
                         s_name = m_src_id.group(2).strip()
                         keys = [k for k in (curr_id, curr_name, f"{curr_id} {curr_name}" if curr_id else None) if k]
                         for k in keys:
-                            if k.isdigit():
-                                continue
                             links.setdefault(s_id, set()).add(k)
                             links.setdefault(s_name, set()).add(k)
                             links.setdefault(f"{s_id} {s_name}", set()).add(k)
@@ -3184,7 +3465,7 @@ class PipeWireManager:
 
     def add_channel(self, name: str, icon: str = None, ch_type: str = "sink", assigned_apps: list = None, sync_meter: bool = False, expose_sink: bool = False) -> dict:
         with self._lock:
-            ch_id = name.lower().replace(" ", "_").replace("/", "_").replace(".", "_")
+            ch_id = re.sub(r'[^a-z0-9_]+', '_', name.lower()).strip('_') or f"ch_{len(self.channels)}"
             existing_ids = [c["id"] for c in self.channels]
             if ch_id in existing_ids:
                 ch_id = f"{ch_id}_{len(self.channels)}"
@@ -3220,6 +3501,8 @@ class PipeWireManager:
             self._volume_event.set()
 
         def _bg_provision():
+            for app in (assigned_apps or []):
+                self._bind_app_to_wireplumber_target(app, ch_id)
             self._ensure_virtual_mix_nodes()
             self._refresh_node_cache()
             self._sync_channel_audio_routing(channel_id=ch_id)
@@ -3365,28 +3648,30 @@ class PipeWireManager:
                     self._unbind_app_from_wireplumber_target(app, channel_id)
 
                 try:
-                    out_ports_raw = subprocess.check_output(["pw-link", "-o"], text=True, stderr=subprocess.DEVNULL)
-                    out_ports = [l.strip() for l in out_ports_raw.splitlines() if l.strip()]
-                    fallback_in = self._get_default_sink_playback_ports()
-
-                    app_out_ports = []
+                    links_map = self._get_pw_links_map()
+                    port_meta = self._get_active_port_metadata_map()
+                    removed_prefixes = (
+                        f"WaveController_Channel_{channel_id}:",
+                        f"input.WaveController_submix_{channel_id}_",
+                        f"output.WaveController_submix_{channel_id}_"
+                    )
                     for app in assigned:
                         tokens = self._get_match_tokens(app)
-                        for p in out_ports:
-                            if p.startswith("output.WaveController_") or p.startswith("WaveController_"):
+                        for src_p, dests in links_map.items():
+                            if src_p.strip().isdigit():
                                 continue
-                            if ":output_" in p and self._port_matches_tokens(p, tokens):
-                                app_out_ports.append(p)
-
-                    if app_out_ports:
-                        in_ports_raw = subprocess.check_output(["pw-link", "-i"], text=True, stderr=subprocess.DEVNULL)
-                        in_ports = [l.strip() for l in in_ports_raw.splitlines() if l.strip()]
-                        for p in in_ports:
-                            if p.startswith("WaveController_") and not p.startswith("WaveController_Fallback_Sink:") and (":playback_" in p or ":input_" in p):
-                                self._link_stereo_ports(app_out_ports, [p], unlink=True)
-
-                    if fallback_in and app_out_ports:
-                        self._link_stereo_ports(app_out_ports, fallback_in, unlink=False)
+                            src_clean = re.sub(r'^\d+\s+', '', src_p).strip()
+                            if src_clean.startswith(("output.WaveController_", "WaveController_")):
+                                continue
+                            if ":output_" in src_clean and self._port_matches_tokens(src_p, tokens, port_meta):
+                                src_target = src_p.split()[0] if src_p and src_p.split()[0].isdigit() else src_clean
+                                for dest_p in dests:
+                                    if str(dest_p).strip().isdigit():
+                                        continue
+                                    dest_clean = re.sub(r'^\d+\s+', '', str(dest_p)).strip()
+                                    dest_target = str(dest_p).split()[0] if str(dest_p).split()[0].isdigit() else dest_clean
+                                    if any(dest_clean.startswith(pref) for pref in removed_prefixes):
+                                        subprocess.run(["pw-link", "-d", src_target, dest_target], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 except Exception:
                     pass
 
@@ -3517,7 +3802,7 @@ class PipeWireManager:
 
     def add_mix(self, name: str, subtitle: str = "Custom Mix", mix_type: str = "source", icon: str = None, color: str = "#3584e4", target_device: str = "none") -> dict:
         with self._lock:
-            mix_id = name.lower().replace(" ", "_")
+            mix_id = re.sub(r'[^a-z0-9_]+', '_', name.lower()).strip('_') or f"mix_{len(self.mixes)}"
             existing_ids = [m["id"] for m in self.mixes]
             if mix_id in existing_ids:
                 mix_id = f"{mix_id}_{len(self.mixes)}"
@@ -3911,6 +4196,8 @@ class PipeWireManager:
 
         threading.Thread(target=_bg_mix_teardown, daemon=True).start()
 
+    _ICON_RESOLUTION_CACHE = {}
+
     @staticmethod
     def resolve_icon_for_app(app_name: str) -> str:
         """Determines the best GTK/Freedesktop icon name for a given application or device string."""
@@ -3920,41 +4207,56 @@ class PipeWireManager:
         app_str = str(app_name).strip()
         app_low = app_str.lower()
 
+        cached = PipeWireManager._ICON_RESOLUTION_CACHE.get(app_low)
+        if cached:
+            return cached
+
         # 1. Exact / Known application mappings
+        res = None
         if "spotify" in app_low:
-            return "spotify"
+            res = "spotify"
         elif "discord" in app_low:
-            return "discord"
+            res = "discord"
         elif "shortwave" in app_low:
-            return "de.haeckerfelix.Shortwave"
-        elif "steam" in app_low or "game" in app_low:
-            return "steam"
+            res = "de.haeckerfelix.Shortwave"
+        elif app_low in ("steam", "steamwebhelper"):
+            res = "steam"
         elif "firefox" in app_low:
-            return "firefox"
+            res = "firefox"
         elif "google-chrome" in app_low or "google chrome" in app_low or app_low == "chrome":
-            return "google-chrome"
+            res = "google-chrome"
         elif "chromium" in app_low:
-            return "chromium"
+            res = "chromium"
         elif "brave" in app_low:
-            return "brave-browser"
+            res = "brave-browser"
         elif "edge" in app_low or "msedge" in app_low:
-            return "microsoft-edge"
+            res = "microsoft-edge"
         elif "vlc" in app_low:
-            return "vlc"
+            res = "vlc"
         elif "obs" in app_low:
-            return "com.obsproject.Studio"
+            res = "com.obsproject.Studio"
         elif "slack" in app_low:
-            return "slack"
+            res = "slack"
         elif "teams" in app_low:
-            return "teams"
+            res = "teams"
         elif any(token in app_low for token in ("wave:3", "wave 3", "wave_3", "wave:1", "wave 1", "wave neo")) or any(pid in app_low for pid in ("0070", "006f", "009c")):
-            return "elgato-wave-3-symbolic"
+            res = "elgato-wave-3-symbolic"
         elif any(token in app_low for token in ("wave xlr mk2", "wave_xlr_mk2", "mk2")) or "00b6" in app_low:
-            return "elgato-wave-xlr-mk2-symbolic"
+            res = "elgato-wave-xlr-mk2-symbolic"
         elif app_low in ("elgato wave xlr", "wave xlr") or "007d" in app_low or app_low.startswith("elgato wave"):
-            return "elgato-wave-xlr-symbolic"
+            res = "elgato-wave-xlr-symbolic"
         elif app_low in ("mic", "microphone", "input"):
-            return "audio-input-microphone-symbolic"
+            res = "audio-input-microphone-symbolic"
+
+        if res:
+            PipeWireManager._ICON_RESOLUTION_CACHE[app_low] = res
+            return res
+
+        # 1b. Steam Game Icon Cache Resolution (appcache/librarycache & steam/games/*.ico)
+        steam_ic = resolve_steam_game_icon(app_str)
+        if steam_ic:
+            PipeWireManager._ICON_RESOLUTION_CACHE[app_low] = steam_ic
+            return steam_ic
 
         # 2. Dynamic GTK Icon Theme Lookup
         try:
@@ -3979,6 +4281,7 @@ class PipeWireManager:
                 ]
                 for cand in candidates:
                     if theme.has_icon(cand):
+                        PipeWireManager._ICON_RESOLUTION_CACHE[app_low] = cand
                         return cand
         except Exception:
             pass
@@ -4001,12 +4304,14 @@ class PipeWireManager:
                                         if line.startswith("Icon="):
                                             ic = line.strip().split("=", 1)[1]
                                             if ic:
+                                                PipeWireManager._ICON_RESOLUTION_CACHE[app_low] = ic
                                                 return ic
                             except Exception:
                                 pass
                 except Exception:
                     pass
 
+        PipeWireManager._ICON_RESOLUTION_CACHE[app_low] = "audio-x-generic-symbolic"
         return "audio-x-generic-symbolic"
 
     def get_app_volume(self, app_name: str) -> int:

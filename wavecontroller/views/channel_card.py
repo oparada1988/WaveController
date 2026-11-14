@@ -5,9 +5,7 @@ from typing import Optional, Any
 from gi.repository import Gtk, Gdk, GObject, Adw, GLib
 
 from .stereo_slider import StereoSlider
-from .rotary_dial import RotaryDial
 from ..engine.config_manager import config_manager
-from ..engine.plugins import plugin_scanner, PluginFormat
 from ..utils.logger import get_logger
 
 log = get_logger("ChannelCard")
@@ -370,7 +368,18 @@ class ChannelCard(Gtk.Box):
             return "computer-symbolic" if is_system_default else "audio-card-symbolic"
 
         ch_icon = self.channel_info.get("icon")
-        if ch_icon and ch_icon not in ("network-offline-symbolic", "elgato-wave-xlr-symbolic", "elgato-wave-3-symbolic"):
+        generic_fallbacks = (
+            "network-offline-symbolic",
+            "elgato-wave-xlr-symbolic",
+            "elgato-wave-3-symbolic",
+            "audio-x-generic-symbolic",
+            "audio-x-generic",
+            "applications-multimedia-symbolic",
+            "input-gaming-symbolic",
+            "application-default-icon",
+            "audio-card-symbolic",
+        )
+        if ch_icon and ch_icon not in generic_fallbacks:
             return ch_icon
         elif ch_icon in ("elgato-wave-xlr-symbolic", "elgato-wave-3-symbolic") and self.is_wave_channel:
             return ch_icon
@@ -382,6 +391,7 @@ class ChannelCard(Gtk.Box):
             if ch_icon and ch_icon != "network-offline-symbolic" and (ch_icon not in ("elgato-wave-xlr-symbolic", "elgato-wave-3-symbolic") or self.is_wave_channel):
                 return ch_icon
             return "audio-input-microphone-symbolic" if self.channel_info.get("type") == "source" else "audio-card-symbolic"
+        self.channel_info["icon"] = resolved
         return resolved
 
     def _on_phantom_clicked(self, btn):
@@ -455,323 +465,6 @@ class ChannelCard(Gtk.Box):
         if self.on_fx_requested:
             self.on_fx_requested(self.channel_info)
 
-    def _setup_fx_popover(self):
-        """Builds the per-channel Audio Effects popover with master switch and processor suite."""
-        popover = Gtk.Popover()
-        popover.set_autohide(True)
-        popover.set_cascade_popdown(True)
-        popover.add_css_class("wave-popover")
-
-        vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
-        vbox.set_margin_top(12)
-        vbox.set_margin_bottom(12)
-        vbox.set_margin_start(14)
-        vbox.set_margin_end(14)
-        vbox.set_size_request(420, -1)
-
-        # Header Title
-        title_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-        title_lbl = Gtk.Label(label="Audio Effects")
-        title_lbl.add_css_class("heading")
-        title_lbl.set_halign(Gtk.Align.START)
-        title_lbl.set_hexpand(True)
-        title_box.append(title_lbl)
-        vbox.append(title_box)
-
-        # Channel name subtitle
-        ch_id = self.channel_info.get("id", "")
-        ch_name = self.channel_info.get("name", "Microphone")
-        sub_lbl = Gtk.Label(label=f"Channel: {ch_name}")
-        sub_lbl.add_css_class("dim-label")
-        sub_lbl.set_halign(Gtk.Align.START)
-        vbox.append(sub_lbl)
-
-        # Separator
-        sep1 = Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL)
-        vbox.append(sep1)
-
-        # Load channel FX config
-        all_ch_fx = config_manager.get("channel_fx", {})
-        ch_fx = all_ch_fx.get(ch_id, {})
-        master_enabled = ch_fx.get("enabled", True) if "enabled" in ch_fx else True
-
-        # Master Enable / Disable Toggle Row
-        master_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
-        master_lbl_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
-        master_lbl = Gtk.Label(label="Enable Audio Effects")
-        master_lbl.add_css_class("bold")
-        master_lbl.set_halign(Gtk.Align.START)
-        master_desc = Gtk.Label(label="Master toggle for all processors on this channel")
-        master_desc.add_css_class("dim-label")
-        master_desc.add_css_class("caption")
-        master_desc.set_halign(Gtk.Align.START)
-        master_lbl_box.append(master_lbl)
-        master_lbl_box.append(master_desc)
-        master_lbl_box.set_hexpand(True)
-        master_row.append(master_lbl_box)
-
-        master_switch = Gtk.Switch(active=master_enabled)
-        master_switch.set_valign(Gtk.Align.CENTER)
-        master_row.append(master_switch)
-        vbox.append(master_row)
-
-        # Separator before child effects list
-        sep2 = Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL)
-        vbox.append(sep2)
-
-        # Child FX Box (Dims and disables when master is OFF)
-        fx_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
-        fx_box.set_sensitive(master_enabled)
-        fx_scroll = Gtk.ScrolledWindow()
-        fx_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
-        fx_scroll.set_min_content_height(360)
-        fx_scroll.set_max_content_height(420)
-        fx_scroll.set_child(fx_box)
-        vbox.append(fx_scroll)
-
-        effects_meta = [
-            ("dsp_noise_suppression", "AI Noise Suppression", "Neural background noise removal (RNNoise)", True),
-            ("dsp_noise_gate", "Noise Gate", "Eliminates room hiss and breath bleed", False),
-            ("dsp_equalizer", "Parametric Equalizer", "3-band vocal tone shaping (Low, Mid, High)", True),
-            ("dsp_compressor", "Vocal Compressor", "Smooth broadcast leveling and dynamic presence", True),
-            ("dsp_deesser", "Vocal De-Esser", "Harsh sibilance and treble smoothing", False),
-            ("dsp_limiter", "Peak Limiter", "Brickwall output guard against clipping", True),
-            ("dsp_highpass", "Low-Cut Filter", "80 Hz high-pass rumble guard", True),
-        ]
-
-        def _hostable_external_plugins():
-            plugins = []
-            globally_enabled = config_manager.get("external_plugin_enabled", {})
-            if not isinstance(globally_enabled, dict):
-                globally_enabled = {}
-            for plugin in plugin_scanner.get_all_plugins():
-                if plugin.format != PluginFormat.LV2:
-                    continue
-                if not plugin.plugin_uri or len(plugin.audio_input_ports) < 2 or len(plugin.audio_output_ports) < 2:
-                    continue
-                if not globally_enabled.get(plugin.id, True):
-                    continue
-                plugins.append(plugin)
-            return sorted(plugins, key=lambda p: p.name.lower())
-
-        def _save_channel_fx(key: str, val: Any, reload_chain: bool = True):
-            cfg = dict(config_manager.get("channel_fx", {}))
-            if ch_id not in cfg:
-                cfg[ch_id] = {
-                    "enabled": True,
-                    "dsp_noise_suppression": config_manager.get("dsp_noise_suppression", True),
-                    "dsp_noise_gate": config_manager.get("dsp_noise_gate", False),
-                    "dsp_equalizer": config_manager.get("dsp_equalizer", True),
-                    "dsp_compressor": config_manager.get("dsp_compressor", True),
-                    "dsp_deesser": config_manager.get("dsp_deesser", False),
-                    "dsp_limiter": config_manager.get("dsp_limiter", True),
-                    "dsp_highpass": config_manager.get("dsp_highpass", True),
-                }
-            else:
-                cfg[ch_id] = dict(cfg[ch_id])
-            cfg[ch_id][key] = val
-            config_manager.set("channel_fx", cfg, immediate=True)
-            self.update_fx_state()
-            if reload_chain and self.pipewire_mgr:
-                self.pipewire_mgr.reload_channel_fx(ch_id)
-
-        def _save_external_plugin(plugin_id: str, val: bool):
-            cfg = dict(config_manager.get("channel_fx", {}))
-            if ch_id not in cfg:
-                cfg[ch_id] = {
-                    "enabled": True,
-                    "dsp_noise_suppression": config_manager.get("dsp_noise_suppression", True),
-                    "dsp_noise_gate": config_manager.get("dsp_noise_gate", False),
-                    "dsp_equalizer": config_manager.get("dsp_equalizer", True),
-                    "dsp_compressor": config_manager.get("dsp_compressor", True),
-                    "dsp_deesser": config_manager.get("dsp_deesser", False),
-                    "dsp_limiter": config_manager.get("dsp_limiter", True),
-                    "dsp_highpass": config_manager.get("dsp_highpass", True),
-                }
-            else:
-                cfg[ch_id] = dict(cfg[ch_id])
-            external_plugins = dict(cfg[ch_id].get("external_plugins", {}))
-            external_plugins[plugin_id] = bool(val)
-            cfg[ch_id]["external_plugins"] = external_plugins
-            config_manager.set("channel_fx", cfg, immediate=True)
-            self.update_fx_state()
-            if self.pipewire_mgr:
-                self.pipewire_mgr.reload_channel_fx(ch_id)
-
-        def _save_external_intensity(plugin_id: str, val: int):
-            cfg = dict(config_manager.get("channel_fx", {}))
-            cfg[ch_id] = dict(cfg.get(ch_id, {}))
-            intensity_map = dict(cfg[ch_id].get("external_plugin_intensity", {}))
-            intensity_map[plugin_id] = int(val)
-            cfg[ch_id]["external_plugin_intensity"] = intensity_map
-            config_manager.set("channel_fx", cfg, immediate=True)
-
-        def _apply_builtin_intensity_live(fx_key: str, val: int):
-            if not self.pipewire_mgr or not hasattr(self.pipewire_mgr, "fx_manager"):
-                return
-            try:
-                chain = self.pipewire_mgr.fx_manager.get_chain(ch_id)
-                if not chain.update_builtin_intensity_live(fx_key, val):
-                    self.pipewire_mgr.reload_channel_fx(ch_id)
-            except Exception:
-                log.exception(f"Failed to apply live FX intensity '{fx_key}' for channel '{ch_id}'")
-                self.pipewire_mgr.reload_channel_fx(ch_id)
-
-        def _apply_external_intensity_live(plugin_id: str, val: int):
-            if not self.pipewire_mgr or not hasattr(self.pipewire_mgr, "fx_manager"):
-                return
-            try:
-                chain = self.pipewire_mgr.fx_manager.get_chain(ch_id)
-                if not chain.update_external_lv2_intensity_live(plugin_id, val):
-                    self.pipewire_mgr.reload_channel_fx(ch_id)
-            except Exception:
-                log.exception(f"Failed to apply live external plugin intensity '{plugin_id}' for channel '{ch_id}'")
-                self.pipewire_mgr.reload_channel_fx(ch_id)
-
-        def _on_master_toggled(sw, gparam):
-            try:
-                active = sw.get_active()
-                fx_box.set_sensitive(active)
-                _save_channel_fx("enabled", active)
-            except Exception:
-                log.exception(f"Failed to apply FX master toggle for channel '{ch_id}'")
-
-        master_switch.connect("notify::active", _on_master_toggled)
-
-        self._fx_effect_rows = {}
-        self._fx_effect_defaults = {k: d for k, _, _, d in effects_meta}
-
-        for fx_key, fx_title, fx_desc, default_val in effects_meta:
-            row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
-            # Effects turned off globally in the Effects Manager are hard-disabled
-            # app-wide; don't offer a (non-functional) per-channel toggle for them.
-            row.set_visible(config_manager.get(fx_key, default_val))
-            self._fx_effect_rows[fx_key] = row
-            
-            lbl_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
-            lbl = Gtk.Label(label=fx_title)
-            lbl.set_halign(Gtk.Align.START)
-            lbl.add_css_class("body")
-            desc = Gtk.Label(label=fx_desc)
-            desc.set_halign(Gtk.Align.START)
-            desc.add_css_class("dim-label")
-            desc.add_css_class("caption")
-            lbl_box.append(lbl)
-            lbl_box.append(desc)
-            lbl_box.set_hexpand(True)
-            row.append(lbl_box)
-
-            current_val = ch_fx.get(fx_key, config_manager.get(fx_key, default_val))
-            sw = Gtk.Switch(active=bool(current_val))
-            sw.set_valign(Gtk.Align.CENTER)
-
-            intensity_key = f"{fx_key}_intensity"
-            intensity_val = ch_fx.get(intensity_key, 50)
-            dial = RotaryDial(value=intensity_val, default_value=50)
-            dial.set_sensitive(bool(current_val))
-            dial.set_tooltip_text(f"{fx_title} Intensity: {intensity_val}% (drag or scroll to adjust, double-click to reset)")
-
-            def _make_toggle_handler(k, d):
-                def _handler(s, gp):
-                    d.set_sensitive(s.get_active())
-                    d.queue_draw()
-                    _save_channel_fx(k, s.get_active())
-                return _handler
-
-            sw.connect("notify::active", _make_toggle_handler(fx_key, dial))
-
-            debounce_holder = {"id": None}
-
-            def _make_intensity_handler(k):
-                def _on_changed(new_val: int):
-                    def _commit():
-                        debounce_holder["id"] = None
-                        try:
-                            _save_channel_fx(k, new_val, reload_chain=False)
-                            _apply_builtin_intensity_live(k.replace("_intensity", ""), new_val)
-                        except Exception:
-                            log.exception(f"Failed to apply FX intensity '{k}' for channel '{ch_id}'")
-                        return False
-                    if debounce_holder["id"] is not None:
-                        GLib.source_remove(debounce_holder["id"])
-                    debounce_holder["id"] = GLib.timeout_add(120, _commit)
-                return _on_changed
-
-            dial.on_value_changed = _make_intensity_handler(intensity_key)
-
-            row.append(dial)
-            row.append(sw)
-            fx_box.append(row)
-
-        external_plugins = _hostable_external_plugins()
-        if external_plugins:
-            sep3 = Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL)
-            fx_box.append(sep3)
-
-            ext_title = Gtk.Label(label="External LV2 Plugins")
-            ext_title.add_css_class("caption")
-            ext_title.add_css_class("dim-label")
-            ext_title.set_halign(Gtk.Align.START)
-            fx_box.append(ext_title)
-
-            enabled_external = ch_fx.get("external_plugins", {}) if isinstance(ch_fx.get("external_plugins", {}), dict) else {}
-            external_intensity = ch_fx.get("external_plugin_intensity", {}) if isinstance(ch_fx.get("external_plugin_intensity", {}), dict) else {}
-            for plugin in external_plugins:
-                row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
-                lbl_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
-                lbl = Gtk.Label(label=plugin.name)
-                lbl.set_halign(Gtk.Align.START)
-                lbl.add_css_class("body")
-                desc = Gtk.Label(label=f"{plugin.category.value} - LV2")
-                desc.set_halign(Gtk.Align.START)
-                desc.add_css_class("dim-label")
-                desc.add_css_class("caption")
-                lbl_box.append(lbl)
-                lbl_box.append(desc)
-                lbl_box.set_hexpand(True)
-                row.append(lbl_box)
-
-                sw = Gtk.Switch(active=bool(enabled_external.get(plugin.id, False)))
-                sw.set_valign(Gtk.Align.CENTER)
-
-                intensity_val = external_intensity.get(plugin.id, 50)
-                dial = RotaryDial(value=intensity_val, default_value=50)
-                dial.set_sensitive(sw.get_active())
-                dial.set_tooltip_text(f"{plugin.name} Intensity: {intensity_val}%")
-
-                def _make_external_handler(pid, d):
-                    def _handler(s, gp):
-                        d.set_sensitive(s.get_active())
-                        d.queue_draw()
-                        _save_external_plugin(pid, s.get_active())
-                    return _handler
-
-                debounce_holder = {"id": None}
-
-                def _make_external_intensity_handler(pid):
-                    def _on_changed(new_val: int):
-                        def _commit():
-                            debounce_holder["id"] = None
-                            try:
-                                _save_external_intensity(pid, new_val)
-                                _apply_external_intensity_live(pid, new_val)
-                            except Exception:
-                                log.exception(f"Failed to apply external plugin intensity '{pid}' for channel '{ch_id}'")
-                            return False
-                        if debounce_holder["id"] is not None:
-                            GLib.source_remove(debounce_holder["id"])
-                        debounce_holder["id"] = GLib.timeout_add(120, _commit)
-                    return _on_changed
-
-                dial.on_value_changed = _make_external_intensity_handler(plugin.id)
-                sw.connect("notify::active", _make_external_handler(plugin.id, dial))
-                row.append(dial)
-                row.append(sw)
-                fx_box.append(row)
-
-        popover.set_child(vbox)
-        self.fx_btn.set_popover(popover)
-
     def _setup_channel_popover(self):
         popover = Gtk.Popover()
         popover.set_autohide(True)
@@ -840,11 +533,11 @@ class ChannelCard(Gtk.Box):
             sink_row.append(sink_switch)
             vbox.append(sink_row)
 
-        # Group Channels Exclusive Option: Grouped Applications List
-        if self.is_group_channel:
-            # Grouped Applications List
+        # Group & App Channels Option: Assigned Applications List
+        if self.is_group_channel or is_app_channel:
+            # Assigned Applications List
             vbox.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
-            apps_head = Gtk.Label(label="Grouped Applications:")
+            apps_head = Gtk.Label(label="Grouped Applications:" if self.is_group_channel else "Assigned Applications:")
             apps_head.add_css_class("heading")
             apps_head.set_halign(Gtk.Align.START)
             vbox.append(apps_head)
@@ -1033,7 +726,11 @@ class ChannelCard(Gtk.Box):
             custom_add_btn.connect("clicked", on_custom_app_add)
             custom_app_entry.connect("activate", on_custom_app_add)
 
-            rebuild_app_list()
+            def _on_popover_visible(pop, _pspec):
+                if pop.get_visible():
+                    rebuild_app_list()
+
+            popover.connect("notify::visible", _on_popover_visible)
             vbox.append(toggle_add_btn)
             vbox.append(avail_section)
 

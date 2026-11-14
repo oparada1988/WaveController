@@ -7,11 +7,32 @@ Safely handles concatenated arrays, trailing extra data, and malformed PipeWire 
 
 import json
 import subprocess
+import threading
+import time
 from typing import List, Dict, Any
 
+_pw_dump_lock = threading.Lock()
+_pw_dump_cache: List[Dict[str, Any]] = []
+_pw_dump_cache_ts: float = 0.0
+_PW_DUMP_TTL_S: float = 0.35
 
-def safe_pw_dump(timeout: float = 3.0) -> List[Dict[str, Any]]:
+
+def invalidate_pw_dump_cache() -> None:
+    """Invalidates the short-lived safe_pw_dump cache after graph mutations."""
+    global _pw_dump_cache_ts
+    with _pw_dump_lock:
+        _pw_dump_cache_ts = 0.0
+
+
+def safe_pw_dump(timeout: float = 3.0, force_refresh: bool = False) -> List[Dict[str, Any]]:
     """Executes pw-dump and parses the JSON array, gracefully handling trailing extra data or multiple documents."""
+    global _pw_dump_cache, _pw_dump_cache_ts
+    now = time.monotonic()
+    if not force_refresh:
+        with _pw_dump_lock:
+            if _pw_dump_cache and (now - _pw_dump_cache_ts) < _PW_DUMP_TTL_S:
+                return _pw_dump_cache
+
     try:
         raw = subprocess.check_output(["pw-dump"], text=True, stderr=subprocess.DEVNULL, timeout=timeout).strip()
         if not raw:
@@ -74,6 +95,13 @@ def safe_pw_dump(timeout: float = 3.0) -> List[Dict[str, Any]]:
                 if not isinstance(obj["info"].get("params"), dict):
                     obj["info"]["params"] = {}
 
+        with _pw_dump_lock:
+            _pw_dump_cache = data
+            _pw_dump_cache_ts = time.monotonic()
+
         return data
     except Exception:
+        with _pw_dump_lock:
+            if _pw_dump_cache and (time.monotonic() - _pw_dump_cache_ts) < 2.0:
+                return _pw_dump_cache
         return []

@@ -75,7 +75,7 @@ class AppStreamTracker:
                 clean_p = re.sub(r"^\d+\s+", "", p).strip()
                 if clean_p.startswith("output.WaveController_") or clean_p.startswith("WaveController_") or clean_p.startswith("wave_"):
                     continue
-                if ":output_" in clean_p and port_matches_tokens(clean_p, tokens, port_meta):
+                if ":output_" in clean_p and port_matches_tokens(p, tokens, port_meta):
                     p_id = p.split()[0] if p and p.split()[0].isdigit() else clean_p
                     if p_id not in app_out_ports:
                         app_out_ports.append(p_id)

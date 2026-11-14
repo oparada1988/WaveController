@@ -39,19 +39,19 @@ def get_multi_stream_numeric_ports(tokens: set, port_meta: dict = None, out_port
         if ":output_" not in clean_p and ":capture_" not in clean_p:
             continue
 
-        if port_matches_tokens(clean_p, tokens, port_meta):
+        if port_matches_tokens(p, tokens, port_meta):
             port_id = p.split()[0] if p and p.split()[0].isdigit() else clean_p
-            p_low = clean_p.lower()
-            if "_fl" in p_low or p_low.endswith("_1") or "_l" in p_low:
+            p_low = clean_p.rsplit(":", 1)[-1].lower()
+            if "_fl" in p_low or p_low.endswith("_1") or p_low.endswith("_l") or p_low in ("output_0", "playback_0"):
                 chan = "FL"
-            elif "_fr" in p_low or p_low.endswith("_2") or "_r" in p_low:
+            elif "_fr" in p_low or p_low.endswith("_2") or p_low.endswith("_r") or p_low in ("output_1", "playback_1"):
                 chan = "FR"
             elif "mono" in p_low:
                 chan = "MONO"
             else:
                 chan = "FL"
             
-            node_name = clean_p.split(":")[0]
+            node_name = clean_p.rsplit(":", 1)[0]
             results.append({
                 "port_id": port_id,
                 "port_name": clean_p,

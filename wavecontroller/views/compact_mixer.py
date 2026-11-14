@@ -347,11 +347,10 @@ class CompactChannelStrip(Gtk.Box):
             self.on_change_callback()
 
     def update_peaks(self, raw_peak_l: float, raw_peak_r: float):
-        vol, muted = self._get_current_state()
-        if muted:
+        if self.slider.is_muted:
             self.slider.set_peaks(0.0, 0.0)
         else:
-            scale = vol / 100.0
+            scale = self.slider.volume / 100.0
             self.slider.set_peaks(raw_peak_l * scale, raw_peak_r * scale)
 
     def sync_state(self):
@@ -487,11 +486,10 @@ class CompactChannelRow(Gtk.Box):
             self.on_change_callback()
 
     def update_peaks(self, raw_peak_l: float, raw_peak_r: float):
-        vol, muted = self._get_current_state()
-        if muted:
+        if self.slider.is_muted:
             self.slider.set_peaks(0.0, 0.0)
         else:
-            scale = vol / 100.0
+            scale = self.slider.volume / 100.0
             self.slider.set_peaks(raw_peak_l * scale, raw_peak_r * scale)
 
     def sync_state(self):

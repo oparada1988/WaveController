@@ -42,6 +42,12 @@ class WaveControllerApp(Adw.Application):
             icons_dir = os.path.join(os.path.dirname(__file__), "..", "assets", "icons")
             if os.path.exists(icons_dir):
                 theme.add_search_path(icons_dir)
+            wc_user_icons = os.path.expanduser("~/.config/WaveController/icons")
+            os.makedirs(wc_user_icons, exist_ok=True)
+            theme.add_search_path(wc_user_icons)
+            hicolor_256 = os.path.expanduser("~/.local/share/icons/hicolor/256x256/apps")
+            if os.path.exists(hicolor_256):
+                theme.add_search_path(hicolor_256)
 
         self.hardware_mgr = USBHardwareManager()
         self.pipewire_mgr = PipeWireManager(hardware_mgr=self.hardware_mgr)

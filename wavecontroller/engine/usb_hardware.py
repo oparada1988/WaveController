@@ -63,13 +63,15 @@ class USBHardwareManager:
         self.on_device_disconnected_callback = None
         self._startup_capture_recovery_done = False
         self._profile_enforced_cards = set()
+        self._output_mute_cache: dict[str, tuple[bool, float]] = {}
+        self._output_mute_refreshing: set[str] = set()
 
-    def _ensure_elgato_card_profile(self, card_id: int):
+    def _ensure_elgato_card_profile(self, card_id: int, objects: list = None):
         """Ensures the ALSA device profile is locked to an active duplex profile (both playback and capture)."""
         if card_id in self._profile_enforced_cards:
             return
         try:
-            data = safe_pw_dump()
+            data = objects if objects is not None else safe_pw_dump()
             card = next((obj for obj in data if obj.get("id") == card_id), None)
             if not card:
                 return
@@ -522,7 +524,7 @@ class USBHardwareManager:
                 has_elgato = True
                 dev_card_id = d.get("device_id")
                 if dev_card_id:
-                    self._ensure_elgato_card_profile(dev_card_id)
+                    self._ensure_elgato_card_profile(dev_card_id, objects=objects)
                 break
 
         if has_elgato:
@@ -531,21 +533,21 @@ class USBHardwareManager:
                 if not self._elgato_initialized:
                     self.apply_saved_hardware_settings(dev)
                     self._elgato_initialized = True
-                try:
-                    if not getattr(self, "_restoring_hardware", False):
-                        init_st = dev.get_all_state()
-                        if init_st.get("connected"):
-                            self.phantom_power_48v = bool(init_st.get("phantom_power", self.phantom_power_48v))
-                            self.hardware_gain_db = int(round(init_st.get("gain_db", self.hardware_gain_db)))
-                            self.headphone_volume = int(round(init_st.get("hp_volume_pct", self.headphone_volume)))
-                            self.monitor_mix = int(round(init_st.get("monitor_mix_pct", self.monitor_mix)))
-                            self.mic_pc_crossfade = self.monitor_mix
-                            self.clipguard_enabled = bool(init_st.get("clipguard", self.clipguard_enabled))
-                            self.low_cut_filter = str(init_st.get("low_cut", self.low_cut_filter))
-                            self.low_impedance_mode = bool(init_st.get("low_impedance", self.low_impedance_mode))
-                            self.hardware_mute = bool(init_st.get("mute", self.hardware_mute))
-                except Exception:
-                    pass
+                    try:
+                        if not getattr(self, "_restoring_hardware", False):
+                            init_st = dev.get_all_state()
+                            if init_st.get("connected"):
+                                self.phantom_power_48v = bool(init_st.get("phantom_power", self.phantom_power_48v))
+                                self.hardware_gain_db = int(round(init_st.get("gain_db", self.hardware_gain_db)))
+                                self.headphone_volume = int(round(init_st.get("hp_volume_pct", self.headphone_volume)))
+                                self.monitor_mix = int(round(init_st.get("monitor_mix_pct", self.monitor_mix)))
+                                self.mic_pc_crossfade = self.monitor_mix
+                                self.clipguard_enabled = bool(init_st.get("clipguard", self.clipguard_enabled))
+                                self.low_cut_filter = str(init_st.get("low_cut", self.low_cut_filter))
+                                self.low_impedance_mode = bool(init_st.get("low_impedance", self.low_impedance_mode))
+                                self.hardware_mute = bool(init_st.get("mute", self.hardware_mute))
+                    except Exception:
+                        pass
         else:
             dev = elgato_manager.get_device()
             if not (dev and dev.is_connected()):
@@ -732,16 +734,19 @@ class USBHardwareManager:
             except Exception:
                 nl_sock = None
 
+            last_scan_ts = time.monotonic()
             while True:
                 if self._is_sleeping:
                     time.sleep(0.5)
                     continue
 
+                had_uevent = False
                 if nl_sock:
                     try:
                         # Wait up to 1.5s for kernel uevent or wake immediately on hardware hotplug
                         r, _, _ = select.select([nl_sock], [], [], 1.5)
                         if r:
+                            had_uevent = True
                             while True:
                                 try:
                                     data = nl_sock.recv(4096)
@@ -753,7 +758,13 @@ class USBHardwareManager:
                     except Exception:
                         time.sleep(0.4)
                 else:
-                    time.sleep(0.4)
+                    time.sleep(2.0)
+                    had_uevent = True
+
+                now_mono = time.monotonic()
+                if not had_uevent and (now_mono - last_scan_ts) < 10.0 and not self._device_missing_since:
+                    continue
+                last_scan_ts = now_mono
 
                 try:
                     self.detect_connected_hardware()
@@ -1251,11 +1262,29 @@ class USBHardwareManager:
         if elgato_dev:
             elgato_dev.set_mode_mute(mode, muted, transient=transient)
 
-    def get_output_mute(self, sink_id_or_key: str = None) -> bool:
+    def get_output_mute(self, sink_id_or_key: str = None, cached: bool = False) -> bool:
+        cache_key = str(sink_id_or_key or "@DEFAULT_AUDIO_SINK@")
+        now = time.monotonic()
+        if cached:
+            entry = self._output_mute_cache.get(cache_key)
+            if entry is not None and (now - entry[1]) < 4.0:
+                return entry[0]
+            if cache_key not in self._output_mute_refreshing:
+                self._output_mute_refreshing.add(cache_key)
+                def _bg_refresh():
+                    try:
+                        self.get_output_mute(sink_id_or_key, cached=False)
+                    finally:
+                        self._output_mute_refreshing.discard(cache_key)
+                threading.Thread(target=_bg_refresh, daemon=True).start()
+            return entry[0] if entry is not None else False
+
         target = self._resolve_sink_target(sink_id_or_key)
         try:
             out = subprocess.check_output(["wpctl", "get-volume", target], text=True, stderr=subprocess.DEVNULL).strip()
-            return "[MUTED]" in out
+            muted = "[MUTED]" in out
+            self._output_mute_cache[cache_key] = (muted, time.monotonic())
+            return muted
         except Exception:
             return False
 
@@ -1263,7 +1292,7 @@ class USBHardwareManager:
         target = self._resolve_sink_target(sink_id_or_key)
         try:
             subprocess.run(["wpctl", "set-mute", target, "toggle"], stderr=subprocess.DEVNULL)
-            is_muted = self.get_output_mute(sink_id_or_key)
+            is_muted = self.get_output_mute(sink_id_or_key, cached=False)
             self.set_mode_mute("hp", is_muted, transient=transient)
             return is_muted
         except Exception:

@@ -339,14 +339,6 @@ class MixerMatrixView(Gtk.Box):
         if self.pipewire_mgr.reorder_channels_by_id(src_ch_id, dest_ch_id):
             self._rebuild_grid_with_highlight(src_ch_id)
 
-    def _on_move_channel_up(self, ch_id: str):
-        if self.pipewire_mgr.move_channel_up(ch_id):
-            self._rebuild_grid_with_highlight(ch_id)
-
-    def _on_move_channel_down(self, ch_id: str):
-        if self.pipewire_mgr.move_channel_down(ch_id):
-            self._rebuild_grid_with_highlight(ch_id)
-
     def _rebuild_grid_with_highlight(self, highlight_ch_id: str = None):
         self._rebuild_grid()
         if highlight_ch_id:
@@ -956,12 +948,10 @@ class MixerMatrixView(Gtk.Box):
             while dev_list_container.get_first_child():
                 dev_list_container.remove(dev_list_container.get_first_child())
 
-            if self.hardware_mgr:
-                self.hardware_mgr.detect_connected_hardware()
-
             input_devs = self.hardware_mgr.get_tracked_input_devices() if self.hardware_mgr else []
             if not input_devs and self.hardware_mgr:
-                input_devs = self.hardware_mgr.input_devices
+                self.hardware_mgr.detect_connected_hardware()
+                input_devs = self.hardware_mgr.get_tracked_input_devices() or self.hardware_mgr.input_devices
             
             # Filter out hardware devices already configured as channels
             configured_dev_names = {c.get("name", "").lower() for c in self.pipewire_mgr.channels}
@@ -1694,7 +1684,7 @@ class MixerMatrixView(Gtk.Box):
         if self._hw_tick_counter % 30 == 0:
             sink_id = self._get_selected_output_sink_id()
             if sink_id and self.hardware_mgr:
-                is_muted = self.hardware_mgr.get_output_mute(sink_id)
+                is_muted = self.hardware_mgr.get_output_mute(sink_id, cached=True)
                 self._update_out_mute_btn(is_muted)
             for card in self.channel_cards.values():
                 if hasattr(card, "refresh_hardware_state"):

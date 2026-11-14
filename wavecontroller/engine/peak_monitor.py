@@ -2,7 +2,7 @@ import re
 import subprocess
 import threading
 import time
-from wavecontroller.engine.metering.capture_driver import calc_perceptual_peak, open_pw_record, drain_and_calc_peaks
+from wavecontroller.engine.metering.capture_driver import open_pw_record, drain_and_calc_peaks
 
 class MultiChannelPeakMonitor:
     """
@@ -28,9 +28,6 @@ class MultiChannelPeakMonitor:
 
     def set_pipewire_manager(self, pw_mgr):
         self.pipewire_mgr = pw_mgr
-
-    def set_hardware_manager(self, hw_mgr):
-        self.hardware_mgr = hw_mgr
 
     def start(self):
         self.running = True
@@ -249,10 +246,6 @@ class MultiChannelPeakMonitor:
         except Exception:
             pass
 
-    @staticmethod
-    def _calc_perceptual_peak(peak_raw: float, rms: float) -> float:
-        return calc_perceptual_peak(peak_raw, rms)
-
     def _drain_and_calc_peaks(self, proc, channels: int = 2):
         return drain_and_calc_peaks(proc, channels=channels)
 
@@ -317,34 +310,37 @@ class MultiChannelPeakMonitor:
                     for app in assigned:
                         tokens = self.pipewire_mgr._get_match_tokens(app) if hasattr(self.pipewire_mgr, "_get_match_tokens") else set()
                         for p in all_ports:
-                            if p.startswith("output.WaveController_") or p.startswith("WaveController_") or ":monitor_" in p:
+                            clean_p = re.sub(r'^\d+\s+', '', p).strip()
+                            if clean_p.startswith("output.WaveController_") or clean_p.startswith("WaveController_") or clean_p.startswith("wave_") or ":monitor_" in clean_p:
                                 continue
-                            if ":output_" in p:
+                            if ":output_" in clean_p:
                                 matches = False
                                 if hasattr(self.pipewire_mgr, "_port_matches_tokens"):
                                     matches = self.pipewire_mgr._port_matches_tokens(p, tokens, port_meta)
                                 else:
-                                    p_low = p.lower()
+                                    p_low = clean_p.lower()
                                     matches = any(tok in p_low for tok in tokens if len(tok) >= 3)
                                 if matches:
-                                    clean_p = re.sub(r'^\d+\s+', '', p).strip()
-                                    app_node = clean_p.split(":")[0]
+                                    app_node = clean_p.rsplit(":", 1)[0]
                                     if app_node not in target_map:
-                                        target_map[app_node] = {"channels": 2, "is_sink": False, "keys": set()}
+                                        target_map[app_node] = {"channels": 2, "is_sink": False, "keys": set(), "ports": set()}
+                                    target_map[app_node].setdefault("ports", set()).add(p)
                                     target_map[app_node]["keys"].add(ch_id)
                                     target_map[app_node]["keys"].add(str(app).lower().strip())
                                     for tok in tokens:
                                         target_map[app_node]["keys"].add(str(tok).lower().strip())
-                                    meta = port_meta.get(p) or port_meta.get(p.lower()) or port_meta.get(clean_p)
+                                    p_id_str = p.split()[0] if p and p.split()[0].isdigit() else None
+                                    meta = (port_meta.get(p_id_str) if p_id_str else None) or port_meta.get(p) or port_meta.get(p.lower()) or port_meta.get(clean_p)
                                     if meta:
                                         bin_raw = str(meta.get("binary", "")).strip().lower()
                                         if bin_raw:
                                             bin_file = bin_raw.split("/")[-1].split("\\")[-1]
                                             target_map[app_node]["keys"].add(bin_file)
                                             target_map[app_node]["keys"].add(bin_raw)
-                                        app_raw = str(meta.get("app_name", "")).strip().lower()
-                                        if app_raw and app_raw not in ("chromium", "playback", "webrtc voiceengine"):
-                                            target_map[app_node]["keys"].add(app_raw)
+                                        for extra_k in ("app_name", "steam_game_name", "exe_name"):
+                                            extra_val = str(meta.get(extra_k, "")).strip().lower()
+                                            if extra_val and extra_val not in ("chromium", "playback", "webrtc voiceengine"):
+                                                target_map[app_node]["keys"].add(extra_val)
 
         # 2. Source Channels
         if self.pipewire_mgr:
@@ -363,20 +359,20 @@ class MultiChannelPeakMonitor:
                             p_low = clean_p.lower()
                             if ch_id in ("mic", "elgato_wave_xlr", "microphone") or "wave" in ch_id_low or "elgato" in ch_id_low or "wave" in ch_name_low:
                                 if "wave" in p_low or "elgato" in p_low or "0fd9" in p_low or "0070" in p_low or "007d" in p_low or "00b6" in p_low:
-                                    matched_node = clean_p.split(":")[0]
+                                    matched_node = clean_p.rsplit(":", 1)[0]
                                     is_mono = "mono" in p_low
                                     break
                             elif "fefine" in ch_id_low or "fifine" in ch_id_low or "fefine" in ch_name_low or "fifine" in ch_name_low:
                                 if "fifine" in p_low or "fefine" in p_low or "3142" in p_low:
-                                    matched_node = clean_p.split(":")[0]
+                                    matched_node = clean_p.rsplit(":", 1)[0]
                                     is_mono = "mono" in p_low
                                     break
                             elif any(dev in p_low for dev in assigned_devs if len(dev) >= 3 and dev != "system capture"):
-                                matched_node = clean_p.split(":")[0]
+                                matched_node = clean_p.rsplit(":", 1)[0]
                                 is_mono = "mono" in p_low
                                 break
                             elif ch_id_low in p_low or (len(ch_name_low) >= 3 and ch_name_low in p_low):
-                                matched_node = clean_p.split(":")[0]
+                                matched_node = clean_p.rsplit(":", 1)[0]
                                 is_mono = "mono" in p_low
                                 break
 
@@ -472,40 +468,52 @@ class MultiChannelPeakMonitor:
                 node_name = f"wave_meter_{clean_tag[:28]}"
                 target_to_meter[target_node] = node_name
 
-                src_ports = set()
-                if info.get("is_sink", False):
-                    for p in all_ports:
-                        clean_p = re.sub(r'^\d+\s+', '', p).strip()
-                        if clean_p.startswith(f"{target_node}:") and ":monitor_" in clean_p:
-                            src_ports.add(p)
-                else:
-                    for p in all_ports:
-                        clean_p = re.sub(r'^\d+\s+', '', p).strip()
-                        if clean_p.startswith(f"{target_node}:") and (":capture_" in clean_p or ":output_" in clean_p):
-                            src_ports.add(p)
+                src_ports = set(info.get("ports") or ())
+                if not src_ports:
+                    if info.get("is_sink", False):
+                        for p in all_ports:
+                            clean_p = re.sub(r'^\d+\s+', '', p).strip()
+                            if clean_p.startswith(f"{target_node}:") and ":monitor_" in clean_p:
+                                src_ports.add(p)
+                    else:
+                        for p in all_ports:
+                            clean_p = re.sub(r'^\d+\s+', '', p).strip()
+                            if clean_p.startswith(f"{target_node}:") and (":capture_" in clean_p or ":output_" in clean_p):
+                                src_ports.add(p)
 
                 authorized_sources[node_name] = src_ports
 
             # 1. Ingestion Audit: Check existing links and sever rogue ones
             existing_meter_links = {}
             try:
-                links_out = subprocess.check_output(['pw-link', '-l'], text=True, stderr=subprocess.DEVNULL)
+                try:
+                    links_out = subprocess.check_output(['pw-link', '-I', '-l'], text=True, stderr=subprocess.DEVNULL)
+                except Exception:
+                    links_out = subprocess.check_output(['pw-link', '-l'], text=True, stderr=subprocess.DEVNULL)
                 current_meter = None
                 for line in links_out.splitlines():
                     line_str = line.strip()
                     if not line.startswith(' ') and ':' in line_str:
-                        current_meter = line_str
+                        clean_hdr = re.sub(r'^\d+\s+', '', line_str).strip()
+                        current_meter = clean_hdr
                         if current_meter.startswith("wave_meter_"):
-                            existing_meter_links[current_meter] = set()
+                            existing_meter_links.setdefault(current_meter, set())
                     elif '|<-' in line_str and current_meter and current_meter.startswith("wave_meter_"):
                         dest_node = current_meter.split(':')[0]
-                        src_port = line_str.replace('|<-', '').strip()
+                        raw_src = line_str.split('|<-', 1)[1].strip()
+                        src_id = raw_src.split()[0] if raw_src and raw_src.split()[0].isdigit() else None
+                        src_clean = re.sub(r'^\d+\s+', '', raw_src).strip()
+                        src_target = src_id if src_id else src_clean
                         valid_srcs = authorized_sources.get(dest_node, set())
                         valid_targets = {p.split()[0] for p in valid_srcs if p} | {re.sub(r'^\d+\s+', '', p).strip() for p in valid_srcs if p}
-                        if src_port not in valid_srcs and src_port not in valid_targets:
-                            subprocess.run(['pw-link', '-d', src_port, current_meter], stderr=subprocess.DEVNULL)
+                        if raw_src not in valid_srcs and src_clean not in valid_targets and (not src_id or src_id not in valid_targets):
+                            subprocess.run(['pw-link', '-d', src_target, current_meter], stderr=subprocess.DEVNULL)
                         else:
-                            existing_meter_links.setdefault(current_meter, set()).add(src_port)
+                            existing_meter_links.setdefault(current_meter, set()).add(raw_src)
+                            if src_id:
+                                existing_meter_links[current_meter].add(src_id)
+                            else:
+                                existing_meter_links[current_meter].add(src_clean)
             except Exception:
                 pass
 
