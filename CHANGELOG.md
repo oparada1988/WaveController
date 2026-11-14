@@ -2,7 +2,7 @@
 
 All notable changes to WaveController are documented in this file.
 
-## [Unreleased] - 2026-11-14
+## [0.0.5.0] - 2026-11-14 (Alpha 5)
 
 ### Added
 - **Two-Zone ChannelCard Layout & Strict Vertical Control Alignment**:
