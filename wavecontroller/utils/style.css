@@ -219,6 +219,49 @@ window.theme-midnight .wave-create-channel-box {
     color: @window_fg_color;
 }
 
+.channel-title.channel-title-sm {
+    font-size: 11.5px;
+    font-weight: 600;
+}
+
+.channel-title.channel-title-xs {
+    font-size: 10.5px;
+    font-weight: 600;
+    letter-spacing: -0.2px;
+}
+
+/* Strict 195px Right Controls Container across all channels */
+.channel-controls-box {
+    min-width: 195px;
+}
+
+/* Adaptive Game Banner Foreground Contrast (Crisp White Text + Scrim Underlay) */
+.channel-row-card.banner-light-fg .channel-title,
+window.theme-midnight .channel-row-card.banner-light-fg .channel-title,
+.channel-row-card.banner-dark-fg .channel-title,
+window.theme-midnight .channel-row-card.banner-dark-fg .channel-title {
+    color: #ffffff;
+    text-shadow: 0 1px 3px rgba(0, 0, 0, 0.95), 0 0 8px rgba(0, 0, 0, 0.75);
+}
+
+.channel-row-card.banner-light-fg .mix-header-subtitle,
+window.theme-midnight .channel-row-card.banner-light-fg .mix-header-subtitle,
+.channel-row-card.banner-dark-fg .mix-header-subtitle,
+window.theme-midnight .channel-row-card.banner-dark-fg .mix-header-subtitle {
+    color: rgba(255, 255, 255, 0.92);
+    font-weight: 500;
+    text-shadow: 0 1px 3px rgba(0, 0, 0, 0.95), 0 0 6px rgba(0, 0, 0, 0.70);
+}
+
+.channel-row-card.banner-light-fg .channel-drag-handle,
+window.theme-midnight .channel-row-card.banner-light-fg .channel-drag-handle,
+.channel-row-card.banner-dark-fg .channel-drag-handle,
+window.theme-midnight .channel-row-card.banner-dark-fg .channel-drag-handle {
+    color: #f0f0fa;
+    opacity: 0.95;
+    filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.8));
+}
+
 /* Matrix Mix Cell */
 .matrix-cell-card {
     background-color: @card_bg_color;
@@ -533,13 +576,13 @@ popover.wave-popover entry:focus {
 
 /* 48V Phantom Power Badge Button */
 .wave-48v-badge {
-    font-size: 10px;
+    font-size: 10.5px;
     font-weight: 800;
     letter-spacing: 0.5px;
     border-radius: 6px;
-    padding: 2px 6px;
-    min-width: 32px;
-    min-height: 22px;
+    padding: 2px 8px;
+    min-width: 36px;
+    min-height: 26px;
     transition: all 150ms cubic-bezier(0.2, 0, 0, 1);
 }
 
@@ -571,22 +614,13 @@ popover.wave-popover entry:focus {
 
 /* Audio Effects (FX) Badge Button (Matching 48V badge height & geometry) */
 button.wave-fx-badge {
-    padding: 0;
-    margin: 0;
-    min-height: 22px;
-    border: none;
-    background: transparent;
-    box-shadow: none;
-}
-
-button.wave-fx-badge {
-    font-size: 10px;
+    font-size: 10.5px;
     font-weight: 800;
     letter-spacing: 0.5px;
     border-radius: 6px;
-    padding: 2px 6px;
-    min-height: 22px;
-    min-width: 32px;
+    padding: 2px 8px;
+    min-height: 26px;
+    min-width: 36px;
     transition: all 150ms cubic-bezier(0.2, 0, 0, 1);
 }
 

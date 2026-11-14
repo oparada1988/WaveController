@@ -34,6 +34,7 @@ gi.require_version("Adw", "1")
 from gi.repository import Gtk, Adw, GLib, Gdk
 
 from .fx_sidebar import FXSidebar
+from ..engine.graph.process_classifier import is_game_app_or_channel
 from ..utils.logger import get_logger
 
 log = get_logger("AudioFlowView")
@@ -457,9 +458,27 @@ def build_live_graph(pipewire_mgr, hardware_mgr):
 
         ch_name_low = ch_name.lower()
         ch_id_low = ch_id.lower()
+        ch_icon = str(ch.get("icon", "")).lower()
+
+        # Robust Game channel detection
+        is_game = (
+            ch.get("type") == "game"
+            or ch_icon == "input-gaming-symbolic"
+            or ch_icon.startswith("steam_icon_")
+            or "game" in ch_id_low
+            or is_game_app_or_channel(name=ch_name, icon=ch_icon, category=ch.get("category", ""))
+        )
+        if not is_game and pipewire_mgr:
+            for app_name in assigned:
+                if is_game_app_or_channel(name=app_name):
+                    is_game = True
+                    break
+
         icon = "generic"
         if "mic" in ch_name_low or "mic" in ch_id_low or ch.get("type") in ("source", "mic"):
             icon = "mic"
+        elif is_game:
+            icon = "game"
         elif "chrome" in ch_name_low or "browser" in ch_name_low:
             icon = "chrome"
         elif "discord" in ch_name_low or "chat" in ch_name_low or "voice" in ch_name_low:
@@ -468,7 +487,7 @@ def build_live_graph(pipewire_mgr, hardware_mgr):
             icon = "spotify"
         elif "deck" in ch_name_low:
             icon = "stream_deck"
-        elif "game" in ch_name_low or "cam" in ch_name_low:
+        elif any(k in ch_name_low for k in ("webcam", "camera", "obs_cam", "dslr")):
             icon = "cam"
         elif "aux" in ch_name_low or "line" in ch_name_low:
             icon = "aux"
@@ -1055,7 +1074,10 @@ class AudioFlowCanvas(Gtk.DrawingArea):
 
         cr.save()
         if node.stage == "channel":
-            bg_clr = (0.20, 0.26, 0.36)
+            if getattr(node, "icon", "") == "game":
+                bg_clr = (0.26, 0.18, 0.34)
+            else:
+                bg_clr = (0.20, 0.26, 0.36)
         elif node.stage == "mix":
             bg_clr = (0.28, 0.18, 0.28)
         else:
@@ -1222,6 +1244,27 @@ class AudioFlowCanvas(Gtk.DrawingArea):
                     by = cy - 5 + row * 5.5
                     self._rounded_rect(cr, bx, by, 4, 4, 1)
                     cr.fill()
+
+        elif icon_type == "game":
+            # Sleek Gamepad Controller Vector Icon
+            cr.set_source_rgba(0.75, 0.45, 0.95, 0.95 * alpha)  # Modern gaming purple/violet
+            cr.set_line_width(1.8)
+            # Controller outer body (ergonomic rounded pill)
+            self._rounded_rect(cr, cx - 10, cy - 6.5, 20, 13, 5)
+            cr.stroke()
+            # Left D-Pad cross (+)
+            cr.set_line_width(1.8)
+            cr.move_to(cx - 5.5, cy - 3)
+            cr.line_to(cx - 5.5, cy + 3)
+            cr.stroke()
+            cr.move_to(cx - 8.5, cy)
+            cr.line_to(cx - 2.5, cy)
+            cr.stroke()
+            # Right Action buttons (diamond dots)
+            cr.arc(cx + 5.5, cy - 2, 1.4, 0, 2 * math.pi)
+            cr.fill()
+            cr.arc(cx + 5.5, cy + 2, 1.4, 0, 2 * math.pi)
+            cr.fill()
 
         elif icon_type == "cam":
             cr.set_source_rgba(0.95, 0.55, 0.25, 0.95 * alpha)

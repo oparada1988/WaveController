@@ -486,13 +486,57 @@ def port_matches_tokens(port_name: str, tokens: set, port_meta: dict = None) -> 
 
 
 _STEAM_ICON_CACHE = {}
+_STEAM_NEGATIVE_CACHE = {}
 _STEAM_MANIFEST_CACHE = {"ts": 0.0, "apps": {}}
 
+_STEAM_NON_GAME_APPIDS = frozenset({
+    "228980",   # Steamworks Common Redistributables
+    "1070560",  # Steam Linux Runtime 1.0 (scout)
+    "1391110",  # Steam Linux Runtime 2.0 (soldier)
+    "1628350",  # Steam Linux Runtime 3.0 (sniper)
+    "4183110",  # Steam Linux Runtime 4.0
+    "1493710",  # Proton Experimental
+    "2348590",  # Proton Hotfix
+    "250820",   # SteamVR
+})
 
-def _get_steam_manifests_map() -> dict:
+
+def is_steam_runtime_or_tool(appid: str, name: str) -> bool:
+    """Returns True if a Steam manifest entry is a Proton/Runtime/Redistributable tool rather than a game."""
+    aid = str(appid or "").strip()
+    if aid in _STEAM_NON_GAME_APPIDS:
+        return True
+    nm = str(name or "").strip().lower()
+    if not nm:
+        return True
+    non_game_prefixes = (
+        "proton ",
+        "proton-",
+        "steam linux runtime",
+        "steamworks common redistributables",
+        "steamvr",
+        "steam controller",
+    )
+    return nm.startswith(non_game_prefixes)
+
+
+def _is_steam_scan_enabled() -> bool:
+    try:
+        from wavecontroller.engine.config_manager import config_manager
+        if not config_manager.get("enable_game_channels", True):
+            return False
+        return bool(config_manager.get("scan_steam_games", True))
+    except Exception:
+        return True
+
+
+def _get_steam_manifests_map(force: bool = False) -> dict:
     """Returns a cached mapping of Steam AppID -> {'name': str, 'installdir': str} across all local Steam libraries."""
+    if not _is_steam_scan_enabled() and not force:
+        return {}
+
     now = time.monotonic()
-    if _STEAM_MANIFEST_CACHE["apps"] and (now - _STEAM_MANIFEST_CACHE["ts"]) < 30.0:
+    if not force and _STEAM_MANIFEST_CACHE["apps"] and (now - _STEAM_MANIFEST_CACHE["ts"]) < 30.0:
         return _STEAM_MANIFEST_CACHE["apps"]
 
     steam_roots = [
@@ -530,10 +574,13 @@ def _get_steam_manifests_map() -> dict:
                         m_name = re.search(r'"name"\s+"([^"]+)"', txt)
                         m_dir = re.search(r'"installdir"\s+"([^"]+)"', txt)
                         if m_id and m_name:
-                            apps[m_id.group(1)] = {
-                                "name": m_name.group(1).strip(),
-                                "installdir": m_dir.group(1).strip() if m_dir else "",
-                            }
+                            aid = m_id.group(1)
+                            gname = m_name.group(1).strip()
+                            if not is_steam_runtime_or_tool(aid, gname):
+                                apps[aid] = {
+                                    "name": gname,
+                                    "installdir": m_dir.group(1).strip() if m_dir else "",
+                                }
                     except Exception:
                         pass
         except Exception:
@@ -544,34 +591,91 @@ def _get_steam_manifests_map() -> dict:
     return apps
 
 
-def resolve_steam_game_icon(app_name: str = None, steam_app_id: str = None) -> str:
+def resolve_steam_app_id(app_name: str = None, steam_app_id: str = None) -> str:
+    """Resolves a Steam AppID from either an explicit ID or a game/installdir name."""
+    if steam_app_id and str(steam_app_id).strip().isdigit():
+        return str(steam_app_id).strip()
+    if not app_name:
+        return ""
+
+    manifests = _get_steam_manifests_map()
+    q_raw = str(app_name).strip().lower()
+    q_clean = re.sub(r"[^a-z0-9]+", "", q_raw)
+    if not q_clean:
+        return ""
+
+    for aid, info in manifests.items():
+        nm_low = info["name"].lower()
+        dir_low = info["installdir"].lower()
+        nm_clean = re.sub(r"[^a-z0-9]+", "", nm_low)
+        dir_clean = re.sub(r"[^a-z0-9]+", "", dir_low)
+        if q_raw == nm_low or q_raw == dir_low or (len(q_clean) >= 4 and (q_clean == nm_clean or q_clean == dir_clean)):
+            return aid
+    return ""
+
+
+def is_game_app_or_channel(
+    name: str = "",
+    binary: str = "",
+    exe_name: str = "",
+    steam_app_id: str = "",
+    steam_game_name: str = "",
+    media_role: str = "",
+    category: str = "",
+    icon: str = "",
+) -> bool:
+    """
+    Smart game classifier: returns True when an application stream or channel
+    represents a game (via category, Steam metadata, Proton/Wine .exe, media.role, or Steam manifests).
+    """
+    if str(category or "").strip().lower() == "game":
+        return True
+    if str(icon or "").startswith("steam_icon_") or icon == "input-gaming-symbolic":
+        return True
+
+    nm_low = str(name or "").strip().lower()
+    bin_low = str(binary or "").strip().lower().split("/")[-1].split("\\")[-1]
+
+    # Never classify the Steam client itself or known desktop/chat/browser apps as a game
+    if nm_low in ("steam", "steamwebhelper") or bin_low in DEDICATED_NON_GAME_BINARIES:
+        return False
+    for k, (disp, _) in KNOWN_AUDIO_BINARIES.items():
+        if disp.lower() == nm_low and k in DEDICATED_NON_GAME_BINARIES:
+            return False
+
+    if steam_app_id or steam_game_name:
+        return True
+    if str(media_role or "").strip().lower() == "game":
+        return True
+    if exe_name and str(exe_name).lower() not in _WINE_SYSTEM_EXES:
+        return True
+    if bin_low.endswith(".exe") and bin_low not in _WINE_SYSTEM_EXES:
+        return True
+    if resolve_steam_app_id(name):
+        return True
+    if binary and resolve_steam_app_id(bin_low):
+        return True
+    return False
+
+
+def resolve_steam_game_icon(app_name: str = None, steam_app_id: str = None, batch_mode: bool = False) -> str:
     """
     Resolves and extracts the official Steam game icon for a given game name or Steam AppID,
     registering it as 'steam_icon_<appid>' in ~/.config/WaveController/icons and hicolor.
     Returns the icon name ('steam_icon_<appid>') if found, or '' otherwise.
     """
     cache_key = (str(app_name or "").strip().lower(), str(steam_app_id or "").strip())
-    if cache_key in _STEAM_ICON_CACHE:
+    if cache_key in _STEAM_ICON_CACHE and _STEAM_ICON_CACHE[cache_key]:
         return _STEAM_ICON_CACHE[cache_key]
 
-    manifests = _get_steam_manifests_map()
-    matched_appid = str(steam_app_id).strip() if steam_app_id and str(steam_app_id).strip().isdigit() else ""
+    now = time.monotonic()
+    neg_ts = _STEAM_NEGATIVE_CACHE.get(cache_key, 0.0)
+    if neg_ts and (now - neg_ts) < 15.0:
+        return ""
 
-    if not matched_appid and app_name:
-        q_raw = str(app_name).strip().lower()
-        q_clean = re.sub(r'[^a-z0-9]+', '', q_raw)
-        if q_clean:
-            for aid, info in manifests.items():
-                nm_low = info["name"].lower()
-                dir_low = info["installdir"].lower()
-                nm_clean = re.sub(r'[^a-z0-9]+', '', nm_low)
-                dir_clean = re.sub(r'[^a-z0-9]+', '', dir_low)
-                if q_raw == nm_low or q_raw == dir_low or (len(q_clean) >= 4 and (q_clean == nm_clean or q_clean == dir_clean)):
-                    matched_appid = aid
-                    break
-
+    matched_appid = resolve_steam_app_id(app_name, steam_app_id)
     if not matched_appid:
-        _STEAM_ICON_CACHE[cache_key] = ""
+        _STEAM_NEGATIVE_CACHE[cache_key] = now
         return ""
 
     icon_name = f"steam_icon_{matched_appid}"
@@ -580,7 +684,11 @@ def resolve_steam_game_icon(app_name: str = None, steam_app_id: str = None) -> s
     dest_wc = os.path.join(wc_icon_dir, f"{icon_name}.png")
     dest_hc = os.path.join(hicolor_dir, f"{icon_name}.png")
 
+    newly_created = False
     if not os.path.exists(dest_wc):
+        if not _is_steam_scan_enabled():
+            return ""
+
         steam_roots = [
             os.path.expanduser("~/.local/share/Steam"),
             os.path.expanduser("~/.steam/steam"),
@@ -588,27 +696,34 @@ def resolve_steam_game_icon(app_name: str = None, steam_app_id: str = None) -> s
         ]
         src_ico = None
         src_jpg = None
+        src_sub_jpg = None
         for sr in steam_roots:
             cache_dir = os.path.join(sr, "appcache", "librarycache", matched_appid)
             if os.path.isdir(cache_dir):
                 try:
                     for fname in os.listdir(cache_dir):
-                        if fname.lower().endswith(".jpg") and not fname.lower().startswith("library_"):
+                        full_p = os.path.join(cache_dir, fname)
+                        if os.path.isfile(full_p) and fname.lower().endswith(".jpg") and not fname.lower().startswith(("library_", "header")):
                             base = os.path.splitext(fname)[0]
-                            cand_jpg = os.path.join(cache_dir, fname)
                             if src_jpg is None:
-                                src_jpg = cand_jpg
+                                src_jpg = full_p
                             if len(base) == 40:
                                 cand_ico = os.path.join(sr, "steam", "games", f"{base}.ico")
                                 if os.path.exists(cand_ico):
                                     src_ico = cand_ico
+                                    break
+                        elif os.path.isdir(full_p) and src_sub_jpg is None:
+                            for sub_cand in ("library_capsule.jpg", "library_header.jpg", "header.jpg"):
+                                sp = os.path.join(full_p, sub_cand)
+                                if os.path.isfile(sp):
+                                    src_sub_jpg = sp
                                     break
                 except Exception:
                     pass
             if src_ico:
                 break
 
-        src_file = src_ico or src_jpg
+        src_file = src_ico or src_jpg or src_sub_jpg
         if src_file and os.path.exists(src_file):
             try:
                 os.makedirs(wc_icon_dir, exist_ok=True)
@@ -621,7 +736,18 @@ def resolve_steam_game_icon(app_name: str = None, steam_app_id: str = None) -> s
                         im.size = sizes[0]
                         im.load()
                 im = im.convert("RGBA")
+                # Center-crop non-square capsule/header fallbacks and cap icon size to 64x64 to save RAM
+                w, h = im.size
+                if w != h and w > 0 and h > 0:
+                    side = min(w, h)
+                    left = (w - side) // 2
+                    top = (h - side) // 2
+                    im = im.crop((left, top, left + side, top + side))
+                if im.size[0] > 64 or im.size[1] > 64:
+                    resample_filter = getattr(Image, "Resampling", Image).LANCZOS
+                    im = im.resize((64, 64), resample_filter)
                 im.save(dest_wc, "PNG")
+                newly_created = True
                 try:
                     im.save(dest_hc, "PNG")
                 except Exception:
@@ -630,24 +756,48 @@ def resolve_steam_game_icon(app_name: str = None, steam_app_id: str = None) -> s
                 pass
 
     if os.path.exists(dest_wc):
-        try:
-            import gi
-            gi.require_version("Gtk", "4.0")
-            from gi.repository import Gtk, Gdk
-            display = Gdk.Display.get_default()
-            if display:
-                theme = Gtk.IconTheme.get_for_display(display)
-                search_paths = theme.get_search_path() or []
-                if wc_icon_dir not in search_paths:
-                    theme.add_search_path(wc_icon_dir)
-                if hicolor_dir not in search_paths:
-                    theme.add_search_path(hicolor_dir)
-        except Exception:
-            pass
+        if newly_created and not batch_mode:
+            try:
+                from wavecontroller.utils.game_artwork import refresh_gtk_icon_theme
+                refresh_gtk_icon_theme()
+            except Exception:
+                pass
         _STEAM_ICON_CACHE[cache_key] = icon_name
+        _STEAM_NEGATIVE_CACHE.pop(cache_key, None)
         return icon_name
 
-    _STEAM_ICON_CACHE[cache_key] = ""
+    _STEAM_NEGATIVE_CACHE[cache_key] = now
     return ""
+
+
+def sync_installed_steam_icons_async(on_complete=None):
+    """
+    Pre-warms Steam game icons for all installed Steam games in a low-priority background thread
+    and refreshes Gtk.IconTheme once at the end so game icons appear instantaneously.
+    """
+    if not _is_steam_scan_enabled():
+        if callable(on_complete):
+            from gi.repository import GLib
+            GLib.idle_add(on_complete)
+        return
+
+    def _worker():
+        try:
+            manifests = _get_steam_manifests_map(force=True)
+            for aid, info in manifests.items():
+                resolve_steam_game_icon(info.get("name", ""), aid, batch_mode=True)
+            from wavecontroller.utils.game_artwork import refresh_gtk_icon_theme
+            refresh_gtk_icon_theme()
+        except Exception:
+            pass
+        if callable(on_complete):
+            try:
+                from gi.repository import GLib
+                GLib.idle_add(on_complete)
+            except Exception:
+                pass
+
+    threading.Thread(target=_worker, daemon=True).start()
+
 
 

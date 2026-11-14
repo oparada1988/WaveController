@@ -1,11 +1,23 @@
+import os
 import gi
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 from typing import Optional, Any
-from gi.repository import Gtk, Gdk, GObject, Adw, GLib
+from gi.repository import Gtk, Gdk, Gio, GObject, Adw, GLib
 
 from .stereo_slider import StereoSlider
 from ..engine.config_manager import config_manager
+from ..engine.graph.process_classifier import resolve_steam_app_id
+from ..utils.game_artwork import (
+    set_gtk_image_safe,
+    find_local_steam_banner_source,
+    compose_and_analyze_banner,
+    fetch_steamgriddb_banner_async,
+    has_steamgriddb_banner,
+    get_steamgriddb_raw_path,
+    purge_channel_artwork,
+    WC_BANNERS_DIR,
+)
 from ..utils.logger import get_logger
 
 log = get_logger("ChannelCard")
@@ -35,11 +47,27 @@ class ChannelCard(Gtk.Box):
         self.set_size_request(510, -1)
 
         # Header card containing standard strip controls
-        self.header_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        self.header_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
         self.header_box.add_css_class("channel-row-card")
         self.header_box.set_valign(Gtk.Align.CENTER)
         self.header_box.set_hexpand(False)
         self.header_box.set_size_request(510, -1)
+
+        # 1. Left Info Zone (Drag Handle, Icon, Title, Badges)
+        self.left_info_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        self.left_info_box.set_hexpand(True)
+        self.left_info_box.set_halign(Gtk.Align.START)
+        self.left_info_box.set_valign(Gtk.Align.CENTER)
+        self.header_box.append(self.left_info_box)
+
+        # 2. Right Controls Zone (Strict 195px Fixed Width Container)
+        self.right_controls_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        self.right_controls_box.add_css_class("channel-controls-box")
+        self.right_controls_box.set_hexpand(False)
+        self.right_controls_box.set_halign(Gtk.Align.END)
+        self.right_controls_box.set_valign(Gtk.Align.CENTER)
+        self.right_controls_box.set_size_request(195, -1)
+        self.header_box.append(self.right_controls_box)
 
         # Identify if this channel corresponds to Elgato Wave hardware
         ch_id = str(channel_info.get("id", ""))
@@ -66,26 +94,7 @@ class ChannelCard(Gtk.Box):
         self.drag_grip.add_css_class("channel-drag-handle")
         self.drag_grip.set_cursor_from_name("grab")
         self.drag_grip.set_tooltip_text("Click and hold to reorder channel vertically")
-        self.header_box.append(self.drag_grip)
-
-        # 2. Channel icon (Auto-resolve from dedicated hardware or assigned apps)
-        icon_name = self._resolve_icon()
-        self.icon_img = Gtk.Image.new_from_icon_name(icon_name)
-        self.icon_img.set_pixel_size(20)
-        self.header_box.append(self.icon_img)
-
-        # 3. Channel Title + Subtitle / Offline Badge Box
-        title_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
-        title_box.set_hexpand(False)
-        title_box.set_size_request(104, -1)
-
-        display_name = channel_info.get("name", "Channel")
-
-        self.title_lbl = Gtk.Label(label=display_name)
-        self.title_lbl.add_css_class("channel-title")
-        self.title_lbl.set_halign(Gtk.Align.START)
-        self.title_lbl.set_ellipsize(3)
-        title_box.append(self.title_lbl)
+        self.left_info_box.append(self.drag_grip)
 
         # Determine if this is a group channel (bundles multiple apps and/or exposes a system device)
         self.is_group_channel = (
@@ -96,86 +105,107 @@ class ChannelCard(Gtk.Box):
                 "group" in ch_name
             )
         )
+        self._banner_css_provider = None
+
+        # 2. Channel icon (Auto-resolve from dedicated hardware or assigned apps)
+        icon_name = self._resolve_icon()
+        self.icon_img = Gtk.Image()
+        set_gtk_image_safe(
+            self.icon_img,
+            icon_name,
+            20,
+            fallback_icon="input-gaming-symbolic" if self._is_game_channel() else "audio-card-symbolic"
+        )
+        self.left_info_box.append(self.icon_img)
+
+        # 3. Channel Title + Subtitle / Offline Badge Box
+        title_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        title_box.set_hexpand(not self.is_mic_channel)
+        title_box.set_valign(Gtk.Align.CENTER)
+
+        display_name = channel_info.get("name", "Channel")
+
+        self.title_lbl = Gtk.Label(label=display_name)
+        self.title_lbl.add_css_class("channel-title")
+        self.title_lbl.set_halign(Gtk.Align.START)
+        self.title_lbl.set_ellipsize(3)
+        self._apply_dynamic_title_font(display_name)
+        title_box.append(self.title_lbl)
 
         self.is_offline = self._is_channel_offline()
 
         if self.is_mic_channel:
-            # Physical Microphone: show explicit [ Online ] (green) or [ Offline ] (amber) badge
+            # Physical Microphone: line 2 houses [Online] / [Offline] badge
             self.badge_lbl = Gtk.Label(label="Offline" if self.is_offline else "Online")
             self.badge_lbl.add_css_class("device-badge")
             self.badge_lbl.add_css_class("offline" if self.is_offline else "online")
             self.badge_lbl.set_halign(Gtk.Align.START)
             self.badge_lbl.set_valign(Gtk.Align.CENTER)
             title_box.append(self.badge_lbl)
-            self.sub_lbl = None
+
             if self.is_offline:
                 self.icon_img.set_opacity(0.55)
             else:
                 self.icon_img.set_opacity(1.0)
-        else:
-            # Application playback channel: show assigned apps subtitle
-            assigned = self.pipewire_mgr.get_assigned_apps(channel_info["id"]) if self.pipewire_mgr else []
-            clean_assigned = [a for a in assigned if not a.startswith("usb-") and not a.startswith("alsa_card.")]
-            if ch_type == "virtual":
-                is_system_default = bool(
-                    self.pipewire_mgr
-                    and hasattr(self.pipewire_mgr, "is_channel_system_default")
-                    and self.pipewire_mgr.is_channel_system_default(channel_info["id"])
-                )
-                sub_text = "System Audio Device" if is_system_default else "Virtual Audio Device"
+
+            # Middle Quick Action Buttons Box (48V Phantom Power and FX)
+            self.mic_actions_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+            self.mic_actions_box.set_valign(Gtk.Align.CENTER)
+            self.mic_actions_box.set_halign(Gtk.Align.CENTER)
+            self.mic_actions_box.set_hexpand(True)
+
+            # 48V Phantom Power Quick Toggle inside middle action box
+            if self.supports_phantom_power and self.hardware_mgr and hasattr(self.hardware_mgr, "phantom_power_48v"):
+                self.phantom_btn = Gtk.Button(label="48V")
+                self.phantom_btn.add_css_class("flat")
+                self.phantom_btn.add_css_class("wave-48v-badge")
+                self.phantom_btn.set_valign(Gtk.Align.CENTER)
+                self.phantom_btn.connect("clicked", self._on_phantom_clicked)
+                self.update_phantom_state(self.hardware_mgr.phantom_power_48v)
+                self.mic_actions_box.append(self.phantom_btn)
             else:
-                sub_text = ", ".join(clean_assigned[:2]) if clean_assigned else "No apps assigned"
-            self.sub_lbl = Gtk.Label(label=sub_text)
-            self.sub_lbl.add_css_class("mix-header-subtitle")
-            self.sub_lbl.set_halign(Gtk.Align.START)
-            self.sub_lbl.set_ellipsize(3)
-            # Hide when it just repeats the title (single auto-assigned app named after the channel)
-            self.sub_lbl.set_visible(sub_text.strip().lower() != display_name.strip().lower())
-            title_box.append(self.sub_lbl)
-            self.badge_lbl = None
+                self.phantom_btn = None
 
-        self.default_output_badge = Gtk.Label(label="Default Output")
-        self.default_output_badge.add_css_class("device-badge")
-        self.default_output_badge.add_css_class("online")
-        self.default_output_badge.set_halign(Gtk.Align.START)
-        self.default_output_badge.set_valign(Gtk.Align.CENTER)
-        title_box.append(self.default_output_badge)
-        self.refresh_default_output_badge()
-
-        self.header_box.append(title_box)
-
-        # 4. 48V Phantom Power Quick Toggle (Strictly for hardware supporting 48V Phantom Power)
-        if self.supports_phantom_power and self.hardware_mgr and hasattr(self.hardware_mgr, "phantom_power_48v"):
-            self.phantom_btn = Gtk.Button(label="48V")
-            self.phantom_btn.add_css_class("flat")
-            self.phantom_btn.add_css_class("wave-48v-badge")
-            self.phantom_btn.set_valign(Gtk.Align.CENTER)
-            self.phantom_btn.connect("clicked", self._on_phantom_clicked)
-            self.update_phantom_state(self.hardware_mgr.phantom_power_48v)
-            self.header_box.append(self.phantom_btn)
-
-        # 4b. Audio Effects (FX) Badge & Popover Menu (Present at all times on mic/input channels)
-        if self.is_mic_channel:
+            # Audio Effects (FX) Badge inside middle action box
             self.fx_btn = Gtk.Button(label="FX")
             self.fx_btn.add_css_class("flat")
             self.fx_btn.add_css_class("wave-fx-badge")
             self.fx_btn.set_valign(Gtk.Align.CENTER)
             self.fx_btn.set_tooltip_text(f"Audio Effects for '{display_name}'")
             self.fx_btn.connect("clicked", self._on_fx_clicked)
-            self.header_box.append(self.fx_btn)
+            self.mic_actions_box.append(self.fx_btn)
+
+            self.sub_lbl = None
+            self.default_output_badge = None
         else:
+            self.mic_actions_box = None
+            self.phantom_btn = None
             self.fx_btn = None
 
-        # 5. Channel settings gear popover button
-        self.settings_btn = Gtk.MenuButton()
-        self.settings_btn.set_icon_name("emblem-system-symbolic")
-        self.settings_btn.add_css_class("flat")
-        self.settings_btn.add_css_class("wave-icon-btn")
-        self.settings_btn.set_tooltip_text(f"Configure '{display_name}'")
-        self._setup_channel_popover()
-        self.header_box.append(self.settings_btn)
+            sub_text = self._compute_subtitle_text()
+            self.sub_lbl = Gtk.Label(label=sub_text)
+            self.sub_lbl.add_css_class("mix-header-subtitle")
+            self.sub_lbl.set_halign(Gtk.Align.START)
+            self.sub_lbl.set_ellipsize(3)
+            self.sub_lbl.set_visible(True)
+            if "·" in sub_text or "(+" in sub_text:
+                self.sub_lbl.set_tooltip_text(sub_text)
+            title_box.append(self.sub_lbl)
+            self.badge_lbl = None
 
-        # 5b. Group Channel App Expand / Collapse Toggle Chevron
+            self.default_output_badge = Gtk.Label(label="Default Output")
+            self.default_output_badge.add_css_class("device-badge")
+            self.default_output_badge.add_css_class("online")
+            self.default_output_badge.set_halign(Gtk.Align.START)
+            self.default_output_badge.set_valign(Gtk.Align.CENTER)
+            title_box.append(self.default_output_badge)
+            self.refresh_default_output_badge()
+
+        self.left_info_box.append(title_box)
+        if self.is_mic_channel and self.mic_actions_box:
+            self.left_info_box.append(self.mic_actions_box)
+
+        # 4. Group Channel App Expand / Collapse Toggle Chevron (Kept in left info box so it never bumps right controls)
         if self.is_group_channel:
             self.expand_btn = Gtk.Button.new_from_icon_name("pan-down-symbolic")
             self.expand_btn.add_css_class("flat")
@@ -183,9 +213,18 @@ class ChannelCard(Gtk.Box):
             self.expand_btn.set_valign(Gtk.Align.CENTER)
             self.expand_btn.set_tooltip_text("Expand member applications")
             self.expand_btn.connect("clicked", self._on_toggle_drawer)
-            self.header_box.append(self.expand_btn)
+            self.left_info_box.append(self.expand_btn)
         else:
             self.expand_btn = None
+
+        # 5. Right Controls: Channel settings gear popover button
+        self.settings_btn = Gtk.MenuButton()
+        self.settings_btn.set_icon_name("emblem-system-symbolic")
+        self.settings_btn.add_css_class("flat")
+        self.settings_btn.add_css_class("wave-icon-btn")
+        self.settings_btn.set_tooltip_text(f"Configure '{display_name}'")
+        self._setup_channel_popover()
+        self.right_controls_box.append(self.settings_btn)
 
         # 6. Mute button
         self.mute_btn = Gtk.Button.new_from_icon_name("audio-volume-high-symbolic")
@@ -194,7 +233,7 @@ class ChannelCard(Gtk.Box):
         self.mute_btn.set_tooltip_text("Mute master channel")
         self.mute_btn.set_valign(Gtk.Align.CENTER)
         self.mute_btn.connect("clicked", self._on_mute_clicked)
-        self.header_box.append(self.mute_btn)
+        self.right_controls_box.append(self.mute_btn)
 
         # 7. Stereo Split Volume Slider & VU Meter (Master Channel Gain)
         vol = self.pipewire_mgr.get_channel_master_volume(self.channel_info["id"])
@@ -215,7 +254,7 @@ class ChannelCard(Gtk.Box):
         )
         self.slider.set_hexpand(False)
         self.slider.set_size_request(85, 20)
-        self.header_box.append(self.slider)
+        self.right_controls_box.append(self.slider)
 
         # 8. Link/Unlink multi-mix toggle button
         self.link_btn = Gtk.Button.new_from_icon_name("insert-link-symbolic")
@@ -224,7 +263,7 @@ class ChannelCard(Gtk.Box):
         self.link_btn.add_css_class("wave-link-btn")
         self.link_btn.set_tooltip_text("Link volume across mixes")
         self.link_btn.connect("clicked", self._on_link_clicked)
-        self.header_box.append(self.link_btn)
+        self.right_controls_box.append(self.link_btn)
 
         # 9. Expandable Drawer for Group Channel Applications (Layered directly behind card)
         if self.is_group_channel:
@@ -321,6 +360,192 @@ class ChannelCard(Gtk.Box):
 
         # Synchronize UI state on initialization (volume, link button, mute, FX badge)
         self.update_ui_state()
+        self._update_banner_state()
+        self._update_title_overlay_visibility()
+
+    def _apply_dynamic_title_font(self, name: str):
+        if not hasattr(self, "title_lbl") or not self.title_lbl:
+            return
+        self.title_lbl.remove_css_class("channel-title-sm")
+        self.title_lbl.remove_css_class("channel-title-xs")
+        n_len = len(str(name or "").strip())
+        if n_len > 22:
+            self.title_lbl.add_css_class("channel-title-xs")
+        elif n_len > 13:
+            self.title_lbl.add_css_class("channel-title-sm")
+
+    def _is_game_channel(self) -> bool:
+        if self.is_mic_channel or getattr(self, "is_group_channel", False):
+            return False
+        ch_type = str(self.channel_info.get("type", "sink")).lower()
+        if ch_type in ("virtual", "source", "group"):
+            return False
+        if self.pipewire_mgr and hasattr(self.pipewire_mgr, "is_channel_game"):
+            return bool(self.pipewire_mgr.is_channel_game(self.channel_info))
+        return str(self.channel_info.get("category", "")).lower() == "game"
+
+    def _compute_subtitle_text(self) -> str:
+        ch_id = self.channel_info.get("id", "")
+        ch_type = str(self.channel_info.get("type", "sink")).lower()
+        display_name = str(self.channel_info.get("name", "Channel")).strip()
+
+        if ch_type == "virtual":
+            is_system_default = bool(
+                self.pipewire_mgr
+                and hasattr(self.pipewire_mgr, "is_channel_system_default")
+                and self.pipewire_mgr.is_channel_system_default(ch_id)
+            )
+            return "System Audio Device" if is_system_default else "Virtual Audio Device"
+
+        if self._is_game_channel():
+            return "Game"
+
+        all_apps = self.pipewire_mgr.get_channel_all_apps(ch_id) if (self.pipewire_mgr and hasattr(self.pipewire_mgr, "get_channel_all_apps")) else []
+        if all_apps:
+            app_names = [a["name"] for a in all_apps if a.get("name")]
+        else:
+            assigned = self.pipewire_mgr.get_assigned_apps(ch_id) if self.pipewire_mgr else []
+            app_names = [a for a in assigned if not a.startswith("usb-") and not a.startswith("alsa_card.")]
+
+        if getattr(self, "is_group_channel", False):
+            if len(app_names) > 2:
+                return f"{', '.join(app_names[:2])} (+{len(app_names) - 2})"
+            elif app_names:
+                return ", ".join(app_names)
+            elif self.pipewire_mgr and self.pipewire_mgr.is_channel_sink_exposed(ch_id):
+                return "System Audio Device"
+            return "No apps assigned"
+
+        # Game or Application channel (Option B: show category + app name when renamed)
+        base_cat = "Game" if self._is_game_channel() else "Application"
+        if len(app_names) > 1:
+            if len(app_names) > 2:
+                return f"{', '.join(app_names[:2])} (+{len(app_names) - 2})"
+            return ", ".join(app_names)
+        elif len(app_names) == 1:
+            primary = str(app_names[0]).strip()
+            if primary and primary.lower() != display_name.lower():
+                return f"{base_cat} · {primary}"
+            return base_cat
+        else:
+            return base_cat
+
+    def _is_banner_enabled(self) -> bool:
+        if self.is_mic_channel or getattr(self, "is_group_channel", False):
+            return False
+        if str(self.channel_info.get("type", "sink")).lower() == "virtual":
+            return False
+        explicit = self.channel_info.get("banner_enabled", None)
+        if explicit is not None:
+            return bool(explicit)
+        if self.channel_info.get("custom_banner_path"):
+            return True
+        return bool(config_manager.get("enable_game_banners", False)) and self._is_game_channel()
+
+    def _update_title_overlay_visibility(self):
+        hide = bool(self.channel_info.get("hide_title_overlay", False))
+        if hasattr(self, "title_lbl") and self.title_lbl:
+            self.title_lbl.set_visible(not hide)
+        if hasattr(self, "sub_lbl") and self.sub_lbl:
+            self.sub_lbl.set_visible(not hide)
+        if hide:
+            self.header_box.set_tooltip_text(self.channel_info.get("name", "Channel"))
+        else:
+            self.header_box.set_tooltip_text(None)
+
+    def _clear_banner_style(self):
+        self.header_box.remove_css_class("has-game-banner")
+        self.header_box.remove_css_class("banner-light-fg")
+        self.header_box.remove_css_class("banner-dark-fg")
+        if self._banner_css_provider is not None:
+            try:
+                self.header_box.get_style_context().remove_provider(self._banner_css_provider)
+            except Exception:
+                pass
+            self._banner_css_provider = None
+        if hasattr(self, "icon_img") and self.icon_img:
+            self.icon_img.set_visible(True)
+        self._update_title_overlay_visibility()
+
+    def _apply_banner_from_source(self, src_path: str, is_custom: bool = False):
+        ch_id = self.channel_info.get("id", "channel")
+        composed_png, contrast_mode = compose_and_analyze_banner(
+            src_path, ch_id, is_custom=is_custom
+        )
+        if not composed_png or not os.path.isfile(composed_png):
+            self._clear_banner_style()
+            return
+
+        if self._banner_css_provider is not None:
+            try:
+                self.header_box.get_style_context().remove_provider(self._banner_css_provider)
+            except Exception:
+                pass
+
+        provider = Gtk.CssProvider()
+        escaped_path = composed_png.replace("\\", "/").replace('"', '\\"')
+        css_rule = (
+            f".channel-row-card.has-game-banner {{"
+            f" background-image: url(\"file://{escaped_path}\");"
+            f" background-size: 100% 100%;"
+            f" background-repeat: no-repeat;"
+            f" background-position: left center;"
+            f"}}"
+        )
+        try:
+            provider.load_from_string(css_rule)
+            self.header_box.get_style_context().add_provider(
+                provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION + 20
+            )
+            self._banner_css_provider = provider
+            self.header_box.add_css_class("has-game-banner")
+            self.header_box.remove_css_class("banner-light-fg")
+            self.header_box.remove_css_class("banner-dark-fg")
+            if contrast_mode == "dark_fg":
+                self.header_box.add_css_class("banner-dark-fg")
+            else:
+                self.header_box.add_css_class("banner-light-fg")
+            if hasattr(self, "icon_img") and self.icon_img:
+                self.icon_img.set_visible(False)
+            self._update_title_overlay_visibility()
+        except Exception as e:
+            log.debug(f"Failed applying game banner CSS: {e}")
+            self._clear_banner_style()
+
+    def _update_banner_state(self):
+        if not self._is_banner_enabled():
+            self._clear_banner_style()
+            return
+
+        custom_path = self.channel_info.get("custom_banner_path", "")
+        if custom_path and os.path.isfile(custom_path):
+            self._apply_banner_from_source(custom_path, is_custom=True)
+            self._update_title_overlay_visibility()
+            return
+
+        ch_name = self.channel_info.get("name", "")
+        s_aid = str(self.channel_info.get("steam_app_id", "") or "").strip()
+        if not s_aid:
+            ic_val = str(self.channel_info.get("icon", ""))
+            if ic_val.startswith("steam_icon_"):
+                s_aid = ic_val.replace("steam_icon_", "").strip()
+            else:
+                s_aid = resolve_steam_app_id(ch_name)
+
+        # 1. If user opted into SteamGridDB or downloaded SGDB art exists and is active
+        sgdb_raw = get_steamgriddb_raw_path(s_aid, ch_name)
+        use_sgdb = self.channel_info.get("use_sgdb", None)
+
+        if (use_sgdb is True or (use_sgdb is None and has_steamgriddb_banner(s_aid, ch_name))) and os.path.isfile(sgdb_raw):
+            self._apply_banner_from_source(sgdb_raw)
+            return
+
+        # 2. Local Steam librarycache banner for immediate zero-latency display
+        local_steam_src = find_local_steam_banner_source(s_aid) if s_aid else None
+        if local_steam_src:
+            self._apply_banner_from_source(local_steam_src)
+        else:
+            self._clear_banner_style()
 
     def _is_channel_offline(self) -> bool:
         ch_id = str(self.channel_info.get("id", "")).lower()
@@ -512,9 +737,8 @@ class ChannelCard(Gtk.Box):
         sync_row.append(sync_switch)
         vbox.append(sync_row)
 
-        # Virtual System Audio Device exposure: available to Group Channels and single-app Channels alike
-        is_app_channel = str(self.channel_info.get("type", "sink")).lower() == "app"
-        show_expose_toggle = (self.is_group_channel or is_app_channel) and not self.is_mic_channel
+        # Virtual System Audio Device exposure: available strictly to Group Channels
+        show_expose_toggle = self.is_group_channel and not self.is_mic_channel and not self._is_game_channel()
         if show_expose_toggle:
             vbox.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
 
@@ -533,8 +757,8 @@ class ChannelCard(Gtk.Box):
             sink_row.append(sink_switch)
             vbox.append(sink_row)
 
-        # Group & App Channels Option: Assigned Applications List
-        if self.is_group_channel or is_app_channel:
+        # Group Channels Option: Assigned Applications List (Exclusively for Group channels)
+        if self.is_group_channel:
             # Assigned Applications List
             vbox.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
             apps_head = Gtk.Label(label="Grouped Applications:" if self.is_group_channel else "Assigned Applications:")
@@ -626,8 +850,8 @@ class ChannelCard(Gtk.Box):
 
                         irow = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
                         i_icon = app_info.get("icon") or self.pipewire_mgr.resolve_icon_for_app(aname)
-                        i_img = Gtk.Image.new_from_icon_name(i_icon)
-                        i_img.set_pixel_size(16)
+                        i_img = Gtk.Image()
+                        set_gtk_image_safe(i_img, i_icon, 16, fallback_icon="applications-multimedia-symbolic")
                         irow.append(i_img)
 
                         ilbl = Gtk.Label(label=aname, hexpand=True, halign=Gtk.Align.START)
@@ -671,8 +895,8 @@ class ChannelCard(Gtk.Box):
                         row.add_css_class("wave-app-row")
 
                         icon_name = app_dict.get("icon") or self.pipewire_mgr.resolve_icon_for_app(app_name)
-                        ic = Gtk.Image.new_from_icon_name(icon_name)
-                        ic.set_pixel_size(16)
+                        ic = Gtk.Image()
+                        set_gtk_image_safe(ic, icon_name, 16, fallback_icon="applications-multimedia-symbolic")
                         row.append(ic)
 
                         nlbl = Gtk.Label(label=app_name, hexpand=True, halign=Gtk.Align.START)
@@ -733,6 +957,193 @@ class ChannelCard(Gtk.Box):
             popover.connect("notify::visible", _on_popover_visible)
             vbox.append(toggle_add_btn)
             vbox.append(avail_section)
+
+        # Channel Banner Artwork Options (Available for Game channels and smart-detected App channels)
+        if not self.is_mic_channel and str(self.channel_info.get("type", "sink")).lower() != "virtual" and not self.is_group_channel:
+            vbox.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
+            banner_head = Gtk.Label(label="Banner Artwork:")
+            banner_head.add_css_class("heading")
+            banner_head.set_halign(Gtk.Align.START)
+            vbox.append(banner_head)
+
+            banner_toggle_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+            banner_toggle_lbl = Gtk.Label(label="Enable Wide Banner Art", hexpand=True, halign=Gtk.Align.START)
+            banner_toggle_lbl.add_css_class("mix-header-subtitle")
+            banner_sw = Gtk.Switch(active=self._is_banner_enabled())
+
+            def _on_banner_sw_toggled(sw, state):
+                self.channel_info["banner_enabled"] = bool(state)
+                if self.pipewire_mgr and hasattr(self.pipewire_mgr, "set_channel_banner_config"):
+                    self.pipewire_mgr.set_channel_banner_config(self.channel_info["id"], banner_enabled=bool(state))
+                self._update_banner_state()
+                return False
+
+            banner_sw.connect("state-set", _on_banner_sw_toggled)
+            banner_toggle_row.append(banner_toggle_lbl)
+            banner_toggle_row.append(banner_sw)
+            vbox.append(banner_toggle_row)
+
+            # SteamGridDB On-Demand Actions
+            s_aid = str(self.channel_info.get("steam_app_id", "") or "").strip()
+            ch_name = self.channel_info.get("name", "")
+            sgdb_key = (config_manager.get("steamgriddb_api_key", "") or "").strip()
+
+            sgdb_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+            sgdb_box.set_margin_top(4)
+
+            banner_btn_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+            banner_btn_row.set_margin_top(4)
+            choose_art_btn = Gtk.Button(label="Custom Image…")
+            choose_art_btn.set_hexpand(True)
+            choose_art_btn.set_tooltip_text("Select a custom background banner image (.png, .jpg, .webp)")
+
+            reset_art_btn = Gtk.Button(label="Reset to Default")
+            reset_art_btn.add_css_class("flat")
+            reset_art_btn.set_tooltip_text("Reset to local Steam library banner")
+
+            def _rebuild_sgdb_actions():
+                while sgdb_box.get_first_child():
+                    sgdb_box.remove(sgdb_box.get_first_child())
+
+                has_sgdb = has_steamgriddb_banner(s_aid, ch_name)
+                custom_set = bool(self.channel_info.get("custom_banner_path"))
+                use_sgdb = bool(self.channel_info.get("use_sgdb", False) or (has_sgdb and not custom_set))
+
+                if has_sgdb and use_sgdb:
+                    remove_sgdb_btn = Gtk.Button(label="Remove SteamGridDB Art")
+                    remove_sgdb_btn.add_css_class("destructive-action")
+                    remove_sgdb_btn.set_tooltip_text("Delete downloaded SteamGridDB art from disk and revert to Steam default")
+
+                    def _on_remove_sgdb(_b):
+                        purge_channel_artwork(self.channel_info["id"], s_aid, ch_name)
+                        self.channel_info["use_sgdb"] = False
+                        self.channel_info.pop("custom_banner_path", None)
+                        if self.pipewire_mgr and hasattr(self.pipewire_mgr, "set_channel_banner_config"):
+                            self.pipewire_mgr.set_channel_banner_config(
+                                self.channel_info["id"],
+                                banner_enabled=True,
+                                custom_banner_path=""
+                            )
+                        self._update_banner_state()
+                        _rebuild_sgdb_actions()
+
+                    remove_sgdb_btn.connect("clicked", _on_remove_sgdb)
+                    sgdb_box.append(remove_sgdb_btn)
+                elif sgdb_key:
+                    download_sgdb_btn = Gtk.Button(label="Download from SteamGridDB")
+                    download_sgdb_btn.add_css_class("suggested-action")
+                    download_sgdb_btn.set_tooltip_text("Fetch wide Hero / Grid artwork from SteamGridDB")
+
+                    def _on_download_sgdb(_b):
+                        download_sgdb_btn.set_sensitive(False)
+                        download_sgdb_btn.set_label("Downloading...")
+
+                        def _on_done(dl_path):
+                            download_sgdb_btn.set_sensitive(True)
+                            if dl_path and os.path.isfile(dl_path):
+                                self.channel_info["use_sgdb"] = True
+                                self.channel_info["banner_enabled"] = True
+                                banner_sw.set_active(True)
+                                self._update_banner_state()
+                                _rebuild_sgdb_actions()
+                            else:
+                                download_sgdb_btn.set_label("No SGDB Art Found")
+
+                        fetch_steamgriddb_banner_async(sgdb_key, ch_name, s_aid, on_complete=_on_done)
+
+                    download_sgdb_btn.connect("clicked", _on_download_sgdb)
+                    sgdb_box.append(download_sgdb_btn)
+
+            _rebuild_sgdb_actions()
+            vbox.append(sgdb_box)
+
+            def _on_choose_custom_art(_btn):
+                popover.popdown()
+                root_win = self.get_root()
+                if not isinstance(root_win, Gtk.Window):
+                    root_win = None
+                dialog = Gtk.FileDialog.new()
+                dialog.set_title(f"Select Banner Artwork for {self.channel_info.get('name', 'Channel')}")
+                img_filter = Gtk.FileFilter()
+                img_filter.set_name("Images (*.png, *.jpg, *.jpeg, *.webp)")
+                for pat in ("*.png", "*.jpg", "*.jpeg", "*.webp"):
+                    img_filter.add_pattern(pat)
+                filters = Gio.ListStore.new(Gtk.FileFilter)
+                filters.append(img_filter)
+                dialog.set_filters(filters)
+
+                def _on_file_chosen(dlg, res):
+                    try:
+                        gfile = dlg.open_finish(res)
+                        if gfile:
+                            chosen_path = gfile.get_path()
+                            if chosen_path and os.path.isfile(chosen_path):
+                                self.channel_info["custom_banner_path"] = chosen_path
+                                self.channel_info["use_sgdb"] = False
+                                self.channel_info["banner_enabled"] = True
+                                banner_sw.set_active(True)
+                                if self.pipewire_mgr and hasattr(self.pipewire_mgr, "set_channel_banner_config"):
+                                    self.pipewire_mgr.set_channel_banner_config(
+                                        self.channel_info["id"],
+                                        banner_enabled=True,
+                                        custom_banner_path=chosen_path
+                                    )
+                                self._update_banner_state()
+                                _rebuild_sgdb_actions()
+                    except Exception:
+                        pass
+
+                dialog.open(root_win, None, _on_file_chosen)
+
+            def _on_reset_art(_btn):
+                self.channel_info.pop("custom_banner_path", None)
+                self.channel_info["use_sgdb"] = False
+                if self.pipewire_mgr and hasattr(self.pipewire_mgr, "set_channel_banner_config"):
+                    self.pipewire_mgr.set_channel_banner_config(
+                        self.channel_info["id"],
+                        custom_banner_path=""
+                    )
+                self._update_banner_state()
+                _rebuild_sgdb_actions()
+
+            choose_art_btn.connect("clicked", _on_choose_custom_art)
+            reset_art_btn.connect("clicked", _on_reset_art)
+            banner_btn_row.append(choose_art_btn)
+            banner_btn_row.append(reset_art_btn)
+            vbox.append(banner_btn_row)
+
+            # Hide Title & Subtitle Overlay (useful when custom artwork already has the game logo)
+            hide_title_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+            hide_title_row.set_margin_top(6)
+            hide_title_lbl_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=1)
+            hide_title_lbl_box.set_hexpand(True)
+            hide_title_lbl = Gtk.Label(label="Hide Title & Subtitle Overlay")
+            hide_title_lbl.add_css_class("mix-header-subtitle")
+            hide_title_lbl.set_halign(Gtk.Align.START)
+            hide_title_sub = Gtk.Label(label="Hides channel name for artwork with built-in logos")
+            hide_title_sub.add_css_class("dim-label")
+            hide_title_sub.add_css_class("caption")
+            hide_title_sub.set_halign(Gtk.Align.START)
+            hide_title_lbl_box.append(hide_title_lbl)
+            hide_title_lbl_box.append(hide_title_sub)
+            hide_title_row.append(hide_title_lbl_box)
+
+            hide_title_sw = Gtk.Switch(active=bool(self.channel_info.get("hide_title_overlay", False)))
+            hide_title_sw.set_valign(Gtk.Align.CENTER)
+
+            def _on_hide_title_toggled(sw, state):
+                self.channel_info["hide_title_overlay"] = bool(state)
+                if self.pipewire_mgr and hasattr(self.pipewire_mgr, "set_channel_banner_config"):
+                    self.pipewire_mgr.set_channel_banner_config(
+                        self.channel_info["id"],
+                        hide_title_overlay=bool(state)
+                    )
+                self._update_title_overlay_visibility()
+                return False
+
+            hide_title_sw.connect("state-set", _on_hide_title_toggled)
+            hide_title_row.append(hide_title_sw)
+            vbox.append(hide_title_row)
 
         # Hardware LED Controls for Elgato Wave device
         if self.is_wave_channel and self.hardware_mgr:
@@ -880,6 +1291,8 @@ class ChannelCard(Gtk.Box):
 
     def refresh_default_output_badge(self):
         """Shows the system output badge only on the selected virtual channel."""
+        if not getattr(self, "default_output_badge", None):
+            return
         is_default = bool(
             self.pipewire_mgr
             and hasattr(self.pipewire_mgr, "is_channel_system_default")
@@ -1091,40 +1504,30 @@ class ChannelCard(Gtk.Box):
         if not hasattr(self, "sub_lbl") or self.sub_lbl is None:
             return
 
-        ch_id = self.channel_info["id"]
-        ch_type = str(self.channel_info.get("type", "sink")).lower()
-        all_apps = self.pipewire_mgr.get_channel_all_apps(ch_id) if self.pipewire_mgr and ch_type != "virtual" else []
-        if ch_type == "virtual":
-            is_system_default = bool(
-                self.pipewire_mgr
-                and hasattr(self.pipewire_mgr, "is_channel_system_default")
-                and self.pipewire_mgr.is_channel_system_default(ch_id)
-            )
-            sub_text = "System Audio Device" if is_system_default else "Virtual Audio Device"
-        elif all_apps:
-            app_names = [a["name"] for a in all_apps]
-            if len(app_names) > 2:
-                sub_text = f"{', '.join(app_names[:2])} (+{len(app_names)-2})"
-            else:
-                sub_text = ", ".join(app_names)
-        elif self.pipewire_mgr and self.pipewire_mgr.is_channel_sink_exposed(ch_id):
-            sub_text = "System Audio Device"
-        else:
-            sub_text = "No apps assigned"
-
-        display_name = self.channel_info.get("name", "")
+        sub_text = self._compute_subtitle_text()
         self.sub_lbl.set_label(sub_text)
-        # Hide when it just repeats the title (single auto-assigned app named after the channel)
-        self.sub_lbl.set_visible(sub_text.strip().lower() != display_name.strip().lower())
+        self.sub_lbl.set_visible(True)
+        if "·" in sub_text or "(+" in sub_text:
+            self.sub_lbl.set_tooltip_text(sub_text)
+        else:
+            self.sub_lbl.set_tooltip_text(None)
         if self.is_group_channel:
             self._build_app_sub_strips()
+        self._update_banner_state()
 
     def refresh_name(self):
         display_name = self.channel_info.get("name", "Channel")
         self.title_lbl.set_text(display_name)
-        self.icon_img.set_from_icon_name(self._resolve_icon())
+        self._apply_dynamic_title_font(display_name)
+        set_gtk_image_safe(
+            self.icon_img,
+            self._resolve_icon(),
+            20,
+            fallback_icon="input-gaming-symbolic" if self._is_game_channel() else "audio-card-symbolic"
+        )
         self.refresh_hardware_state()
         self.refresh_apps()
+        self._update_banner_state()
 
     def update_peaks(self, peak_l: float, peak_r: float):
         if hasattr(self, "slider") and self.slider:

@@ -145,7 +145,8 @@ class WaveMainWindow(Adw.ApplicationWindow):
             self.hardware_mgr,
             pipewire_mgr=self.pipewire_mgr,
             on_theme_changed=self._apply_theme,
-            on_hw_defaults_changed=self._on_system_defaults_changed
+            on_hw_defaults_changed=self._on_system_defaults_changed,
+            on_game_settings_changed=lambda: GLib.idle_add(self.mixer_view.refresh_device_names) if hasattr(self, "mixer_view") else None,
         )
         self.stack.add_named(self.settings_view, "settings")
 

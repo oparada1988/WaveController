@@ -7,6 +7,8 @@ from .fx_sidebar import FXSidebar
 from .mix_header import MixHeaderCard
 from .matrix_cell import MatrixCell
 from .led_color_picker import LEDColorButton
+from wavecontroller.engine.config_manager import config_manager
+from wavecontroller.utils.game_artwork import set_gtk_image_safe
 from wavecontroller.utils.logger import get_logger
 
 log = get_logger("MixerMatrixView")
@@ -812,6 +814,35 @@ class MixerMatrixView(Gtk.Box):
         app_cat_btn.set_child(app_row)
         cat_box.append(app_cat_btn)
 
+        # Category 3b: Game
+        game_cat_btn = Gtk.Button()
+        game_cat_btn.add_css_class("flat")
+        game_cat_btn.add_css_class("wave-sidebar-row")
+
+        game_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+        game_icon = Gtk.Image.new_from_icon_name("input-gaming-symbolic")
+        game_icon.set_pixel_size(22)
+        game_row.append(game_icon)
+
+        game_text_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=1)
+        game_text_box.set_hexpand(True)
+        game_title = Gtk.Label(label="Game")
+        game_title.add_css_class("channel-title")
+        game_title.set_halign(Gtk.Align.START)
+        game_text_box.append(game_title)
+
+        game_desc = Gtk.Label(label="Route a running or installed game")
+        game_desc.add_css_class("mix-header-subtitle")
+        game_desc.set_halign(Gtk.Align.START)
+        game_text_box.append(game_desc)
+        game_row.append(game_text_box)
+
+        arrow_game = Gtk.Image.new_from_icon_name("go-next-symbolic")
+        arrow_game.set_pixel_size(14)
+        game_row.append(arrow_game)
+        game_cat_btn.set_child(game_row)
+        cat_box.append(game_cat_btn)
+
         # Category 4: Input Device
         dev_cat_btn = Gtk.Button()
         dev_cat_btn.add_css_class("flat")
@@ -853,6 +884,10 @@ class MixerMatrixView(Gtk.Box):
         # Container for Dynamic App List
         apps_list_container = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
 
+        # Container for Dynamic Game List
+        games_list_container = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        game_search_entry = Gtk.SearchEntry(placeholder_text="Search games...")
+
         # Container for Dynamic Hardware Device List
         dev_list_container = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
 
@@ -861,6 +896,10 @@ class MixerMatrixView(Gtk.Box):
         # ==========================================
         def configured_app_tokens():
             tokens = set()
+            for ch in self.pipewire_mgr.channels:
+                ch_nm = str(ch.get("name", "")).strip().lower()
+                if ch_nm:
+                    tokens.add(ch_nm)
             for apps in self.pipewire_mgr.assigned_apps.values():
                 for app in apps:
                     value = str(app).strip().lower()
@@ -881,12 +920,13 @@ class MixerMatrixView(Gtk.Box):
                 apps_list_container.remove(apps_list_container.get_first_child())
 
             running_apps = self.pipewire_mgr.get_active_application_streams()
+            non_game_running = [a for a in (running_apps or []) if not a.get("is_game")]
 
             configured_apps = configured_app_tokens()
 
             available_apps = []
-            if running_apps:
-                for app_info in running_apps:
+            if non_game_running:
+                for app_info in non_game_running:
                     is_already_added = app_is_configured(app_info, configured_apps)
                     if not is_already_added:
                         available_apps.append(app_info)
@@ -905,11 +945,12 @@ class MixerMatrixView(Gtk.Box):
                         resolved_ic = self.pipewire_mgr.resolve_icon_for_app(app_bin) if (self.pipewire_mgr and app_bin) else None
                     icon_name = resolved_ic or app_info.get("icon") or "applications-multimedia-symbolic"
 
-                    i_img = Gtk.Image.new_from_icon_name(icon_name)
-                    i_img.set_pixel_size(18)
+                    i_img = Gtk.Image()
+                    set_gtk_image_safe(i_img, icon_name, 18, fallback_icon="applications-multimedia-symbolic")
                     i_lbl = Gtk.Label(label=app_name)
                     i_lbl.set_hexpand(True)
                     i_lbl.set_halign(Gtk.Align.START)
+                    i_lbl.set_ellipsize(3)
 
                     add_ic = Gtk.Image.new_from_icon_name("list-add-symbolic")
                     add_ic.set_pixel_size(14)
@@ -932,7 +973,7 @@ class MixerMatrixView(Gtk.Box):
                     item_btn.connect("clicked", make_app_click_handler(app_name, icon_name))
                     apps_list_container.append(item_btn)
             else:
-                if running_apps:
+                if non_game_running:
                     msg = "All running audio applications are already added to channels.\nLaunch another app or create a custom channel below:"
                 else:
                     msg = "No audio applications running.\nLaunch an app (Spotify, Discord, etc.) or create custom below:"
@@ -943,6 +984,101 @@ class MixerMatrixView(Gtk.Box):
                 apps_list_container.append(no_apps)
 
             stack.set_visible_child_name("app_page")
+
+        def populate_game_rows(filter_query: str = ""):
+            while games_list_container.get_first_child():
+                games_list_container.remove(games_list_container.get_first_child())
+
+            all_games = self.pipewire_mgr.get_discoverable_games() if (self.pipewire_mgr and hasattr(self.pipewire_mgr, "get_discoverable_games")) else []
+            configured_apps = configured_app_tokens()
+            q_low = str(filter_query or "").strip().lower()
+
+            available_games = []
+            for g_info in all_games:
+                if app_is_configured(g_info, configured_apps):
+                    continue
+                if q_low and q_low not in g_info.get("name", "").lower():
+                    continue
+                available_games.append(g_info)
+
+            if available_games:
+                for g_info in available_games:
+                    game_name = g_info["name"]
+                    icon_name = g_info.get("icon") or "input-gaming-symbolic"
+                    s_aid = g_info.get("steam_app_id", "")
+                    is_running = bool(g_info.get("running", False))
+
+                    item_btn = Gtk.Button()
+                    item_btn.add_css_class("flat")
+                    item_btn.add_css_class("wave-sidebar-row")
+
+                    item_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+                    g_img = Gtk.Image()
+                    set_gtk_image_safe(g_img, icon_name, 18, fallback_icon="input-gaming-symbolic")
+                    g_lbl = Gtk.Label(label=game_name)
+                    g_lbl.set_hexpand(True)
+                    g_lbl.set_halign(Gtk.Align.START)
+                    g_lbl.set_ellipsize(3)
+
+                    item_row.append(g_img)
+                    item_row.append(g_lbl)
+
+                    if is_running:
+                        run_badge = Gtk.Label(label="Running")
+                        run_badge.add_css_class("device-badge")
+                        run_badge.add_css_class("online")
+                        run_badge.set_valign(Gtk.Align.CENTER)
+                        item_row.append(run_badge)
+
+                    add_ic = Gtk.Image.new_from_icon_name("list-add-symbolic")
+                    add_ic.set_pixel_size(14)
+                    item_row.append(add_ic)
+                    item_btn.set_child(item_row)
+
+                    def make_game_click_handler(name, ic, aid, bin_tok):
+                        def handler(btn):
+                            assigned = [name]
+                            if bin_tok and bin_tok.lower() != name.lower() and bin_tok not in assigned:
+                                assigned.append(bin_tok)
+                            self.pipewire_mgr.add_channel(
+                                name,
+                                icon=ic,
+                                ch_type="app",
+                                assigned_apps=assigned,
+                                category="game",
+                                steam_app_id=aid,
+                            )
+                            popover.popdown()
+                            GLib.idle_add(self._rebuild_grid)
+                            self._notify_channel_list_changed()
+                            if callable(on_added_callback):
+                                GLib.idle_add(on_added_callback)
+                        return handler
+
+                    item_btn.connect(
+                        "clicked",
+                        make_game_click_handler(game_name, icon_name, s_aid, g_info.get("binary", ""))
+                    )
+                    games_list_container.append(item_btn)
+            else:
+                if q_low:
+                    msg = f"No games matching '{filter_query}'."
+                elif all_games:
+                    msg = "All discovered games are already added to channels.\nLaunch another game or create a custom game channel below:"
+                else:
+                    msg = "No running or Steam games detected.\nLaunch a game or create a custom game channel below:"
+                no_games = Gtk.Label(label=msg)
+                no_games.add_css_class("mix-header-subtitle")
+                no_games.set_halign(Gtk.Align.START)
+                no_games.set_wrap(True)
+                games_list_container.append(no_games)
+
+        def show_game_page(b=None):
+            game_search_entry.set_text("")
+            populate_game_rows("")
+            stack.set_visible_child_name("game_page")
+
+        game_search_entry.connect("search-changed", lambda entry: populate_game_rows(entry.get_text()))
 
         def show_device_page(b=None):
             while dev_list_container.get_first_child():
@@ -1035,6 +1171,7 @@ class MixerMatrixView(Gtk.Box):
             stack.set_visible_child_name("device_page")
 
         app_cat_btn.connect("clicked", show_app_page)
+        game_cat_btn.connect("clicked", show_game_page)
         dev_cat_btn.connect("clicked", show_device_page)
 
         # ==========================================
@@ -1098,6 +1235,76 @@ class MixerMatrixView(Gtk.Box):
         app_page_box.append(app_cancel_btn)
 
         stack.add_named(app_page_box, "app_page")
+
+        # ==========================================
+        # PAGE 2B: Game Channel Creator
+        # ==========================================
+        game_page_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        game_page_box.set_margin_top(12)
+        game_page_box.set_margin_bottom(12)
+        game_page_box.set_margin_start(12)
+        game_page_box.set_margin_end(12)
+        game_page_box.set_size_request(280, -1)
+
+        game_top_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        back_game_btn = Gtk.Button.new_from_icon_name("go-previous-symbolic")
+        back_game_btn.add_css_class("flat")
+        back_game_btn.add_css_class("wave-icon-btn")
+        back_game_btn.connect("clicked", lambda b: stack.set_visible_child_name("cat_page"))
+        game_top_box.append(back_game_btn)
+
+        game_head_lbl = Gtk.Label(label="Game Channel")
+        game_head_lbl.add_css_class("mix-header-title")
+        game_head_lbl.set_halign(Gtk.Align.START)
+        game_top_box.append(game_head_lbl)
+        game_page_box.append(game_top_box)
+
+        game_page_box.append(game_search_entry)
+
+        game_sub_lbl = Gtk.Label(label="Running &amp; installed games:")
+        game_sub_lbl.add_css_class("mix-header-subtitle")
+        game_sub_lbl.set_halign(Gtk.Align.START)
+        game_page_box.append(game_sub_lbl)
+
+        games_scroll = Gtk.ScrolledWindow()
+        games_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        games_scroll.set_propagate_natural_height(True)
+        games_scroll.set_max_content_height(220)
+        games_scroll.set_child(games_list_container)
+        game_page_box.append(games_scroll)
+
+        # Custom Game Channel Entry
+        game_page_box.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
+        cust_game_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        game_entry = Gtk.Entry(placeholder_text="Custom game channel name...")
+        game_entry.set_hexpand(True)
+        cust_game_box.append(game_entry)
+
+        cust_game_btn = Gtk.Button.new_from_icon_name("list-add-symbolic")
+        cust_game_btn.add_css_class("suggested-action")
+
+        def on_cust_game_add(b):
+            name = game_entry.get_text().strip()
+            if name:
+                self.pipewire_mgr.add_channel(name, ch_type="app", assigned_apps=[name], category="game")
+                game_entry.set_text("")
+                popover.popdown()
+                GLib.idle_add(self._rebuild_grid)
+                self._notify_channel_list_changed()
+                if callable(on_added_callback):
+                    GLib.idle_add(on_added_callback)
+
+        cust_game_btn.connect("clicked", on_cust_game_add)
+        game_entry.connect("activate", on_cust_game_add)
+        cust_game_box.append(cust_game_btn)
+        game_page_box.append(cust_game_box)
+
+        game_cancel_btn = Gtk.Button(label="Cancel")
+        game_cancel_btn.add_css_class("destructive-action")
+        game_cancel_btn.connect("clicked", lambda b: popover.popdown())
+        game_page_box.append(game_cancel_btn)
+
+        stack.add_named(game_page_box, "game_page")
 
         # ==========================================
         # PAGE 3: Input Device Channel Creator
@@ -1358,11 +1565,18 @@ class MixerMatrixView(Gtk.Box):
 
         stack.add_named(group_page_box, "group_page")
 
+        def _update_game_category_visibility():
+            games_enabled = bool(config_manager.get("enable_game_channels", True))
+            game_cat_btn.set_visible(games_enabled)
+
         def reset_create_channel_popover():
             stack.set_visible_child_name("cat_page")
             app_entry.set_text("")
             virtual_name_entry.set_text("")
+            _update_game_category_visibility()
 
+        _update_game_category_visibility()
+        popover.connect("notify::visible", lambda p, pspec: _update_game_category_visibility() if p.get_visible() else None)
         popover.connect("closed", lambda p: reset_create_channel_popover())
 
         stack.set_visible_child_name("cat_page")

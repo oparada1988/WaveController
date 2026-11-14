@@ -12,12 +12,16 @@ from wavecontroller.engine.graph.process_classifier import (
     GENERIC_COMPATIBILITY_RUNNERS,
     DEDICATED_NON_GAME_BINARIES,
     _word_match,
+    _get_steam_manifests_map,
     get_match_tokens,
     get_active_port_metadata_map,
     invalidate_port_metadata_cache,
+    is_game_app_or_channel,
     port_matches_tokens,
     resolve_pid_game_metadata,
-    resolve_steam_game_icon
+    resolve_steam_app_id,
+    resolve_steam_game_icon,
+    sync_installed_steam_icons_async,
 )
 from wavecontroller.engine.routing.source_manager import MicrophoneSourceManager
 from wavecontroller.engine.routing.sink_manager import SubmixSinkManager
@@ -233,22 +237,45 @@ class PipeWireManager:
                         "muted": False,
                         "linked": True
                     }
-            # Upgrade generic icons for saved application/game channels (e.g. Steam games)
-            if ch.get("type") in ("app", "sink") and ch.get("icon") in (
-                "", None, "audio-x-generic-symbolic", "audio-x-generic",
-                "applications-multimedia-symbolic", "input-gaming-symbolic",
-                "application-default-icon"
-            ):
-                new_ic = self.resolve_icon_for_app(ch.get("name", ""))
-                if new_ic and new_ic not in ("audio-x-generic-symbolic", "audio-card-symbolic"):
-                    ch["icon"] = new_ic
-                else:
-                    for assigned_app in self.assigned_apps.get(ch_id, []):
-                        new_ic = self.resolve_icon_for_app(assigned_app)
-                        if new_ic and new_ic not in ("audio-x-generic-symbolic", "audio-card-symbolic"):
-                            ch["icon"] = new_ic
-                            break
+            # Upgrade generic icons & game metadata for saved application/game channels
+            if ch.get("type") in ("app", "sink"):
+                if ch.get("icon") in (
+                    "", None, "audio-x-generic-symbolic", "audio-x-generic",
+                    "applications-multimedia-symbolic", "input-gaming-symbolic",
+                    "application-default-icon"
+                ):
+                    new_ic = self.resolve_icon_for_app(ch.get("name", ""))
+                    if new_ic and new_ic not in ("audio-x-generic-symbolic", "audio-card-symbolic"):
+                        ch["icon"] = new_ic
+                    else:
+                        for assigned_app in self.assigned_apps.get(ch_id, []):
+                            new_ic = self.resolve_icon_for_app(assigned_app)
+                            if new_ic and new_ic not in ("audio-x-generic-symbolic", "audio-card-symbolic"):
+                                ch["icon"] = new_ic
+                                break
+                if not ch.get("category"):
+                    ic_val = str(ch.get("icon", ""))
+                    s_aid = str(ch.get("steam_app_id", ""))
+                    if not s_aid and ic_val.startswith("steam_icon_"):
+                        s_aid = ic_val.replace("steam_icon_", "").strip()
+                    if not s_aid:
+                        s_aid = resolve_steam_app_id(ch.get("name", ""))
+                        if not s_aid:
+                            for assigned_app in self.assigned_apps.get(ch_id, []):
+                                s_aid = resolve_steam_app_id(assigned_app)
+                                if s_aid:
+                                    break
+                    if s_aid:
+                        ch["steam_app_id"] = s_aid
+                    if is_game_app_or_channel(
+                        name=ch.get("name", ""),
+                        steam_app_id=s_aid,
+                        category=ch.get("category", ""),
+                        icon=ic_val,
+                    ):
+                        ch["category"] = "game"
         self._save_state_to_config(immediate=False)
+        sync_installed_steam_icons_async()
 
     def _query_system_source_status(self):
         if hasattr(self, "source_manager") and self.source_manager:
@@ -1794,13 +1821,27 @@ class PipeWireManager:
                         effective_bin = binary or name.lower()
                         if exe_name and (not binary or bin_file in GENERIC_COMPATIBILITY_RUNNERS):
                             effective_bin = exe_name
+                        resolved_ic = icon or self.resolve_icon_for_app(name)
+                        s_aid = pid_meta.get("steam_app_id", "") or resolve_steam_app_id(name or steam_game_name)
+                        is_game = is_game_app_or_channel(
+                            name=name,
+                            binary=effective_bin,
+                            exe_name=exe_name,
+                            steam_app_id=s_aid,
+                            steam_game_name=steam_game_name,
+                            media_role=media_role,
+                            icon=resolved_ic,
+                        )
                         apps.append({
                             "id": node_id,
                             "name": name,
                             "binary": effective_bin,
                             "exe_name": exe_name,
                             "steam_game_name": steam_game_name,
-                            "icon": icon or self.resolve_icon_for_app(name)
+                            "steam_app_id": s_aid,
+                            "is_game": is_game,
+                            "running": True,
+                            "icon": resolved_ic
                         })
         except Exception:
             pass
@@ -1889,6 +1930,130 @@ class PipeWireManager:
     def get_detected_apps(self) -> list:
         """Discovers running audio applications from active PipeWire streams and desktop processes."""
         return self.get_active_application_streams()
+
+    def get_discoverable_games(self) -> list:
+        """
+        Returns a combined list of currently running games (pinned first) and installed Steam games
+        (when 'scan_steam_games' is enabled), with their resolved game icons.
+        """
+        if not config_manager.get("enable_game_channels", True):
+            return []
+
+        games = []
+        seen_names = set()
+        seen_appids = set()
+
+        running_streams = self.get_active_application_streams()
+        for app_info in running_streams:
+            if app_info.get("is_game") or is_game_app_or_channel(
+                name=app_info.get("name", ""),
+                binary=app_info.get("binary", ""),
+                exe_name=app_info.get("exe_name", ""),
+                steam_app_id=app_info.get("steam_app_id", ""),
+                steam_game_name=app_info.get("steam_game_name", ""),
+                icon=app_info.get("icon", ""),
+            ):
+                nm = app_info.get("name", "")
+                aid = str(app_info.get("steam_app_id", "") or resolve_steam_app_id(nm)).strip()
+                seen_names.add(nm.lower())
+                if aid:
+                    seen_appids.add(aid)
+                ic = app_info.get("icon", "")
+                if not ic or ic in ("audio-x-generic-symbolic", "audio-card-symbolic", "applications-multimedia-symbolic"):
+                    ic = resolve_steam_game_icon(nm, aid) or "input-gaming-symbolic"
+                item = dict(app_info)
+                item["steam_app_id"] = aid
+                item["is_game"] = True
+                item["running"] = True
+                item["icon"] = ic
+                games.append(item)
+
+        if config_manager.get("scan_steam_games", True):
+            manifests = _get_steam_manifests_map()
+            for aid, info in sorted(manifests.items(), key=lambda kv: kv[1].get("name", "").lower()):
+                gname = info.get("name", "").strip()
+                if not gname or gname.lower() in seen_names or aid in seen_appids:
+                    continue
+                seen_names.add(gname.lower())
+                seen_appids.add(aid)
+                ic = resolve_steam_game_icon(gname, aid) or "input-gaming-symbolic"
+                games.append({
+                    "id": None,
+                    "name": gname,
+                    "binary": info.get("installdir", gname),
+                    "exe_name": "",
+                    "steam_game_name": gname,
+                    "steam_app_id": aid,
+                    "is_game": True,
+                    "running": False,
+                    "icon": ic,
+                })
+
+        return games
+
+    def is_channel_game(self, channel_info_or_id) -> bool:
+        """Determines whether a channel represents a game channel (explicitly or via smart detection)."""
+        ch_info = None
+        if isinstance(channel_info_or_id, dict):
+            ch_info = channel_info_or_id
+        else:
+            ch_id_str = str(channel_info_or_id or "")
+            for c in self.channels:
+                if c.get("id") == ch_id_str:
+                    ch_info = c
+                    break
+        if not ch_info:
+            return False
+
+        ch_type = str(ch_info.get("type", "")).lower()
+        if ch_type in ("source", "virtual", "group"):
+            return False
+
+        if str(ch_info.get("category", "")).lower() == "game":
+            return True
+
+        ch_id = ch_info.get("id", "")
+        ch_name = ch_info.get("name", "")
+        ch_icon = ch_info.get("icon", "")
+        s_aid = str(ch_info.get("steam_app_id", "")).strip()
+
+        if is_game_app_or_channel(name=ch_name, steam_app_id=s_aid, icon=ch_icon):
+            ch_info["category"] = "game"
+            if not s_aid:
+                ch_info["steam_app_id"] = resolve_steam_app_id(ch_name)
+            return True
+
+        for assigned_app in self.assigned_apps.get(ch_id, []):
+            if is_game_app_or_channel(name=assigned_app):
+                ch_info["category"] = "game"
+                if not s_aid:
+                    ch_info["steam_app_id"] = resolve_steam_app_id(assigned_app)
+                return True
+
+        return False
+
+    def set_channel_banner_config(
+        self,
+        channel_id: str,
+        banner_enabled: bool = None,
+        custom_banner_path: str = None,
+        hide_title_overlay: bool = None
+    ):
+        """Updates per-channel banner artwork settings and persists them to config.json."""
+        with self._lock:
+            for ch in self.channels:
+                if ch.get("id") == channel_id:
+                    if banner_enabled is not None:
+                        ch["banner_enabled"] = bool(banner_enabled)
+                    if custom_banner_path is not None:
+                        if custom_banner_path:
+                            ch["custom_banner_path"] = str(custom_banner_path)
+                        else:
+                            ch.pop("custom_banner_path", None)
+                    if hide_title_overlay is not None:
+                        ch["hide_title_overlay"] = bool(hide_title_overlay)
+                    break
+            self._save_state_to_config(immediate=True)
 
     def assign_app_to_channel(self, channel_id: str, app_name: str):
         with self._lock:
@@ -3463,7 +3628,7 @@ class PipeWireManager:
     def get_channel_volume(self, channel_id: str, mix_id: str) -> int:
         return self.get_channel_state(channel_id, mix_id).get("volume", 80)
 
-    def add_channel(self, name: str, icon: str = None, ch_type: str = "sink", assigned_apps: list = None, sync_meter: bool = False, expose_sink: bool = False) -> dict:
+    def add_channel(self, name: str, icon: str = None, ch_type: str = "sink", assigned_apps: list = None, sync_meter: bool = False, expose_sink: bool = False, category: str = None, steam_app_id: str = None) -> dict:
         with self._lock:
             ch_id = re.sub(r'[^a-z0-9_]+', '_', name.lower()).strip('_') or f"ch_{len(self.channels)}"
             existing_ids = [c["id"] for c in self.channels]
@@ -3471,6 +3636,20 @@ class PipeWireManager:
                 ch_id = f"{ch_id}_{len(self.channels)}"
 
             resolved_icon = icon or self.resolve_icon_for_app(name)
+            s_aid = str(steam_app_id or "").strip() or resolve_steam_app_id(name)
+            if not s_aid and str(resolved_icon).startswith("steam_icon_"):
+                s_aid = str(resolved_icon).replace("steam_icon_", "").strip()
+
+            is_game = bool(
+                category == "game"
+                or (
+                    ch_type in ("app", "sink")
+                    and is_game_app_or_channel(name=name, steam_app_id=s_aid, category=category or "", icon=resolved_icon)
+                )
+            )
+            if is_game and resolved_icon in ("", None, "audio-x-generic-symbolic", "audio-card-symbolic", "applications-multimedia-symbolic"):
+                resolved_icon = resolve_steam_game_icon(name, s_aid) or "input-gaming-symbolic"
+
             default_vol = 80
             new_ch = {
                 "id": ch_id,
@@ -3481,6 +3660,10 @@ class PipeWireManager:
                 "sync_meter": sync_meter,
                 "expose_sink": bool(expose_sink)
             }
+            if is_game:
+                new_ch["category"] = "game"
+                if s_aid:
+                    new_ch["steam_app_id"] = s_aid
             self.channels.append(new_ch)
             self.channel_master_states[ch_id] = {
                 "volume": default_vol,
@@ -3557,9 +3740,20 @@ class PipeWireManager:
 
     def remove_channel(self, channel_id: str) -> bool:
         with self._lock:
-            ch_exists = any(c["id"] == channel_id for c in self.channels)
-            if not ch_exists:
+            target_ch = next((c for c in self.channels if c["id"] == channel_id), None)
+            if not target_ch:
                 return False
+
+            # Purge any downloaded SteamGridDB art and composed banners associated with this channel
+            try:
+                from wavecontroller.utils.game_artwork import purge_channel_artwork
+                purge_channel_artwork(
+                    channel_id=channel_id,
+                    steam_app_id=target_ch.get("steam_app_id", ""),
+                    game_name=target_ch.get("name", "")
+                )
+            except Exception as e:
+                log.debug(f"Artwork purge skipped during channel removal: {e}")
 
             was_system_default = config_manager.get("default_output_channel_id", "") == channel_id
 
@@ -4208,7 +4402,7 @@ class PipeWireManager:
         app_low = app_str.lower()
 
         cached = PipeWireManager._ICON_RESOLUTION_CACHE.get(app_low)
-        if cached:
+        if cached and cached != "audio-x-generic-symbolic":
             return cached
 
         # 1. Exact / Known application mappings

@@ -78,12 +78,20 @@ class WaveControllerApp(Adw.Application):
 
         win = self.props.active_window
         if not win:
-            win = WaveMainWindow(
-                self,
-                self.pipewire_mgr,
-                self.peak_monitor,
-                self.hardware_mgr
-            )
+            try:
+                win = WaveMainWindow(
+                    self,
+                    self.pipewire_mgr,
+                    self.peak_monitor,
+                    self.hardware_mgr
+                )
+            except Exception:
+                log.exception("Failed to construct WaveMainWindow")
+                raw_win = self.props.active_window
+                if raw_win:
+                    raw_win.destroy()
+                return
+
         win.set_visible(True)
         win.present()
 

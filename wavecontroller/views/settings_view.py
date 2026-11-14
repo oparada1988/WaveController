@@ -14,12 +14,13 @@ class SettingsView(Gtk.Box):
     """
     Application & Audio Engine Preferences.
     """
-    def __init__(self, hardware_mgr, pipewire_mgr=None, on_theme_changed=None, on_hw_defaults_changed=None):
+    def __init__(self, hardware_mgr, pipewire_mgr=None, on_theme_changed=None, on_hw_defaults_changed=None, on_game_settings_changed=None):
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=16)
         self.hardware_mgr = hardware_mgr
         self.pipewire_mgr = pipewire_mgr
         self.on_theme_changed = on_theme_changed
         self.on_hw_defaults_changed = on_hw_defaults_changed
+        self.on_game_settings_changed = on_game_settings_changed
 
         self.set_margin_top(20)
         self.set_margin_bottom(20)
@@ -184,6 +185,93 @@ class SettingsView(Gtk.Box):
         grp_gen.add(tray_row)
 
         pref_page.add(grp_gen)
+
+        # Group 2b: Gaming
+        grp_games = Adw.PreferencesGroup(title="Gaming")
+
+        games_cat_active = config_manager.get("enable_game_channels", True)
+        self.enable_games_row = Adw.SwitchRow(
+            title="Enable game channel category",
+            subtitle="Enable dedicated Game audio channels, Steam game discovery, and artwork"
+        )
+        self.enable_games_row.set_active(games_cat_active)
+
+        def _sync_game_rows_sensitivity(active: bool):
+            self.scan_steam_row.set_sensitive(active)
+            self.game_banners_row.set_sensitive(active)
+            self.sgdb_key_row.set_sensitive(active)
+
+        def _on_enable_games_toggled(row, param):
+            enabled = row.get_active()
+            config_manager.set("enable_game_channels", enabled, immediate=True)
+            _sync_game_rows_sensitivity(enabled)
+            if enabled and self.scan_steam_row.get_active():
+                try:
+                    from ..engine.graph.process_classifier import sync_installed_steam_icons_async
+                    sync_installed_steam_icons_async(on_complete=self.on_game_settings_changed)
+                except Exception:
+                    pass
+            if callable(self.on_game_settings_changed):
+                self.on_game_settings_changed()
+
+        self.enable_games_row.connect("notify::active", _on_enable_games_toggled)
+        grp_games.add(self.enable_games_row)
+
+        self.scan_steam_row = Adw.SwitchRow(
+            title="Scan for Steam Games",
+            subtitle="Discover installed Steam games and pre-cache their icons for Game channels"
+        )
+        self.scan_steam_row.set_active(config_manager.get("scan_steam_games", True))
+
+        def _on_scan_steam_toggled(row, param):
+            enabled = row.get_active()
+            config_manager.set("scan_steam_games", enabled, immediate=True)
+            if enabled:
+                try:
+                    from ..engine.graph.process_classifier import sync_installed_steam_icons_async
+                    sync_installed_steam_icons_async(on_complete=self.on_game_settings_changed)
+                except Exception:
+                    pass
+            if callable(self.on_game_settings_changed):
+                self.on_game_settings_changed()
+
+        self.scan_steam_row.connect("notify::active", _on_scan_steam_toggled)
+        grp_games.add(self.scan_steam_row)
+
+        self.game_banners_row = Adw.SwitchRow(
+            title="Enable Game Channel Banner Art",
+            subtitle="Display wide hero/banner artwork on game channels with automatic text &amp; icon contrast"
+        )
+        self.game_banners_row.set_active(config_manager.get("enable_game_banners", False))
+
+        def _on_game_banners_toggled(row, param):
+            enabled = row.get_active()
+            config_manager.set("enable_game_banners", enabled, immediate=True)
+            if callable(self.on_game_settings_changed):
+                self.on_game_settings_changed()
+
+        self.game_banners_row.connect("notify::active", _on_game_banners_toggled)
+        grp_games.add(self.game_banners_row)
+
+        self.sgdb_key_row = Adw.PasswordEntryRow(
+            title="SteamGridDB API Key (Optional)"
+        )
+        self.sgdb_key_row.set_text(config_manager.get("steamgriddb_api_key", "") or "")
+        self.sgdb_key_row.set_show_apply_button(True)
+
+        def _on_sgdb_key_applied(row):
+            val = row.get_text().strip()
+            config_manager.set("steamgriddb_api_key", val, immediate=True)
+            if callable(self.on_game_settings_changed):
+                self.on_game_settings_changed()
+
+        self.sgdb_key_row.connect("apply", _on_sgdb_key_applied)
+        self.sgdb_key_row.connect("changed", lambda r: config_manager.set("steamgriddb_api_key", r.get_text().strip(), immediate=False))
+        grp_games.add(self.sgdb_key_row)
+
+        _sync_game_rows_sensitivity(games_cat_active)
+
+        pref_page.add(grp_games)
 
         # Group 2: Stream Deck & Integration
         grp_sd = Adw.PreferencesGroup(title="Stream Deck &amp; Volume Controller Plus Integration")

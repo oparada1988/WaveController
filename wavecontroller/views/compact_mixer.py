@@ -7,6 +7,7 @@ import math
 from .stereo_slider import StereoSlider
 from .shortcuts_dialog import ShortcutsManager
 from ..engine.config_manager import config_manager
+from ..utils.game_artwork import set_gtk_image_safe
 from ..utils.logger import get_logger
 
 log = get_logger("CompactMixer")
@@ -246,8 +247,8 @@ class CompactChannelStrip(Gtk.Box):
 
         # 1. Channel Icon
         icon_name = self._resolve_icon()
-        self.icon_img = Gtk.Image.new_from_icon_name(icon_name)
-        self.icon_img.set_pixel_size(24)
+        self.icon_img = Gtk.Image()
+        set_gtk_image_safe(self.icon_img, icon_name, 24, fallback_icon="input-gaming-symbolic" if self.channel_info.get("category") == "game" else "audio-speakers-symbolic")
         self.icon_img.set_halign(Gtk.Align.CENTER)
         self.append(self.icon_img)
 
@@ -385,8 +386,8 @@ class CompactChannelRow(Gtk.Box):
 
         # 1. Channel Icon
         icon_name = self._resolve_icon()
-        self.icon_img = Gtk.Image.new_from_icon_name(icon_name)
-        self.icon_img.set_pixel_size(20)
+        self.icon_img = Gtk.Image()
+        set_gtk_image_safe(self.icon_img, icon_name, 20, fallback_icon="input-gaming-symbolic" if self.channel_info.get("category") == "game" else "audio-speakers-symbolic")
         self.icon_img.set_valign(Gtk.Align.CENTER)
         self.append(self.icon_img)
 

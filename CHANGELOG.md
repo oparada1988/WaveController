@@ -2,6 +2,52 @@
 
 All notable changes to WaveController are documented in this file.
 
+## [Unreleased] - 2026-11-14
+
+### Added
+- **Two-Zone ChannelCard Layout & Strict Vertical Control Alignment**:
+  - Re-architected `ChannelCard.header_box` into two strictly isolated horizontal containers: `left_info_box` (flexible ~315px width) and `right_controls_box` (strictly fixed 195px width, pinned with `halign=END`).
+  - Vertically locked the Settings Gear, Mute Button, Stereo Volume Slider (85px), and Link Button in identical horizontal columns across all channel cards, eliminating visual zigzagging across rows.
+  - Pinned Group Channel expand/collapse chevron inside `left_info_box` so opening member applications never displaces right-side controls.
+  - Implemented dynamic 3-tier font scaling for channel titles: standard 13.5px ($\le 13$ chars), compact 12.5px ($14 - 22$ chars), and extra-compact 11px ($> 22$ chars) with reduced letter spacing to prevent text clipping and dead space.
+  - Relocated hardware microphone quick-action badges (`48V` Phantom Power and `FX` Audio Effects) into a dedicated center quick-actions row with 6px spacing.
+  - Added multi-layer text shadows (`rgba(0, 0, 0, 0.95)`) and silver-white drag handle styling (`#F0F0FA`) to guarantee legibility over any background artwork.
+- **1:1 Edge-Aligned Custom Artwork Engine & Game Banners**:
+  - Added dedicated artwork processing pipeline in `wavecontroller/utils/game_artwork.py`.
+  - Implemented 1:1 edge alignment (`left = 0`, zero left crop) for custom banners designed at $510 \times 54\text{px}$ (or $1019 \times 107\text{px}$ @ 2x), completely eliminating image clipping on character faces and left-aligned art.
+  - Removed the 55% dark scrim overlay on custom artwork, restoring 100% true native brightness, warm lighting, and color vibrancy.
+  - Softened right-side alpha fade to $x = 320\text{px} \dots 480\text{px}$ so character art and game logos remain crisp across the card, fading smoothly only behind the right controls.
+  - Added **"Hide Title & Subtitle Overlay"** toggle switch in Channel Settings popover to hide plain system text for artwork featuring baked-in game logos, while preserving channel identification via header hover tooltip.
+  - Added on-demand SteamGridDB lifecycle: instant local Steam librarycache banners by default, explicit **"Download from SteamGridDB"** and **"Remove SteamGridDB Art"** buttons in Channel Settings.
+  - Added `purge_channel_artwork()` utility to automatically delete raw images and composed banner files upon channel deletion or artwork reset, ensuring zero orphaned disk clutter.
+- **Game Channel Popover & Subtitle Cleanups**:
+  - Restricted multi-app grouping ("Assigned Applications" and "+ Add Application to Group") strictly to Group Channels.
+  - Removed "Expose as System Audio Device" toggle from Game channels in compliance with Rule 10 (*Virtual Sound Card Gating*).
+  - Cleaned game channel subtitle text from internal executable tokens to a simple, elegant **"Game"** label.
+- **Global Settings — Gaming Section**:
+  - Added dedicated "Gaming" section in Settings view with an **"Enable game channel category"** toggle (`enable_game_channels`), allowing non-gamers to disable game channel scanning and conserve system/background resources.
+  - Integrated SteamGridDB API key management and settings persistence.
+- **Audio Flow Graph Polish**:
+  - Standardized interactive patch graph node icons for all detected game streams to a dedicated controller icon (`input-gaming-symbolic`).
+- **Hardware Support (Elgato Wave:3 & Wave XLR MK2)**:
+  - Added dedicated `elgato-wave-3-symbolic.svg` and `elgato-wave-mic-symbolic.svg` icons.
+  - Implemented deterministic USB PID matching (`0070` for Wave:3, `007d` for Wave XLR, `00b6` for Wave XLR MK2).
+  - Recognized Wave:3 duplex ALSA profiles (`stereo-fallback`, `pro-audio`) and enforced card profile once per session to eliminate the 2-second re-initialization loop.
+
+### Fixed
+- **PipeWire Crash & JSON Parser Hardening**:
+  - Implemented resilient `safe_pw_dump` using `json.JSONDecoder.raw_decode` in `pipewire_utils.py` to parse multi-document and concatenated JSON arrays without extra data errors.
+  - Serialized virtual node provisioning with `_virtual_nodes_lock` in `pipewire_manager.py` to eliminate concurrent duplicate node race conditions.
+  - Normalized `pw-dump` dictionaries to defend against `NoneType` info/props attributes across Cinnamon and other desktop environments.
+- **Routing & Idle Subprocess Churn**:
+  - Implemented short-TTL cache for `pw-dump` and optimized netlink hotplug idle polling.
+  - Deduplicated node volume/mute dispatch to eliminate idle subprocess churn.
+  - Excluded non-audio `v4l2`/`libcamera` capture ports from mic matching to prevent camera nodes from being hijacked as audio inputs.
+  - Restored unassigned desktop audio routing on channel deletion.
+  - Auto-bound physical Elgato Wave/USB mic capture ports and ensured `MultiChannelPeakMonitor` matches physical capture nodes for active VU telemetry.
+- **Window Presentation on Launch**:
+  - Hardened initial startup window lifecycle in `app.py` and `window.py` to ensure the main window appears properly focused on cold boot.
+
 ## [0.0.4.3] - 2026-10-27 (Pre-Alpha)
 
 ### Added
