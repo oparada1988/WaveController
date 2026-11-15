@@ -2,7 +2,7 @@ import os
 import gi
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
-from typing import Optional, Any
+from typing import Optional
 from gi.repository import Gtk, Gdk, Gio, GObject, Adw, GLib
 
 from .stereo_slider import StereoSlider
@@ -16,7 +16,6 @@ from ..utils.game_artwork import (
     has_steamgriddb_banner,
     get_steamgriddb_raw_path,
     purge_channel_artwork,
-    WC_BANNERS_DIR,
 )
 from ..utils.logger import get_logger
 

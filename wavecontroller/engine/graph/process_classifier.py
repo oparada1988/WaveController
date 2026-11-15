@@ -7,8 +7,6 @@ Ensures authoritative process binary disambiguation (Discord, Slack, Teams, Chro
 
 import os
 import re
-import json
-import subprocess
 import time
 import threading
 from wavecontroller.utils.pipewire_utils import safe_pw_dump, invalidate_pw_dump_cache

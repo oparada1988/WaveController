@@ -105,37 +105,29 @@ class StartupProfileRecoveryTests(unittest.TestCase):
             },
         }
 
+    @patch("wavecontroller.engine.usb_hardware.elgato_manager")
     @patch("wavecontroller.engine.usb_hardware.time.sleep")
-    @patch("wavecontroller.engine.usb_hardware.subprocess.run")
-    @patch("wavecontroller.engine.usb_hardware.safe_pw_dump")
-    def test_reopens_current_iec958_duplex_profile(self, dump, run, _sleep):
-        dump.return_value = [self.card]
-        run.return_value = SimpleNamespace(returncode=0, stdout="", stderr="")
+    def test_recover_audio_capture_success(self, _sleep, mock_elgato):
+        mock_elgato.recover_audio_capture.return_value = True
+        self.manager.detect_connected_hardware = Mock()
+        self.manager.apply_saved_hardware_settings = Mock()
+        self.manager.pipewire_mgr = Mock()
 
-        self.assertTrue(self.manager._reset_elgato_capture_profile_once())
-        self.assertEqual(
-            [call.args[0][-1] for call in run.call_args_list],
-            ["0", "3"],
-        )
+        result = self.manager.recover_audio_capture()
+        self.assertTrue(result)
+        mock_elgato.recover_audio_capture.assert_called_once()
+        self.manager.detect_connected_hardware.assert_called_once()
+        self.manager.apply_saved_hardware_settings.assert_called_once()
 
-    @patch("wavecontroller.engine.usb_hardware.subprocess.run")
-    @patch("wavecontroller.engine.usb_hardware.safe_pw_dump")
-    def test_profile_restore_failure_is_reported(self, dump, run):
-        dump.return_value = [self.card]
-        run.side_effect = [
-            SimpleNamespace(returncode=0, stdout="", stderr=""),
-            SimpleNamespace(returncode=1, stdout="", stderr="profile unavailable"),
-        ]
+    @patch("wavecontroller.engine.usb_hardware.elgato_manager")
+    def test_recover_audio_capture_failure(self, mock_elgato):
+        mock_elgato.recover_audio_capture.return_value = False
+        self.manager.detect_connected_hardware = Mock()
 
-        self.assertFalse(self.manager._reset_elgato_capture_profile_once())
-        self.assertEqual(run.call_count, 2)
-
-    @patch("wavecontroller.engine.usb_hardware.safe_pw_dump")
-    def test_missing_card_does_not_issue_profile_commands(self, dump):
-        dump.return_value = []
-        with patch("wavecontroller.engine.usb_hardware.subprocess.run") as run:
-            self.assertFalse(self.manager._reset_elgato_capture_profile_once())
-        run.assert_not_called()
+        result = self.manager.recover_audio_capture()
+        self.assertFalse(result)
+        mock_elgato.recover_audio_capture.assert_called_once()
+        self.manager.detect_connected_hardware.assert_not_called()
 
     @patch("wavecontroller.engine.usb_hardware.time.sleep")
     def test_missing_pcm_triggers_profile_recovery(self, _sleep):
@@ -143,12 +135,12 @@ class StartupProfileRecoveryTests(unittest.TestCase):
         self.manager.detect_connected_hardware = Mock()
         self.manager.pipewire_mgr = SimpleNamespace(peak_monitor=SimpleNamespace())
         self.manager._refresh_audio_graph_after_startup = Mock()
-        self.manager._reset_elgato_capture_profile_once = Mock(return_value=True)
+        self.manager.recover_audio_capture = Mock(return_value=True)
         with patch.object(self.manager, "_mic_capture_is_healthy", side_effect=[False] * 10 + [True]):
             with patch.object(self.manager, "_mic_capture_is_flowing", return_value=False):
                 self.manager._reset_elgato_capture_profile_after_startup()
 
-        self.manager._reset_elgato_capture_profile_once.assert_called_once_with()
+        self.manager.recover_audio_capture.assert_called_once_with()
         self.assertTrue(self.manager._startup_capture_recovery_done)
         self.manager._refresh_audio_graph_after_startup.assert_called_once_with()
 
@@ -158,13 +150,13 @@ class StartupProfileRecoveryTests(unittest.TestCase):
         self.manager.detect_connected_hardware = Mock()
         self.manager.pipewire_mgr = SimpleNamespace(peak_monitor=SimpleNamespace())
         self.manager._refresh_audio_graph_after_startup = Mock()
-        self.manager._reset_elgato_capture_profile_once = Mock(return_value=True)
+        self.manager.recover_audio_capture = Mock(return_value=True)
         self.manager._elgato_capture_is_muted = Mock(return_value=False)
         with patch.object(self.manager, "_mic_capture_is_healthy", side_effect=[False] * 10 + [True]):
             with patch.object(self.manager, "_mic_capture_is_flowing", return_value=True):
                 self.manager._reset_elgato_capture_profile_after_startup()
 
-        self.manager._reset_elgato_capture_profile_once.assert_called_once_with()
+        self.manager.recover_audio_capture.assert_called_once_with()
         self.assertTrue(self.manager._startup_capture_recovery_done)
         self.manager._refresh_audio_graph_after_startup.assert_called_once_with()
 
@@ -182,12 +174,12 @@ class StartupProfileRecoveryTests(unittest.TestCase):
         self.manager.detect_connected_hardware = Mock()
         self.manager.pipewire_mgr = SimpleNamespace(peak_monitor=SimpleNamespace())
         self.manager._refresh_audio_graph_after_startup = Mock()
-        self.manager._reset_elgato_capture_profile_once = Mock()
+        self.manager.recover_audio_capture = Mock()
         with patch.object(self.manager, "_mic_capture_is_healthy", return_value=False):
             with patch.object(self.manager, "_mic_capture_is_flowing", return_value=True):
                 self.manager._reset_elgato_capture_profile_after_startup()
 
-        self.manager._reset_elgato_capture_profile_once.assert_not_called()
+        self.manager.recover_audio_capture.assert_not_called()
         self.assertTrue(self.manager._startup_capture_recovery_done)
 
     @patch("wavecontroller.engine.usb_hardware.time.sleep")
@@ -196,11 +188,11 @@ class StartupProfileRecoveryTests(unittest.TestCase):
         self.manager.detect_connected_hardware = Mock()
         self.manager.pipewire_mgr = SimpleNamespace(peak_monitor=SimpleNamespace())
         self.manager._refresh_audio_graph_after_startup = Mock()
-        self.manager._reset_elgato_capture_profile_once = Mock()
+        self.manager.recover_audio_capture = Mock()
         with patch.object(self.manager, "_mic_capture_is_healthy", return_value=True):
             self.manager._reset_elgato_capture_profile_after_startup()
 
-        self.manager._reset_elgato_capture_profile_once.assert_not_called()
+        self.manager.recover_audio_capture.assert_not_called()
         self.assertTrue(self.manager._startup_capture_recovery_done)
 
 

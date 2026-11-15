@@ -3903,26 +3903,6 @@ class PipeWireManager:
                     return ch.get("sync_meter", False)
             return False
 
-    def move_channel_up(self, channel_id: str) -> bool:
-        """Moves a channel up by one position in the mixer matrix."""
-        with self._lock:
-            idx = next((i for i, c in enumerate(self.channels) if c["id"] == channel_id), -1)
-            if idx > 0:
-                self.channels[idx - 1], self.channels[idx] = self.channels[idx], self.channels[idx - 1]
-                self._save_state_to_config(immediate=True)
-                return True
-        return False
-
-    def move_channel_down(self, channel_id: str) -> bool:
-        """Moves a channel down by one position in the mixer matrix."""
-        with self._lock:
-            idx = next((i for i, c in enumerate(self.channels) if c["id"] == channel_id), -1)
-            if 0 <= idx < len(self.channels) - 1:
-                self.channels[idx + 1], self.channels[idx] = self.channels[idx], self.channels[idx + 1]
-                self._save_state_to_config(immediate=True)
-                return True
-        return False
-
     def reorder_channels_by_id(self, src_channel_id: str, dest_channel_id: str) -> bool:
         """Reorders channels by moving src_channel_id to the position of dest_channel_id."""
         with self._lock:

@@ -5,11 +5,6 @@ Specialized tracker for desktop media applications (Spotify, Chromium, Discord, 
 Authoritatively isolates multi-stream child processes and handles WirePlumber target bindings.
 """
 
-import re
-import json
-import subprocess
-from wavecontroller.engine.graph.process_classifier import get_match_tokens, port_matches_tokens
-from wavecontroller.engine.graph.stream_resolver import get_multi_stream_numeric_ports
 from wavecontroller.utils.logger import get_logger
 from wavecontroller.utils.pipewire_utils import safe_pw_dump
 
@@ -59,24 +54,3 @@ class AppStreamTracker:
         except Exception:
             pass
         return streams
-
-    def get_app_out_ports(self, assigned_apps: list, out_ports: list, port_meta: dict = None) -> list:
-        """
-        Returns exact numeric output ports for all assigned applications belonging to a channel strip.
-        """
-        app_out_ports = []
-        for app in assigned_apps:
-            tokens = get_match_tokens(app)
-            multi_ports = get_multi_stream_numeric_ports(tokens, port_meta=port_meta, out_ports=out_ports)
-            for item in multi_ports:
-                app_out_ports.append(item["port_id"])
-                
-            for p in out_ports:
-                clean_p = re.sub(r"^\d+\s+", "", p).strip()
-                if clean_p.startswith("output.WaveController_") or clean_p.startswith("WaveController_") or clean_p.startswith("wave_"):
-                    continue
-                if ":output_" in clean_p and port_matches_tokens(p, tokens, port_meta):
-                    p_id = p.split()[0] if p and p.split()[0].isdigit() else clean_p
-                    if p_id not in app_out_ports:
-                        app_out_ports.append(p_id)
-        return app_out_ports

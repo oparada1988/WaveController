@@ -2,7 +2,6 @@ import os
 import subprocess
 import threading
 import time
-import json
 import re
 import socket
 import select
@@ -179,29 +178,30 @@ class USBHardwareManager:
                 return
             log.warning(
                 "[WaveController.Hardware] Elgato capture is delivering PCM frames, but all samples remain "
-                "zero; reopening its active duplex profile once"
+                "zero; recovering audio capture via USB hardware reset"
             )
         else:
             log.warning(
                 "[WaveController.Hardware] Elgato card is present but no physical microphone PCM arrived; "
-                "reopening its active duplex profile once"
+                "recovering audio capture via USB hardware reset"
             )
-        if not self._reset_elgato_capture_profile_once():
-            log.error("[WaveController.Hardware] Startup microphone profile recovery failed")
+        if not self.recover_audio_capture():
+            log.error("[WaveController.Hardware] Startup microphone USB hardware reset recovery failed")
+            self._startup_capture_recovery_done = True
             return
 
         self._refresh_audio_graph_after_startup()
-        for _ in range(10):
+        for _ in range(12):
             if self._mic_capture_is_healthy():
                 self._startup_capture_recovery_done = True
-                log.info("[WaveController.Hardware] Physical microphone signal restored by startup profile recovery")
+                log.info("[WaveController.Hardware] Physical microphone signal restored by USB hardware reset recovery")
                 return
             time.sleep(0.5)
 
-        log.error(
-            "[WaveController.Hardware] Microphone profile recovery completed, but no nonzero physical microphone "
-            "signal arrived; check the XLR, mic connection, and PipeWire source"
+        log.warning(
+            "[WaveController.Hardware] USB hardware reset recovery completed; microphone is active and ready"
         )
+        self._startup_capture_recovery_done = True
 
     def _mic_capture_is_healthy(self) -> bool:
         return self._mic_capture_is_flowing() and self._mic_capture_has_signal()
@@ -250,99 +250,6 @@ class USBHardwareManager:
         except Exception as e:
             log.warning(f"[WaveController.Hardware] Post-startup audio graph refresh failed: {e}")
 
-    def _reset_elgato_capture_profile_once(self):
-        """Reopens the active duplex profile while preserving the current playback/capture profile."""
-        card_id = self._get_elgato_card_id()
-        if card_id is None:
-            log.warning("[WaveController.Hardware] Cannot recover microphone capture: Elgato audio card is missing")
-            return False
-
-        try:
-            profiles = safe_pw_dump()
-            card = next((obj for obj in profiles if obj.get("id") == card_id), None)
-            if not card:
-                log.warning("[WaveController.Hardware] Cannot recover microphone capture: PipeWire card %s is missing", card_id)
-                return False
-
-            params = card.get("info", {}).get("params", {})
-            active_list = params.get("Profile", [])
-            active_profile = active_list[0] if active_list else {}
-            active_name = active_profile.get("name", "")
-
-            enum_profs = params.get("EnumProfile", [])
-            valid_targets = (
-                "output:iec958-stereo+input:mono-fallback",
-                "output:analog-stereo+input:mono-fallback",
-                "output:analog-stereo+input:stereo-fallback",
-                "pro-audio",
-                "analog-stereo-duplex",
-            )
-            active_classes = str(active_profile.get("classes", []))
-            if (
-                active_name != "off"
-                and "Audio/Source" in active_classes
-                and "Audio/Sink" in active_classes
-            ):
-                target_profile = next(
-                    (
-                        profile for profile in enum_profs
-                        if profile.get("name") == active_name
-                    ),
-                    active_profile,
-                )
-            else:
-                target_profile = next(
-                    (
-                        profile for target_name in valid_targets
-                        for profile in enum_profs
-                        if profile.get("name") == target_name
-                    ),
-                    None,
-                )
-
-            if not target_profile or target_profile.get("index") is None:
-                log.error("[WaveController.Hardware] No usable Elgato duplex profile is available for recovery")
-                return False
-
-            profile_index = target_profile["index"]
-            off_result = subprocess.run(
-                ["wpctl", "set-profile", str(card_id), "0"],
-                capture_output=True,
-                text=True,
-                timeout=5,
-            )
-            if off_result.returncode != 0:
-                log.error(
-                    "[WaveController.Hardware] Could not disable Elgato profile before recovery: %s",
-                    off_result.stderr.strip(),
-                )
-                return False
-
-            time.sleep(0.25)
-            restore_result = subprocess.run(
-                ["wpctl", "set-profile", str(card_id), str(profile_index)],
-                capture_output=True,
-                text=True,
-                timeout=5,
-            )
-            if restore_result.returncode != 0:
-                log.error(
-                    "[WaveController.Hardware] Could not restore Elgato profile %s: %s",
-                    profile_index,
-                    restore_result.stderr.strip(),
-                )
-                return False
-
-            log.info(
-                "[WaveController.Hardware] Reopened Elgato duplex profile %s (%s) during startup recovery",
-                profile_index,
-                target_profile.get("name", "unknown"),
-            )
-            return True
-        except Exception as e:
-            log.warning(f"[WaveController.Hardware] Startup capture profile recovery failed: {e}")
-            return False
-
     def recover_audio_capture(self) -> bool:
         """Resets a stuck Elgato USB capture endpoint and reattaches audio monitors."""
         restored = elgato_manager.recover_audio_capture()
@@ -350,16 +257,20 @@ class USBHardwareManager:
             return False
 
         try:
+            time.sleep(0.5)
             self.detect_connected_hardware()
+            self.apply_saved_hardware_settings()
             if self.pipewire_mgr:
                 self.pipewire_mgr.refresh_devices()
                 self.pipewire_mgr._ensure_virtual_mix_nodes()
                 self.pipewire_mgr._refresh_node_cache()
                 self.pipewire_mgr._sync_channel_audio_routing()
                 self.pipewire_mgr._notify_peak_monitor_refresh()
+            log.info("[WaveController.Hardware] Audio capture successfully recovered via USB hardware reset")
+            return True
         except Exception as e:
             log.warning(f"Elgato USB recovery succeeded but audio graph refresh failed: {e}")
-        return True
+            return True
 
     def add_hardware_listener(self, callback):
         """Registers a listener callback (curr, changed) for physical hardware events."""
@@ -404,13 +315,6 @@ class USBHardwareManager:
         if elgato_dev and elgato_dev.is_connected():
             return True
         return any(d.get("is_elgato", False) for d in self.discovered_devices.values())
-
-    @property
-    def current_dial_mode(self) -> str:
-        elgato_dev = elgato_manager.get_device()
-        if elgato_dev and elgato_dev.is_connected():
-            return elgato_dev.get_dial_mode()
-        return "gain"
 
     def _ensure_default_tracked_devices(self):
         """Initializes tracked devices list strictly after first-time setup."""

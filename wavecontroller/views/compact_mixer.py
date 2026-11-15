@@ -812,8 +812,10 @@ class CompactMixerWindow(Adw.Window):
         self._apply_geometry_for_layout()
 
         # Telemetry Tick Timer (~40 FPS for smooth VU meters without CPU overhead)
-        self._tick_source = GLib.timeout_add(25, self._on_ui_tick)
+        self._tick_source = None
+        self.connect("notify::visible", self._on_visible_changed)
         self.connect("destroy", lambda w: self.cleanup())
+        self._start_tick_timer()
 
         # External IPC & Hardware Event Listeners
         if self.pipewire_mgr and hasattr(self.pipewire_mgr, "add_external_change_listener"):
@@ -1202,11 +1204,24 @@ class CompactMixerWindow(Adw.Window):
             self.restore_callback()
         return True
 
-    def cleanup(self):
-        """Cancels tick timers and detaches resources on destruction."""
-        if hasattr(self, "_tick_source") and self._tick_source is not None:
+    def _start_tick_timer(self):
+        if getattr(self, "_tick_source", None) is None:
+            self._tick_source = GLib.timeout_add(25, self._on_ui_tick)
+
+    def _stop_tick_timer(self):
+        if getattr(self, "_tick_source", None) is not None:
             GLib.source_remove(self._tick_source)
             self._tick_source = None
+
+    def _on_visible_changed(self, win, _param):
+        if self.get_visible():
+            self._start_tick_timer()
+        else:
+            self._stop_tick_timer()
+
+    def cleanup(self):
+        """Cancels tick timers and detaches resources on destruction."""
+        self._stop_tick_timer()
         if hasattr(self, "pipewire_mgr") and self.pipewire_mgr and hasattr(self.pipewire_mgr, "remove_external_change_listener"):
             self.pipewire_mgr.remove_external_change_listener(self._on_external_sync)
         if hasattr(self, "_hw_listener") and self.hardware_mgr and hasattr(self.hardware_mgr, "remove_hardware_listener"):

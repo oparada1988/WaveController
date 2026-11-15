@@ -192,6 +192,7 @@ class WaveMainWindow(Adw.ApplicationWindow):
             ("F1", lambda: self.show_shortcuts_window()),
             ("<Control>question", lambda: self.show_shortcuts_window()),
             ("<Control>slash", lambda: self.show_shortcuts_window()),
+            ("Escape", lambda: self._on_escape_pressed()),
         ]
 
         for trigger_str, cb in shortcuts:
@@ -201,6 +202,17 @@ class WaveMainWindow(Adw.ApplicationWindow):
                 ctrl.add_shortcut(shortcut)
 
         self.add_controller(ctrl)
+
+    def _on_escape_pressed(self):
+        """Contextually dismisses active transient UI layers (FX Sidebar or Audio Flow node selection)."""
+        if hasattr(self, "mixer_view") and hasattr(self.mixer_view, "fx_revealer"):
+            if self.mixer_view.fx_revealer.get_reveal_child():
+                self.mixer_view._hide_fx_sidebar()
+                return
+        if hasattr(self, "audio_flow_view") and hasattr(self.audio_flow_view, "canvas"):
+            if getattr(self.audio_flow_view.canvas, "selected_node", None) is not None:
+                self.audio_flow_view.canvas.select_node(None)
+                return
 
     def show_shortcuts_window(self):
         """Displays the native GTK4/Libadwaita Keyboard Shortcuts overview dialog."""

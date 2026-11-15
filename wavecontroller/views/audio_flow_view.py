@@ -739,6 +739,7 @@ class AudioFlowCanvas(Gtk.DrawingArea):
         if saved_settings.get("cable_gap"):
             self.cable_gap = max(4, float(saved_settings["cable_gap"]))
 
+        self._stage_counts = {stage["id"]: sum(1 for n in self.nodes.values() if n.stage == stage["id"]) for stage in STAGES}
         self.update_port_fanout()
         self.queue_draw()
 
@@ -984,7 +985,7 @@ class AudioFlowCanvas(Gtk.DrawingArea):
             sw = CARD_WIDTH
             sh = 36
 
-            count = sum(1 for n in self.nodes.values() if n.stage == stage["id"])
+            count = getattr(self, "_stage_counts", {}).get(stage["id"], 0)
             dot_clr = stage_colors.get(stage["id"], (0.5, 0.5, 0.5))
 
             cr.save()
@@ -2006,10 +2007,6 @@ class AudioFlowView(Gtk.Box):
             btn.add_css_class("dimmed-fx")
             btn.remove_css_class("active-fx")
             btn.set_tooltip_text("Audio Effects Bypassed (Click to open FX Rack)")
-
-    def attach_mixer_view(self, mixer_view):
-        self.mixer_view = mixer_view
-        self._connect_popovers()
 
     def _connect_popovers(self):
         if not self.mixer_view:

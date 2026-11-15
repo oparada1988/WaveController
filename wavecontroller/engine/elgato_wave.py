@@ -1213,9 +1213,14 @@ class ElgatoManager:
             dev.reset_usb()
             dev.disconnect()
             self.active_device = None
-            time.sleep(0.25)
+            time.sleep(0.5)
             _reinit_libusb_after_resume()
-            restored = self.detect_device()
+            restored = None
+            for _ in range(12):
+                time.sleep(0.25)
+                restored = self.detect_device()
+                if restored and restored.is_connected():
+                    break
             return bool(restored and restored.is_connected())
 
     def on_system_suspend(self):
