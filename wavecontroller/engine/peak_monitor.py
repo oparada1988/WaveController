@@ -2,7 +2,14 @@ import re
 import subprocess
 import threading
 import time
-from wavecontroller.engine.metering.capture_driver import open_pw_record, drain_and_calc_peaks
+from wavecontroller.engine.metering.capture_driver import (
+    drain_and_calc_peaks,
+    drain_and_calc_peaks_with_activity,
+    open_pw_record,
+)
+from wavecontroller.utils.logger import get_logger
+
+log = get_logger("PeakMonitor")
 
 class MultiChannelPeakMonitor:
     """
@@ -21,6 +28,10 @@ class MultiChannelPeakMonitor:
         self._lock = threading.Lock()
         self.pipewire_mgr = pipewire_mgr
         self.hardware_mgr = hardware_mgr
+        self._mic_last_data_time = None
+        self._mic_no_data_since = None
+        self._mic_no_data_warning_emitted = False
+        self._mic_data_seen = False
         # Per-channel isolated monitor processes and smoothed peak state
         self._channel_procs = {}  # {channel_id: subprocess.Popen}
         self._channel_proc_channels = {}  # {channel_id: int}
@@ -46,6 +57,12 @@ class MultiChannelPeakMonitor:
     def trigger_refresh(self):
         """Signals the background discovery worker to immediately re-evaluate active audio channels and stream targets without blocking the capture loop."""
         self._refresh_event.set()
+
+    def is_mic_capture_flowing(self, max_age: float = 1.5) -> bool:
+        """Reports whether PCM frames recently arrived from the physical microphone source."""
+        with self._lock:
+            last_data_time = self._mic_last_data_time
+        return last_data_time is not None and time.monotonic() - last_data_time <= max_age
 
     def stop(self):
         self.running = False
@@ -248,6 +265,9 @@ class MultiChannelPeakMonitor:
 
     def _drain_and_calc_peaks(self, proc, channels: int = 2):
         return drain_and_calc_peaks(proc, channels=channels)
+
+    def _drain_mic_capture(self, proc, channels: int = 2) -> tuple[float, float, bool]:
+        return drain_and_calc_peaks_with_activity(proc, channels=channels)
 
     def _refresh_channel_monitors(self):
         """Discovers active WaveController_Channel_* sinks and physical input sources, spawning/pruning per-channel pw-record processes."""
@@ -591,15 +611,26 @@ class MultiChannelPeakMonitor:
 
         if need_mic_restart:
             if old_mic_proc:
+                exit_status = old_mic_proc.poll()
+                if exit_status is not None:
+                    log.warning("Physical microphone capture process exited with status %s; restarting", exit_status)
                 try:
                     old_mic_proc.terminate()
                 except Exception:
                     pass
-            new_mic_proc = self._open_pw_record('wave_mic_monitor', target=curr_target, channels=curr_ch)
+            new_mic_proc = (
+                self._open_pw_record('wave_mic_monitor', target=curr_target, channels=curr_ch)
+                if curr_target
+                else None
+            )
             with self._lock:
                 self.mic_target = curr_target
                 self.mic_channels = curr_ch
                 self.mic_proc = new_mic_proc
+                self._mic_last_data_time = None
+                self._mic_no_data_since = None
+                self._mic_no_data_warning_emitted = False
+                self._mic_data_seen = False
 
         curr_sink_target = self._discover_sink_target()
         with self._lock:
@@ -636,7 +667,32 @@ class MultiChannelPeakMonitor:
                     s_proc = self.sink_proc
                     ch_items = list(self._channel_procs.items())
 
-                raw_ml, raw_mr = self._drain_and_calc_peaks(m_proc, channels=m_ch)
+                raw_ml, raw_mr, mic_data_received = self._drain_mic_capture(m_proc, channels=m_ch)
+                if m_proc and m_proc.poll() is None:
+                    now = time.monotonic()
+                    if mic_data_received:
+                        with self._lock:
+                            self._mic_last_data_time = now
+                            self._mic_no_data_since = None
+                            self._mic_no_data_warning_emitted = False
+                            first_data = not self._mic_data_seen
+                            self._mic_data_seen = True
+                        if first_data:
+                            log.info("Physical microphone capture is delivering PCM frames")
+                    else:
+                        with self._lock:
+                            if self._mic_no_data_since is None:
+                                self._mic_no_data_since = now
+                            stalled_for = now - self._mic_no_data_since
+                            should_warn = stalled_for >= 5.0 and not self._mic_no_data_warning_emitted
+                            if should_warn:
+                                self._mic_no_data_warning_emitted = True
+                        if should_warn:
+                            log.warning(
+                                "Physical microphone capture process is running but has delivered no PCM frames "
+                                "for %.1f seconds; this indicates missing/stalled capture, not acoustic silence",
+                                stalled_for,
+                            )
                 raw_sl, raw_sr = self._drain_and_calc_peaks(s_proc, channels=2)
 
                 # Read per-channel monitor peaks for all active channel sinks

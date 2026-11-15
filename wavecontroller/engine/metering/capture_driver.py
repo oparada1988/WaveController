@@ -9,7 +9,11 @@ import os
 import math
 import array
 import fcntl
+import logging
 import subprocess
+import threading
+
+log = logging.getLogger("WaveController.PeakMonitor")
 
 def calc_perceptual_peak(peak_raw: float, rms: float) -> float:
     """Translates raw linear PCM samples into studio-grade decibel/perceptual meter levels.
@@ -62,19 +66,49 @@ def open_pw_record(node_name: str, target: str = None, channels: int = 2, is_sin
     if target and (is_target_sink or is_target_alsa_source):
         cmd.extend(['--target', target])
     cmd.append('-')
+    proc = None
     try:
-        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        if proc.stdout is None:
+            raise RuntimeError("PipeWire capture process has no PCM output stream")
         fd = proc.stdout.fileno()
         flags = fcntl.fcntl(fd, fcntl.F_GETFL)
         fcntl.fcntl(fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
+        threading.Thread(
+            target=_log_process_errors,
+            args=(proc.stderr, node_name),
+            daemon=True,
+        ).start()
         return proc
-    except Exception:
+    except Exception as e:
+        if proc:
+            try:
+                proc.terminate()
+            except OSError:
+                pass
+        log.error("Failed to start PipeWire capture for %s: %s", node_name, e)
         return None
 
-def drain_and_calc_peaks(proc, channels: int = 2) -> tuple:
+
+def _log_process_errors(stderr, node_name: str):
+    if stderr is None:
+        return
+    try:
+        for line in stderr:
+            message = line.strip()
+            if message:
+                log.warning("PipeWire capture for %s: %s", node_name, message)
+    except OSError as e:
+        log.warning("Could not read PipeWire capture diagnostics for %s: %s", node_name, e)
+
+
+def drain_and_calc_peaks_with_activity(proc, channels: int = 2) -> tuple[float, float, bool]:
     """Non-blocking high-speed drain of PCM audio buffer from a running pw-record process."""
     if not proc or proc.poll() is not None:
-        return 0.0, 0.0
+        return 0.0, 0.0, False
+
+    if proc.stdout is None:
+        return 0.0, 0.0, False
 
     fd = proc.stdout.fileno()
     all_data = []
@@ -84,25 +118,33 @@ def drain_and_calc_peaks(proc, channels: int = 2) -> tuple:
             if not chunk:
                 break
             all_data.append(chunk)
-        except (BlockingIOError, InterruptedError, OSError):
+        except (BlockingIOError, InterruptedError):
+            break
+        except OSError as e:
+            if not getattr(proc, "_wavecontroller_pcm_read_error_logged", False):
+                proc._wavecontroller_pcm_read_error_logged = True
+                log.warning("Could not read PipeWire PCM capture stream: %s", e)
             break
 
     if not all_data:
-        return 0.0, 0.0
+        return 0.0, 0.0, False
 
     combined = b"".join(all_data)
     if len(combined) < 2:
-        return 0.0, 0.0
+        return 0.0, 0.0, False
 
     if len(combined) % 2 != 0:
         combined = combined[:-1]
+
+    if channels != 1 and len(combined) < 4:
+        return 0.0, 0.0, False
 
     # Analyze the most recent audio window (up to last 8192 bytes ≈ 42ms)
     window = combined[-8192:] if len(combined) > 8192 else combined
     samples = array.array('h', window)
     n_samples = len(samples)
     if n_samples < 1:
-        return 0.0, 0.0
+        return 0.0, 0.0, True
 
     # Mono 1-channel capture
     if channels == 1:
@@ -116,7 +158,7 @@ def drain_and_calc_peaks(proc, channels: int = 2) -> tuple:
         rms = math.sqrt(sum_sq / n_samples) / 32768.0
         peak_raw = peak_val / 32768.0
         val = calc_perceptual_peak(peak_raw, rms)
-        return val, val
+        return val, val, True
 
     # Stereo 2-channel interleaved capture
     sum_sq_l = 0
@@ -125,7 +167,7 @@ def drain_and_calc_peaks(proc, channels: int = 2) -> tuple:
     peak_val_r = 0
     n_pairs = n_samples // 2
     if n_pairs < 1:
-        return 0.0, 0.0
+        return 0.0, 0.0, True
 
     for i in range(0, n_samples - 1, 2):
         sl = samples[i]
@@ -146,4 +188,10 @@ def drain_and_calc_peaks(proc, channels: int = 2) -> tuple:
 
     val_l = calc_perceptual_peak(peak_l_raw, rms_l)
     val_r = calc_perceptual_peak(peak_r_raw, rms_r)
-    return val_l, val_r
+    return val_l, val_r, True
+
+
+def drain_and_calc_peaks(proc, channels: int = 2) -> tuple[float, float]:
+    """Non-blocking high-speed drain of PCM audio and return perceptual peaks."""
+    left, right, _ = drain_and_calc_peaks_with_activity(proc, channels=channels)
+    return left, right

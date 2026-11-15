@@ -2,6 +2,15 @@
 
 All notable changes to WaveController are documented in this file.
 
+## [Unreleased]
+
+### Fixed
+- **Cold-Boot Microphone Capture Recovery**:
+  - Wait for the physical microphone PCM stream before deciding startup recovery is complete; retry device discovery and reopen the existing duplex profile at most once if capture frames do not arrive.
+  - Preserve the active Wave XLR IEC958 duplex profile during recovery, report PipeWire capture-process errors, and distinguish missing PCM frames from valid silent audio.
+  - Restrict the Elgato hardware initializer udev hook to USB-device add events and avoid invoking it for Stream Deck devices.
+  - Report failed or incomplete libusb reads and writes from the boot hardware initializer.
+
 ## [0.0.5.0] - 2026-11-14 (Alpha 5)
 
 ### Added

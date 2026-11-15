@@ -171,6 +171,7 @@ def apply_hardware_settings():
 
     lib, ctx = init_libusb()
     if not lib or not ctx:
+        print("[WaveController Boot Init] Failed to initialize libusb", file=sys.stderr)
         sys.exit(1)
 
     devices_configured = 0
@@ -180,9 +181,20 @@ def apply_hardware_settings():
             continue
 
         try:
-            lib.libusb_claim_interface(handle, 3)
-        except Exception:
-            pass
+            claim_result = lib.libusb_claim_interface(handle, 3)
+        except Exception as e:
+            print(
+                f"[WaveController Boot Init] Warning: Could not claim interface 3 for {prof['name']}: {e}; "
+                "trying control transfer",
+                file=sys.stderr,
+            )
+        else:
+            if claim_result != 0:
+                print(
+                    f"[WaveController Boot Init] Warning: Could not claim interface 3 for {prof['name']} "
+                    f"(libusb error {claim_result}); trying control transfer",
+                    file=sys.stderr,
+                )
 
         try:
             # 1. Read current config buffer
@@ -193,6 +205,18 @@ def apply_hardware_settings():
                 buf, length, 1000
             )
             if ret < 0:
+                print(
+                    f"[WaveController Boot Init] Failed to read {prof['name']} configuration "
+                    f"(libusb error {ret})",
+                    file=sys.stderr,
+                )
+                continue
+            if ret != length:
+                print(
+                    f"[WaveController Boot Init] Incomplete {prof['name']} configuration "
+                    f"({ret}/{length} bytes)",
+                    file=sys.stderr,
+                )
                 continue
 
             cfg = bytearray(buf[:ret])
@@ -268,10 +292,17 @@ def apply_hardware_settings():
 
             # 12. Send Write Control Transfer
             write_buf = (ctypes.c_ubyte * len(cfg))(*cfg)
-            lib.libusb_control_transfer(
+            write_result = lib.libusb_control_transfer(
                 handle, RT_CLASS_OUT, BREQUEST_WRITE, prof["wvalue_config"], prof["windex"],
                 write_buf, len(cfg), 1000
             )
+            if write_result != len(cfg):
+                print(
+                    f"[WaveController Boot Init] Failed to write {prof['name']} configuration "
+                    f"({write_result}/{len(cfg)} bytes)",
+                    file=sys.stderr,
+                )
+                continue
             devices_configured += 1
             print(f"[WaveController Boot Init] Successfully initialized {prof['name']} -> Gain: {gain_db}dB, HP Vol: {hp_pct}%, 48V: {phantom}")
         except Exception as e:
