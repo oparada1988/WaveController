@@ -160,34 +160,76 @@ class USBHardwareManager:
             log.warning("[WaveController.Hardware] Elgato audio card was not available during startup recovery")
             return
 
-        for _ in range(6):
-            if self._mic_capture_is_flowing():
+        for _ in range(10):
+            if self._mic_capture_is_healthy():
                 self._startup_capture_recovery_done = True
-                log.info("[WaveController.Hardware] Physical microphone PCM verified during startup")
+                log.info("[WaveController.Hardware] Physical microphone signal verified during startup")
                 self._refresh_audio_graph_after_startup()
                 return
             time.sleep(0.5)
 
-        log.warning(
-            "[WaveController.Hardware] Elgato card is present but no physical microphone PCM arrived; "
-            "reopening its active duplex profile once"
-        )
+        if self._mic_capture_is_flowing():
+            if self._elgato_capture_is_muted(card_id):
+                self._startup_capture_recovery_done = True
+                log.info(
+                    "[WaveController.Hardware] Elgato microphone source is muted in PipeWire; PCM delivery verified, "
+                    "skipping zero-sample recovery"
+                )
+                self._refresh_audio_graph_after_startup()
+                return
+            log.warning(
+                "[WaveController.Hardware] Elgato capture is delivering PCM frames, but all samples remain "
+                "zero; reopening its active duplex profile once"
+            )
+        else:
+            log.warning(
+                "[WaveController.Hardware] Elgato card is present but no physical microphone PCM arrived; "
+                "reopening its active duplex profile once"
+            )
         if not self._reset_elgato_capture_profile_once():
             log.error("[WaveController.Hardware] Startup microphone profile recovery failed")
             return
 
         self._refresh_audio_graph_after_startup()
         for _ in range(10):
-            if self._mic_capture_is_flowing():
+            if self._mic_capture_is_healthy():
                 self._startup_capture_recovery_done = True
-                log.info("[WaveController.Hardware] Physical microphone PCM restored by startup profile recovery")
+                log.info("[WaveController.Hardware] Physical microphone signal restored by startup profile recovery")
                 return
             time.sleep(0.5)
 
         log.error(
-            "[WaveController.Hardware] Microphone profile recovery completed, but no physical microphone PCM "
-            "arrived; check the XLR, mic connection, and PipeWire source"
+            "[WaveController.Hardware] Microphone profile recovery completed, but no nonzero physical microphone "
+            "signal arrived; check the XLR, mic connection, and PipeWire source"
         )
+
+    def _mic_capture_is_healthy(self) -> bool:
+        return self._mic_capture_is_flowing() and self._mic_capture_has_signal()
+
+    def _mic_capture_has_signal(self) -> bool:
+        peak_monitor = getattr(self.pipewire_mgr, "peak_monitor", None) if self.pipewire_mgr else None
+        has_signal = getattr(peak_monitor, "is_mic_capture_signal_present", None)
+        return bool(has_signal and has_signal())
+
+    def _mic_capture_is_flowing(self) -> bool:
+        peak_monitor = getattr(self.pipewire_mgr, "peak_monitor", None) if self.pipewire_mgr else None
+        is_flowing = getattr(peak_monitor, "is_mic_capture_flowing", None)
+        return bool(is_flowing and is_flowing())
+
+    def _elgato_capture_is_muted(self, card_id: int) -> bool:
+        """Returns True when the Elgato capture node is muted in PipeWire, where all-zero PCM is expected."""
+        try:
+            for obj in safe_pw_dump():
+                info = obj.get("info") or {}
+                props = info.get("props") or {}
+                if str(props.get("device.id")) != str(card_id) or props.get("media.class") != "Audio/Source":
+                    continue
+                node_props = (info.get("params") or {}).get("Props") or []
+                if any(isinstance(p, dict) and (p.get("mute") or p.get("softMute")) for p in node_props):
+                    return True
+        except Exception as e:
+            log.warning("[WaveController.Hardware] Could not read Elgato microphone mute state: %s", e)
+        return False
 
     def _get_elgato_card_id(self) -> int | None:
         return next(
@@ -198,11 +240,6 @@ class USBHardwareManager:
             ),
             None,
         )
-
-    def _mic_capture_is_flowing(self) -> bool:
-        peak_monitor = getattr(self.pipewire_mgr, "peak_monitor", None) if self.pipewire_mgr else None
-        is_flowing = getattr(peak_monitor, "is_mic_capture_flowing", None)
-        return bool(is_flowing and is_flowing())
 
     def _refresh_audio_graph_after_startup(self):
         try:

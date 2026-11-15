@@ -15,6 +15,11 @@ import threading
 
 log = logging.getLogger("WaveController.PeakMonitor")
 
+# pw-record writes a Sun AU header (".snd", or "dns." when little-endian) before PCM sent to a pipe.
+_AU_HEADER_BYTEORDER = {b".snd": "big", b"dns.": "little"}
+_AU_MIN_HEADER_SIZE = 24
+_AU_MAX_HEADER_SIZE = 4096
+
 def calc_perceptual_peak(peak_raw: float, rms: float) -> float:
     """Translates raw linear PCM samples into studio-grade decibel/perceptual meter levels.
     
@@ -102,13 +107,45 @@ def _log_process_errors(stderr, node_name: str):
         log.warning("Could not read PipeWire capture diagnostics for %s: %s", node_name, e)
 
 
-def drain_and_calc_peaks_with_activity(proc, channels: int = 2) -> tuple[float, float, bool]:
-    """Non-blocking high-speed drain of PCM audio buffer from a running pw-record process."""
+def _strip_stream_header(proc, data: bytes) -> bytes:
+    """Remove the AU header from the start of a pw-record stream so it is never analyzed as PCM."""
+    if getattr(proc, "_wavecontroller_header_done", False):
+        return data
+
+    pending = getattr(proc, "_wavecontroller_header_pending", b"") + data
+    byteorder = _AU_HEADER_BYTEORDER.get(pending[:4])
+    if byteorder is None:
+        if len(pending) < 4 and any(magic.startswith(pending) for magic in _AU_HEADER_BYTEORDER):
+            proc._wavecontroller_header_pending = pending
+            return b""
+        proc._wavecontroller_header_done = True
+        proc._wavecontroller_header_pending = b""
+        return pending
+
+    if len(pending) < 8:
+        proc._wavecontroller_header_pending = pending
+        return b""
+    header_size = int.from_bytes(pending[4:8], byteorder)
+    if not _AU_MIN_HEADER_SIZE <= header_size <= _AU_MAX_HEADER_SIZE:
+        header_size = _AU_MIN_HEADER_SIZE
+    if len(pending) < header_size:
+        proc._wavecontroller_header_pending = pending
+        return b""
+
+    proc._wavecontroller_header_done = True
+    proc._wavecontroller_header_pending = b""
+    return pending[header_size:]
+
+
+def drain_and_calc_peaks_with_activity(
+    proc, channels: int = 2
+) -> tuple[float, float, bool, bool]:
+    """Return perceptual peaks, whether PCM arrived, and whether any sample was nonzero."""
     if not proc or proc.poll() is not None:
-        return 0.0, 0.0, False
+        return 0.0, 0.0, False, False
 
     if proc.stdout is None:
-        return 0.0, 0.0, False
+        return 0.0, 0.0, False, False
 
     fd = proc.stdout.fileno()
     all_data = []
@@ -127,24 +164,25 @@ def drain_and_calc_peaks_with_activity(proc, channels: int = 2) -> tuple[float, 
             break
 
     if not all_data:
-        return 0.0, 0.0, False
+        return 0.0, 0.0, False, False
 
-    combined = b"".join(all_data)
+    combined = _strip_stream_header(proc, b"".join(all_data))
     if len(combined) < 2:
-        return 0.0, 0.0, False
+        return 0.0, 0.0, False, False
 
     if len(combined) % 2 != 0:
         combined = combined[:-1]
 
     if channels != 1 and len(combined) < 4:
-        return 0.0, 0.0, False
+        return 0.0, 0.0, False, False
 
     # Analyze the most recent audio window (up to last 8192 bytes ≈ 42ms)
     window = combined[-8192:] if len(combined) > 8192 else combined
     samples = array.array('h', window)
     n_samples = len(samples)
     if n_samples < 1:
-        return 0.0, 0.0, True
+        return 0.0, 0.0, True, False
+    has_signal = any(samples)
 
     # Mono 1-channel capture
     if channels == 1:
@@ -158,7 +196,7 @@ def drain_and_calc_peaks_with_activity(proc, channels: int = 2) -> tuple[float, 
         rms = math.sqrt(sum_sq / n_samples) / 32768.0
         peak_raw = peak_val / 32768.0
         val = calc_perceptual_peak(peak_raw, rms)
-        return val, val, True
+        return val, val, True, has_signal
 
     # Stereo 2-channel interleaved capture
     sum_sq_l = 0
@@ -167,7 +205,7 @@ def drain_and_calc_peaks_with_activity(proc, channels: int = 2) -> tuple[float, 
     peak_val_r = 0
     n_pairs = n_samples // 2
     if n_pairs < 1:
-        return 0.0, 0.0, True
+        return 0.0, 0.0, True, has_signal
 
     for i in range(0, n_samples - 1, 2):
         sl = samples[i]
@@ -188,10 +226,10 @@ def drain_and_calc_peaks_with_activity(proc, channels: int = 2) -> tuple[float, 
 
     val_l = calc_perceptual_peak(peak_l_raw, rms_l)
     val_r = calc_perceptual_peak(peak_r_raw, rms_r)
-    return val_l, val_r, True
+    return val_l, val_r, True, has_signal
 
 
 def drain_and_calc_peaks(proc, channels: int = 2) -> tuple[float, float]:
     """Non-blocking high-speed drain of PCM audio and return perceptual peaks."""
-    left, right, _ = drain_and_calc_peaks_with_activity(proc, channels=channels)
+    left, right, _, _ = drain_and_calc_peaks_with_activity(proc, channels=channels)
     return left, right

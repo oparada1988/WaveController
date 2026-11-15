@@ -29,6 +29,7 @@ class MultiChannelPeakMonitor:
         self.pipewire_mgr = pipewire_mgr
         self.hardware_mgr = hardware_mgr
         self._mic_last_data_time = None
+        self._mic_last_signal_time = None
         self._mic_no_data_since = None
         self._mic_no_data_warning_emitted = False
         self._mic_data_seen = False
@@ -63,6 +64,12 @@ class MultiChannelPeakMonitor:
         with self._lock:
             last_data_time = self._mic_last_data_time
         return last_data_time is not None and time.monotonic() - last_data_time <= max_age
+
+    def is_mic_capture_signal_present(self, max_age: float = 1.5) -> bool:
+        """Reports whether nonzero PCM samples recently arrived from the microphone."""
+        with self._lock:
+            last_signal_time = self._mic_last_signal_time
+        return last_signal_time is not None and time.monotonic() - last_signal_time <= max_age
 
     def stop(self):
         self.running = False
@@ -628,6 +635,7 @@ class MultiChannelPeakMonitor:
                 self.mic_channels = curr_ch
                 self.mic_proc = new_mic_proc
                 self._mic_last_data_time = None
+                self._mic_last_signal_time = None
                 self._mic_no_data_since = None
                 self._mic_no_data_warning_emitted = False
                 self._mic_data_seen = False
@@ -667,12 +675,16 @@ class MultiChannelPeakMonitor:
                     s_proc = self.sink_proc
                     ch_items = list(self._channel_procs.items())
 
-                raw_ml, raw_mr, mic_data_received = self._drain_mic_capture(m_proc, channels=m_ch)
+                raw_ml, raw_mr, mic_data_received, mic_signal_received = self._drain_mic_capture(
+                    m_proc, channels=m_ch
+                )
                 if m_proc and m_proc.poll() is None:
                     now = time.monotonic()
                     if mic_data_received:
                         with self._lock:
                             self._mic_last_data_time = now
+                            if mic_signal_received:
+                                self._mic_last_signal_time = now
                             self._mic_no_data_since = None
                             self._mic_no_data_warning_emitted = False
                             first_data = not self._mic_data_seen
