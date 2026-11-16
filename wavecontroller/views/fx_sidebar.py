@@ -1,6 +1,6 @@
 import gi
 gi.require_version("Gtk", "4.0")
-from gi.repository import Gtk, GLib
+from gi.repository import Gtk, GLib, Pango
 
 from ..engine.config_manager import config_manager
 from ..engine.plugins import plugin_scanner, PluginFormat
@@ -156,7 +156,7 @@ class FXSidebar(Gtk.Box):
         subtitle = Gtk.Label(label=channel_name)
         subtitle.add_css_class("fx-sidebar-channel")
         subtitle.set_halign(Gtk.Align.START)
-        subtitle.set_ellipsize(3)
+        subtitle.set_ellipsize(Pango.EllipsizeMode.END)
         self.content.append(subtitle)
 
         master_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
@@ -222,7 +222,7 @@ class FXSidebar(Gtk.Box):
         title_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         label = Gtk.Label(label=title)
         label.set_halign(Gtk.Align.START)
-        label.set_ellipsize(3)
+        label.set_ellipsize(Pango.EllipsizeMode.END)
         label.set_hexpand(True)
         title_row.append(label)
         toggle = Gtk.Switch(active=active)
@@ -233,7 +233,7 @@ class FXSidebar(Gtk.Box):
         detail.add_css_class("dim-label")
         detail.add_css_class("caption")
         detail.set_halign(Gtk.Align.START)
-        detail.set_ellipsize(3)
+        detail.set_ellipsize(Pango.EllipsizeMode.END)
         text.append(detail)
         row.append(text)
         slider_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)

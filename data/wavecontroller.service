@@ -7,7 +7,7 @@ PartOf=graphical-session.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/python3 "/home/oscar/Github Projects/WaveController/main.py" --daemon
+ExecStart=/usr/bin/wavecontroller --daemon
 Restart=on-failure
 RestartSec=3
 StandardOutput=journal

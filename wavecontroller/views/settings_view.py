@@ -265,8 +265,14 @@ class SettingsView(Gtk.Box):
             if callable(self.on_game_settings_changed):
                 self.on_game_settings_changed()
 
+        def _on_sgdb_key_changed(row):
+            val = row.get_text().strip()
+            config_manager.set("steamgriddb_api_key", val, immediate=False)
+            if callable(self.on_game_settings_changed):
+                self.on_game_settings_changed()
+
         self.sgdb_key_row.connect("apply", _on_sgdb_key_applied)
-        self.sgdb_key_row.connect("changed", lambda r: config_manager.set("steamgriddb_api_key", r.get_text().strip(), immediate=False))
+        self.sgdb_key_row.connect("changed", _on_sgdb_key_changed)
         grp_games.add(self.sgdb_key_row)
 
         _sync_game_rows_sensitivity(games_cat_active)

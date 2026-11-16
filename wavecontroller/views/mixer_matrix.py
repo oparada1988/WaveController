@@ -1,6 +1,6 @@
 import gi
 gi.require_version("Gtk", "4.0")
-from gi.repository import Gtk, GLib
+from gi.repository import Gtk, GLib, Pango
 
 from .channel_card import ChannelCard
 from .fx_sidebar import FXSidebar
@@ -288,7 +288,7 @@ class MixerMatrixView(Gtk.Box):
                     on_link_toggle_callback=self._on_link_toggled,
                     on_sync_meter_callback=self._on_sync_meter_toggled,
                     on_channel_removed_callback=self._on_channel_deleted,
-                    on_channel_renamed_callback=lambda ch_id, name: GLib.idle_add(self._rebuild_grid),
+                    on_channel_renamed_callback=lambda ch_id, name: GLib.idle_add(self._on_channel_renamed, ch_id, name),
                     on_reorder_callback=self._on_reorder_channel,
                     on_hover_row_callback=self._on_hover_row,
                     on_fx_requested=self._show_fx_sidebar,
@@ -706,6 +706,8 @@ class MixerMatrixView(Gtk.Box):
         stack = Gtk.Stack()
         stack.set_transition_type(Gtk.StackTransitionType.SLIDE_LEFT_RIGHT)
         stack.set_transition_duration(150)
+        stack.set_vhomogeneous(False)
+        stack.set_hhomogeneous(False)
 
         # ==========================================
         # PAGE 1: Category Selector (Application / Input Device)
@@ -950,7 +952,7 @@ class MixerMatrixView(Gtk.Box):
                     i_lbl = Gtk.Label(label=app_name)
                     i_lbl.set_hexpand(True)
                     i_lbl.set_halign(Gtk.Align.START)
-                    i_lbl.set_ellipsize(3)
+                    i_lbl.set_ellipsize(Pango.EllipsizeMode.END)
 
                     add_ic = Gtk.Image.new_from_icon_name("list-add-symbolic")
                     add_ic.set_pixel_size(14)
@@ -960,9 +962,12 @@ class MixerMatrixView(Gtk.Box):
                     item_row.append(add_ic)
                     item_btn.set_child(item_row)
 
-                    def make_app_click_handler(name, ic):
+                    def make_app_click_handler(name, ic, bin_name=""):
                         def handler(btn):
-                            self.pipewire_mgr.add_channel(name, icon=ic, ch_type="app", assigned_apps=[name])
+                            assigned = [name]
+                            if bin_name and bin_name.lower() != name.lower():
+                                assigned.append(bin_name)
+                            self.pipewire_mgr.add_channel(name, icon=ic, ch_type="app", assigned_apps=assigned)
                             popover.popdown()
                             GLib.idle_add(self._rebuild_grid)
                             self._notify_channel_list_changed()
@@ -970,7 +975,7 @@ class MixerMatrixView(Gtk.Box):
                                 GLib.idle_add(on_added_callback)
                         return handler
 
-                    item_btn.connect("clicked", make_app_click_handler(app_name, icon_name))
+                    item_btn.connect("clicked", make_app_click_handler(app_name, icon_name, app_bin))
                     apps_list_container.append(item_btn)
             else:
                 if non_game_running:
@@ -985,11 +990,14 @@ class MixerMatrixView(Gtk.Box):
 
             stack.set_visible_child_name("app_page")
 
+        cached_discoverable_games = []
+        game_search_timer = None
+
         def populate_game_rows(filter_query: str = ""):
             while games_list_container.get_first_child():
                 games_list_container.remove(games_list_container.get_first_child())
 
-            all_games = self.pipewire_mgr.get_discoverable_games() if (self.pipewire_mgr and hasattr(self.pipewire_mgr, "get_discoverable_games")) else []
+            all_games = cached_discoverable_games
             configured_apps = configured_app_tokens()
             q_low = str(filter_query or "").strip().lower()
 
@@ -1018,7 +1026,7 @@ class MixerMatrixView(Gtk.Box):
                     g_lbl = Gtk.Label(label=game_name)
                     g_lbl.set_hexpand(True)
                     g_lbl.set_halign(Gtk.Align.START)
-                    g_lbl.set_ellipsize(3)
+                    g_lbl.set_ellipsize(Pango.EllipsizeMode.END)
 
                     item_row.append(g_img)
                     item_row.append(g_lbl)
@@ -1074,11 +1082,20 @@ class MixerMatrixView(Gtk.Box):
                 games_list_container.append(no_games)
 
         def show_game_page(b=None):
+            nonlocal cached_discoverable_games
             game_search_entry.set_text("")
+            cached_discoverable_games = self.pipewire_mgr.get_discoverable_games() if (self.pipewire_mgr and hasattr(self.pipewire_mgr, "get_discoverable_games")) else []
             populate_game_rows("")
             stack.set_visible_child_name("game_page")
 
-        game_search_entry.connect("search-changed", lambda entry: populate_game_rows(entry.get_text()))
+        def _on_game_search_changed(entry):
+            nonlocal game_search_timer
+            if game_search_timer:
+                GLib.source_remove(game_search_timer)
+            text = entry.get_text()
+            game_search_timer = GLib.timeout_add(120, lambda: (populate_game_rows(text), False)[1])
+
+        game_search_entry.connect("search-changed", _on_game_search_changed)
 
         def show_device_page(b=None):
             while dev_list_container.get_first_child():
@@ -1121,7 +1138,7 @@ class MixerMatrixView(Gtk.Box):
                     d_lbl = Gtk.Label(label=dev_name)
                     d_lbl.set_hexpand(True)
                     d_lbl.set_halign(Gtk.Align.START)
-                    d_lbl.set_ellipsize(3)
+                    d_lbl.set_ellipsize(Pango.EllipsizeMode.END)
 
                     d_row.append(d_img)
                     d_row.append(d_lbl)
@@ -1202,7 +1219,12 @@ class MixerMatrixView(Gtk.Box):
         app_sub_lbl.set_halign(Gtk.Align.START)
         app_page_box.append(app_sub_lbl)
 
-        app_page_box.append(apps_list_container)
+        apps_scroll = Gtk.ScrolledWindow()
+        apps_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        apps_scroll.set_propagate_natural_height(True)
+        apps_scroll.set_max_content_height(220)
+        apps_scroll.set_child(apps_list_container)
+        app_page_box.append(apps_scroll)
 
         # Custom Channel Entry
         app_page_box.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
@@ -1334,7 +1356,12 @@ class MixerMatrixView(Gtk.Box):
         dev_sub_lbl.set_halign(Gtk.Align.START)
         dev_page_box.append(dev_sub_lbl)
 
-        dev_page_box.append(dev_list_container)
+        dev_scroll = Gtk.ScrolledWindow()
+        dev_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        dev_scroll.set_propagate_natural_height(True)
+        dev_scroll.set_max_content_height(220)
+        dev_scroll.set_child(dev_list_container)
+        dev_page_box.append(dev_scroll)
 
         dev_cancel_btn = Gtk.Button(label="Cancel")
         dev_cancel_btn.add_css_class("destructive-action")
@@ -1800,6 +1827,12 @@ class MixerMatrixView(Gtk.Box):
             is_wave = dev.get("is_elgato", False) or "wave" in d_name or "elgato" in d_name or "wave" in d_disp or "wave" in d_key
         if hasattr(self, "balance_box"):
             self.balance_box.set_visible(is_wave)
+
+    def _on_channel_renamed(self, ch_id: str, new_name: str):
+        card = self.channel_cards.get(ch_id)
+        if card and hasattr(card, "refresh_name"):
+            card.refresh_name()
+        self._notify_channel_list_changed()
 
     def _on_channel_deleted(self, ch_id: str):
         self.pipewire_mgr.remove_channel(ch_id)

@@ -750,14 +750,26 @@ class AudioFlowCanvas(Gtk.DrawingArea):
         if not self.get_mapped():
             return True
 
-        # 1. Advance flowing pulse phase
-        self._anim_phase = (self._anim_phase + 0.016) % 1.0
+        anim_needed = False
+
+        # 1. Active connection interactions or flowing audio pulses
+        if getattr(self, "_connecting_active", False) or getattr(self, "_panning", False) or getattr(self, "_drag_node", None) is not None:
+            anim_needed = True
+        else:
+            for c in self.connections:
+                if c.highlighted or self._get_connection_audio_peak(c) > 0.005:
+                    anim_needed = True
+                    break
+
+        if anim_needed:
+            self._anim_phase = (self._anim_phase + 0.016) % 1.0
 
         # 2. Smoothly ease node alphas
         for n in self.nodes.values():
             diff = n.target_alpha - n.current_alpha
             if abs(diff) > 0.005:
                 n.current_alpha += diff * 0.22
+                anim_needed = True
             else:
                 n.current_alpha = n.target_alpha
 
@@ -766,10 +778,12 @@ class AudioFlowCanvas(Gtk.DrawingArea):
             diff = c.target_alpha - c.current_alpha
             if abs(diff) > 0.005:
                 c.current_alpha += diff * 0.22
+                anim_needed = True
             else:
                 c.current_alpha = c.target_alpha
 
-        self.queue_draw()
+        if anim_needed:
+            self.queue_draw()
         return True
 
     # ── Focus & Signal Path Isolation ───────────────────────────────────
@@ -859,11 +873,6 @@ class AudioFlowCanvas(Gtk.DrawingArea):
         cx = (sx - self.pan_x) / self.zoom
         cy = (sy - self.pan_y) / self.zoom
         return cx, cy
-
-    def canvas_to_screen(self, cx, cy):
-        sx = cx * self.zoom + self.pan_x
-        sy = cy * self.zoom + self.pan_y
-        return sx, sy
 
     def node_at(self, cx, cy):
         for n in reversed(list(self.nodes.values())):

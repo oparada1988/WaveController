@@ -88,16 +88,6 @@ class PluginScanner:
         with self._lock:
             return list(self._plugins.values())
 
-    def get_plugins_by_category(self, category: PluginCategory) -> List[AudioPlugin]:
-        """Returns plugins filtered by functional category."""
-        with self._lock:
-            return [p for p in self._plugins.values() if p.category == category]
-
-    def get_plugins_by_format(self, fmt: PluginFormat) -> List[AudioPlugin]:
-        """Returns plugins filtered by format (VST3, LV2, BUILTIN, etc.)."""
-        with self._lock:
-            return [p for p in self._plugins.values() if p.format == fmt]
-
     def get_plugin(self, plugin_id: str) -> Optional[AudioPlugin]:
         """Get a specific plugin by its unique ID."""
         with self._lock:
@@ -359,23 +349,6 @@ class PluginScanner:
 
         t = threading.Thread(target=_worker, name="WaveController-PluginScanner", daemon=True)
         t.start()
-
-    def scan_sync(self) -> List[AudioPlugin]:
-        """Synchronously scan for plugins (useful for tests or initialization)."""
-        with self._lock:
-            self._is_scanning = True
-        try:
-            results = self._perform_scan()
-            with self._lock:
-                self._plugins = results
-                self._is_scanning = False
-            self._save_cache()
-            return list(results.values())
-        except Exception as e:
-            log.error(f"Sync scan error: {e}")
-            with self._lock:
-                self._is_scanning = False
-            return list(self._plugins.values())
 
     def _perform_scan(self) -> Dict[str, AudioPlugin]:
         """Executes discovery across all formats."""

@@ -114,8 +114,11 @@ class ConfigManager:
                 self.save_now()
 
     def save(self, immediate: bool = True):
-        """Alias for save_now() to ensure backward compatibility."""
-        self.save_now()
+        """Persists configuration to disk, either immediately or debounced."""
+        if immediate:
+            self.save_now()
+        else:
+            self.schedule_save()
 
     def save_now(self):
         """Atomically writes configuration to disk using a temporary file."""

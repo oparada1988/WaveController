@@ -1,7 +1,7 @@
 import gi
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
-from gi.repository import Gtk, Gdk, GObject, Adw
+from gi.repository import Gtk, Gdk, GObject, Adw, Pango
 from wavecontroller.engine.config_manager import config_manager
 from ..utils.css_helpers import install_palette_css
 from ..utils.gtk_helpers import blocked_handler
@@ -65,7 +65,7 @@ class MixHeaderCard(Gtk.Box):
         self.title_lbl = Gtk.Label(label=mix_info.get("name", "Mix"))
         self.title_lbl.add_css_class("mix-header-title")
         self.title_lbl.set_halign(Gtk.Align.START)
-        self.title_lbl.set_ellipsize(3)
+        self.title_lbl.set_ellipsize(Pango.EllipsizeMode.END)
         header_title_row.append(self.title_lbl)
 
         self.default_badge = Gtk.Label()
@@ -80,7 +80,7 @@ class MixHeaderCard(Gtk.Box):
         else:
             self.subtitle_lbl.add_css_class("mix-header-subtitle")
         self.subtitle_lbl.set_halign(Gtk.Align.START)
-        self.subtitle_lbl.set_ellipsize(3)
+        self.subtitle_lbl.set_ellipsize(Pango.EllipsizeMode.END)
         title_box.append(self.subtitle_lbl)
         self.default_badge.set_halign(Gtk.Align.START)
         title_box.append(self.default_badge)

@@ -10,57 +10,6 @@ import re
 import subprocess
 from wavecontroller.engine.graph.process_classifier import get_match_tokens, port_matches_tokens
 
-def get_multi_stream_numeric_ports(tokens: set, port_meta: dict = None, out_ports: list = None) -> list:
-    """
-    Returns list of dicts with exact numeric port IDs, channel types ('FL', 'FR', 'MONO'),
-    and node names for all active streams matching the application tokens.
-    """
-    if not tokens:
-        return []
-        
-    if out_ports is None:
-        try:
-            try:
-                out_ports_raw = subprocess.check_output(["pw-link", "-I", "-o"], text=True, stderr=subprocess.DEVNULL)
-            except Exception:
-                out_ports_raw = ""
-            if not out_ports_raw:
-                out_ports_raw = subprocess.check_output(["pw-link", "-o"], text=True, stderr=subprocess.DEVNULL)
-            out_ports = [l.strip() for l in out_ports_raw.splitlines() if l.strip()]
-        except Exception:
-            out_ports = []
-
-    results = []
-    for p in out_ports:
-        # Ignore internal submix loops, meters, and virtual adapters
-        clean_p = re.sub(r"^\d+\s+", "", p).strip()
-        if clean_p.startswith("output.WaveController_") or clean_p.startswith("WaveController_") or clean_p.startswith("wave_"):
-            continue
-        if ":output_" not in clean_p and ":capture_" not in clean_p:
-            continue
-
-        if port_matches_tokens(p, tokens, port_meta):
-            port_id = p.split()[0] if p and p.split()[0].isdigit() else clean_p
-            p_low = clean_p.rsplit(":", 1)[-1].lower()
-            if "_fl" in p_low or p_low.endswith("_1") or p_low.endswith("_l") or p_low in ("output_0", "playback_0"):
-                chan = "FL"
-            elif "_fr" in p_low or p_low.endswith("_2") or p_low.endswith("_r") or p_low in ("output_1", "playback_1"):
-                chan = "FR"
-            elif "mono" in p_low:
-                chan = "MONO"
-            else:
-                chan = "FL"
-            
-            node_name = clean_p.rsplit(":", 1)[0]
-            results.append({
-                "port_id": port_id,
-                "port_name": clean_p,
-                "node_name": node_name,
-                "channel": chan
-            })
-
-    return results
-
 def resolve_physical_device_ports(target_device: str, in_ports: list = None) -> tuple:
     """
     Resolves human-readable device names (e.g. 'Elgato Wave XLR Analog Stereo')

@@ -37,6 +37,25 @@ KNOWN_AUDIO_BINARIES = {
     "org.audacityteam.audacity": ("Audacity", "audacity"),
     "shortwave": ("Shortwave", "de.haeckerfelix.Shortwave"),
     "de.haeckerfelix.shortwave": ("Shortwave", "de.haeckerfelix.Shortwave"),
+    "feishin": ("Feishin", "feishin"),
+    "org.jeffvli.feishin": ("Feishin", "feishin"),
+    "music-assistant-companion": ("Music Assistant", "music-assistant-companion"),
+    "music-assistant": ("Music Assistant", "music-assistant-companion"),
+    "org.music_assistant.companion": ("Music Assistant", "music-assistant-companion"),
+    "plexamp": ("Plexamp", "plexamp"),
+    "com.plexamp.plexamp": ("Plexamp", "plexamp"),
+    "sublime-music": ("Sublime Music", "sublime-music"),
+    "tauonmb": ("Tauon Music Box", "tauonmb"),
+    "g4music": ("G4Music", "g4music"),
+    "lollypop": ("Lollypop", "org.gnome.Lollypop"),
+    "amberol": ("Amberol", "io.bassi.Amberol"),
+    "elisa": ("Elisa", "org.kde.elisa"),
+    "cantata": ("Cantata", "cantata"),
+    "deadbeef": ("DeaDBeeF", "deadbeef"),
+    "clementine": ("Clementine", "clementine"),
+    "jellyfinmediaplayer": ("Jellyfin Media Player", "jellyfinmediaplayer"),
+    "com.github.iwalton3.jellyfin-media-player": ("Jellyfin Media Player", "jellyfinmediaplayer"),
+    "tidal-hifi": ("TIDAL Hi-Fi", "tidal-hifi"),
 
     # VoIP & Collaboration
     "slack": ("Slack", "slack"),
@@ -97,6 +116,123 @@ DEDICATED_NON_GAME_BINARIES = frozenset(
     k for k in KNOWN_AUDIO_BINARIES.keys()
     if k not in ("steam", "steamwebhelper", "com.valvesoftware.steam")
 )
+
+_DYNAMIC_DESKTOP_REGISTRY = {}
+_DYNAMIC_DESKTOP_REGISTRY_TS = 0.0
+_DYNAMIC_DESKTOP_LOCK = threading.Lock()
+
+def get_dynamic_audio_desktop_registry(max_age_s: float = 30.0) -> dict:
+    """
+    Dynamically scans XDG .desktop application files to discover installed
+    audio/video players, DAWs, video editors, and voice/streaming apps.
+    Caches results with a 30-second TTL to avoid redundant disk I/O.
+    """
+    global _DYNAMIC_DESKTOP_REGISTRY, _DYNAMIC_DESKTOP_REGISTRY_TS
+    now = time.monotonic()
+    with _DYNAMIC_DESKTOP_LOCK:
+        if (now - _DYNAMIC_DESKTOP_REGISTRY_TS) < max_age_s and _DYNAMIC_DESKTOP_REGISTRY:
+            return dict(_DYNAMIC_DESKTOP_REGISTRY)
+
+    dirs = [
+        "/var/lib/flatpak/exports/share/applications",
+        os.path.expanduser("~/.local/share/flatpak/exports/share/applications"),
+        "/usr/share/applications",
+        os.path.expanduser("~/.local/share/applications"),
+        "/usr/local/share/applications"
+    ]
+    AUDIO_KEYWORDS = {
+        "audio", "audiovideo", "player", "music", "recorder", "audiovideoediting",
+        "midi", "sequencer", "sound", "synth", "daw", "browser", "chat", "telephony", "video"
+    }
+    UTILITY_EXCLUSIONS = {
+        "wavecontroller", "com.oparada.wavecontroller",
+        "pavucontrol", "org.pulseaudio.pavucontrol", "volume control",
+        "qpwgraph", "org.rncbc.qpwgraph", "helvum", "patchance",
+        "easyeffects", "com.github.wwmm.easyeffects",
+        "pw-loopback", "wireplumber", "pipewire"
+    }
+    registry = {}
+    import shlex
+    for d in dirs:
+        if not os.path.isdir(d):
+            continue
+        try:
+            for f in os.listdir(d):
+                if not f.endswith(".desktop"):
+                    continue
+                path = os.path.join(d, f)
+                try:
+                    name, exec_cmd, icon, cats, comment = "", "", "", set(), ""
+                    with open(path, "r", encoding="utf-8", errors="ignore") as fp:
+                        for line in fp:
+                            line = line.strip()
+                            if line.startswith("Name=") and not name:
+                                name = line.split("=", 1)[1].strip()
+                            elif line.startswith("Exec=") and not exec_cmd:
+                                exec_cmd = line.split("=", 1)[1].strip()
+                            elif line.startswith("Icon=") and not icon:
+                                icon = line.split("=", 1)[1].strip()
+                            elif line.startswith("Comment=") and not comment:
+                                comment = line.split("=", 1)[1].strip()
+                            elif line.startswith("Categories="):
+                                c_list = line.split("=", 1)[1].lower().split(";")
+                                cats = {c.strip() for c in c_list if c.strip()}
+                            elif line.startswith("NoDisplay=true"):
+                                name = ""
+                                break
+                    if not name or not exec_cmd or name.lower() in UTILITY_EXCLUSIONS or f[:-8].lower() in UTILITY_EXCLUSIONS:
+                        continue
+                    is_audio = bool(cats & AUDIO_KEYWORDS)
+                    if not is_audio:
+                        search_text = f"{name} {comment} {exec_cmd}".lower()
+                        if any(kw in search_text for kw in ("music", "audio", "player", "sound", "podcast", "daw", "synth", "sequencer", "video editor")):
+                            is_audio = True
+                    if is_audio:
+                        entry = (name, icon or name.lower())
+                        app_id = f[:-8].lower()
+                        registry[app_id] = entry
+                        try:
+                            parts = shlex.split(exec_cmd)
+                        except Exception:
+                            parts = exec_cmd.split()
+                        if parts:
+                            idx = 0
+                            if parts[idx] == "env":
+                                idx += 1
+                                while idx < len(parts) and "=" in parts[idx] and not parts[idx].startswith("-"):
+                                    idx += 1
+                            if idx < len(parts):
+                                target = parts[idx]
+                                if target.endswith(("flatpak", "flatpak-spawn")):
+                                    for p in parts[idx+1:]:
+                                        if p.startswith("--command="):
+                                            c_cmd = p.split("=", 1)[1].lower().strip()
+                                            registry[c_cmd] = entry
+                                        if "." in p and not p.startswith("-"):
+                                            registry[p.lower()] = entry
+                                            registry[p.split(".")[-1].lower()] = entry
+                                else:
+                                    bin_base = target.split("/")[-1].split("\\")[-1].lower()
+                                    registry[bin_base] = entry
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    with _DYNAMIC_DESKTOP_LOCK:
+        _DYNAMIC_DESKTOP_REGISTRY = registry
+        _DYNAMIC_DESKTOP_REGISTRY_TS = now
+    return registry
+
+def get_known_audio_applications() -> dict:
+    """
+    Returns an aggregated dictionary of all known and dynamically discovered desktop audio applications.
+    Combines the baseline KNOWN_AUDIO_BINARIES safety-net dictionary with dynamic XDG .desktop discovery.
+    """
+    dynamic_apps = get_dynamic_audio_desktop_registry()
+    combined = dict(KNOWN_AUDIO_BINARIES)
+    combined.update(dynamic_apps)
+    return combined
 
 _WINE_SYSTEM_EXES = frozenset({
     "services.exe", "winedevice.exe", "plugplay.exe", "svchost.exe",
@@ -244,8 +380,9 @@ def get_match_tokens(name_or_id: str) -> set:
         if len(alnum_compact) >= 3:
             tokens.add(alnum_compact)
 
-    # 2. Known audio binary mappings (Chrome, VLC, Discord, Steam, OBS, Shortwave, etc.)
-    for bin_name, (disp, alt) in KNOWN_AUDIO_BINARIES.items():
+    # 2. Known audio binary mappings (Chrome, VLC, Discord, Steam, OBS, Shortwave, dynamic desktop apps, etc.)
+    all_known_apps = get_known_audio_applications()
+    for bin_name, (disp, alt) in all_known_apps.items():
         if bin_name in raw or disp.lower() in raw or alt.lower() in raw:
             tokens.add(bin_name)
             tokens.add(alt.lower())
@@ -318,6 +455,11 @@ def get_active_port_metadata_map(force_refresh: bool = False, max_age_s: float =
         data = safe_pw_dump(timeout=3)
         nodes = {obj["id"]: obj for obj in data if isinstance(obj, dict) and obj.get("type") == "PipeWire:Interface:Node"}
         ports = [obj for obj in data if isinstance(obj, dict) and obj.get("type") == "PipeWire:Interface:Port"]
+        clients = {
+            obj["id"]: (obj.get("info") or {}).get("props") or {}
+            for obj in data
+            if isinstance(obj, dict) and obj.get("type") == "PipeWire:Interface:Client"
+        }
         for p in ports:
             p_id = p.get("id")
             props = (p.get("info") or {}).get("props") or {}
@@ -326,13 +468,37 @@ def get_active_port_metadata_map(force_refresh: bool = False, max_age_s: float =
             node_id = props.get("node.id")
             n_obj = nodes.get(node_id, {})
             n_props = (n_obj.get("info") or {}).get("props") or {}
+            c_id = n_props.get("client.id")
+            c_props = clients.get(c_id, {}) if c_id is not None else {}
+
             n_name = n_props.get("node.name", "")
             n_desc = n_props.get("node.description", "")
             media_name = n_props.get("media.name", "")
-            app_name = n_props.get("application.name", "")
-            app_bin = n_props.get("application.process.binary", "")
-            app_id = n_props.get("application.id", "") or n_props.get("pipewire.access.portal.app_id", "")
-            pid = n_props.get("application.process.id") or n_props.get("pipewire.sec.pid")
+            app_name = n_props.get("application.name", "") or c_props.get("application.name", "")
+            app_bin = n_props.get("application.process.binary", "") or c_props.get("application.process.binary", "")
+            app_id = (
+                n_props.get("application.id", "")
+                or n_props.get("pipewire.access.portal.app_id", "")
+                or c_props.get("application.id", "")
+                or c_props.get("pipewire.access.portal.app_id", "")
+            )
+            pid = (
+                n_props.get("application.process.id")
+                or n_props.get("pipewire.sec.pid")
+                or c_props.get("application.process.id")
+                or c_props.get("pipewire.sec.pid")
+            )
+
+            # Unwrap PipeWire ALSA and ALSA Playback stream wrappers
+            if app_name:
+                m_alsa = re.match(r"^(?:PipeWire\s+ALSA|ALSA\s+Playback)\s*\[(.*?)\]", app_name, re.IGNORECASE)
+                if m_alsa:
+                    unwrapped = m_alsa.group(1).strip()
+                    if unwrapped and not app_bin:
+                        app_bin = unwrapped
+            if n_name.startswith("alsa_playback.") and not app_bin:
+                app_bin = n_name[len("alsa_playback."):].strip()
+
             pid_meta = resolve_pid_game_metadata(pid) if pid else {}
 
             meta = {
@@ -635,10 +801,11 @@ def is_game_app_or_channel(
     bin_low = str(binary or "").strip().lower().split("/")[-1].split("\\")[-1]
 
     # Never classify the Steam client itself or known desktop/chat/browser apps as a game
-    if nm_low in ("steam", "steamwebhelper") or bin_low in DEDICATED_NON_GAME_BINARIES:
+    all_known_apps = get_known_audio_applications()
+    if nm_low in ("steam", "steamwebhelper") or bin_low in DEDICATED_NON_GAME_BINARIES or bin_low in all_known_apps:
         return False
-    for k, (disp, _) in KNOWN_AUDIO_BINARIES.items():
-        if disp.lower() == nm_low and k in DEDICATED_NON_GAME_BINARIES:
+    for k, (disp, _) in all_known_apps.items():
+        if disp.lower() == nm_low and (k in DEDICATED_NON_GAME_BINARIES or k in all_known_apps):
             return False
 
     if steam_app_id or steam_game_name:
@@ -673,6 +840,8 @@ def resolve_steam_game_icon(app_name: str = None, steam_app_id: str = None, batc
 
     matched_appid = resolve_steam_app_id(app_name, steam_app_id)
     if not matched_appid:
+        if len(_STEAM_NEGATIVE_CACHE) > 512:
+            _STEAM_NEGATIVE_CACHE.clear()
         _STEAM_NEGATIVE_CACHE[cache_key] = now
         return ""
 
@@ -760,10 +929,14 @@ def resolve_steam_game_icon(app_name: str = None, steam_app_id: str = None, batc
                 refresh_gtk_icon_theme()
             except Exception:
                 pass
+        if len(_STEAM_ICON_CACHE) > 512:
+            _STEAM_ICON_CACHE.clear()
         _STEAM_ICON_CACHE[cache_key] = icon_name
         _STEAM_NEGATIVE_CACHE.pop(cache_key, None)
         return icon_name
 
+    if len(_STEAM_NEGATIVE_CACHE) > 512:
+        _STEAM_NEGATIVE_CACHE.clear()
     _STEAM_NEGATIVE_CACHE[cache_key] = now
     return ""
 

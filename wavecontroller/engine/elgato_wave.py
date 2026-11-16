@@ -528,10 +528,6 @@ class ElgatoWaveDevice:
         """
         return 0x01 if bool(self.get_mode_mute(active_mode)) else 0x00
 
-    def get_mute(self) -> bool:
-        curr_mode = self.get_dial_mode()
-        return self._mode_mutes.get(curr_mode, False)
-
     def get_mode_mute(self, mode: str) -> bool:
         if mode == "mix":
             return bool(self._mode_mutes.get("gain", False) and self._mode_mutes.get("hp", False))
@@ -558,10 +554,6 @@ class ElgatoWaveDevice:
             self._last_state["mute"] = curr_mode_muted
         except Exception as e:
             log.warning(f"Failed to set hardware mute for mode {mode}: {e}")
-
-    def set_mute(self, muted: bool, transient: bool = False):
-        curr_mode = self.get_dial_mode()
-        self.set_mode_mute(curr_mode, muted, transient=transient)
 
     # --- 48V Phantom Power ---
     def get_phantom_power(self) -> bool:
@@ -605,26 +597,6 @@ class ElgatoWaveDevice:
             self._last_state["clipguard"] = enabled
         except Exception as e:
             log.warning(f"Failed to set Clipguard: {e}")
-
-    # --- Hardware DSP Meter Telemetry ---
-    def get_meter(self) -> Tuple[float, float]:
-        """Reads instantaneous hardware DSP meter levels from Endpoint 0.
-        
-        Returns (peak_l, peak_r) normalized to 0.0 - 1.0.
-        """
-        try:
-            m = self._ctrl_read(self.profile.wvalue_meter, self.profile.meter_len)
-            if not m or len(m) < 5:
-                return 0.0, 0.0
-            raw_l = m[0]
-            raw_r = m[4] if len(m) > 4 else m[0]
-            
-            p_l = min(1.0, ((raw_l - 144) / 80.0) ** 0.45) if raw_l > 144 else 0.0
-            p_r = min(1.0, ((raw_r - 144) / 80.0) ** 0.45) if raw_r > 144 else 0.0
-                
-            return p_l, p_r
-        except Exception:
-            return 0.0, 0.0
 
     # --- Enhanced Low-Cut Filter ---
     def get_low_cut(self) -> str:
@@ -1067,14 +1039,6 @@ class ElgatoWaveDevice:
 
     def is_user_interacting(self) -> bool:
         return self._user_interacting
-
-    def update_live_vu(self, mode: str, peak_level: float):
-        """
-        VU metering is driven through software matrix meters. Hardware analog registers
-        (preamp gain, headphone volume, monitor crossfade) are preserved safely.
-        """
-        # Preserved safely: avoid corrupting analog preamp gain and headphone DAC volume registers
-        return
 
     def get_all_state(self) -> Dict[str, Any]:
         try:

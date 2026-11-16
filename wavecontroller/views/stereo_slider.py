@@ -12,9 +12,10 @@ class StereoSlider(Gtk.DrawingArea):
     Features silky-smooth 60 FPS drag interaction, mouse wheel scroll tuning,
     double-click reset, and real-time Left/Right VU meter animations.
     """
-    def __init__(self, volume: int = 80, is_muted: bool = False, sync_peaks: bool = False, on_volume_changed=None):
+    def __init__(self, volume: int = 80, is_muted: bool = False, sync_peaks: bool = False, on_volume_changed=None, default_volume: int = 100):
         super().__init__()
         self.volume = max(0, min(100, volume))
+        self.default_volume = max(0, min(100, default_volume))
         self.is_muted = is_muted
         self.sync_peaks = sync_peaks
         self.peak_l = 0.0
@@ -82,8 +83,8 @@ class StereoSlider(Gtk.DrawingArea):
             if self.peak_r < 0.005:
                 self.peak_r = 0.0
 
-        # Trigger GTK repaint whenever peaks are active or changing
-        if self.peak_l > 0.0 or prev_l > 0.0 or target_l > 0.0 or self.peak_r > 0.0 or prev_r > 0.0 or target_r > 0.0 or abs(self.peak_l - prev_l) > 0.001 or abs(self.peak_r - prev_r) > 0.001:
+        # Trigger GTK repaint only when peaks visually change or clear back to zero
+        if (self.peak_l == 0.0 and prev_l > 0.0) or (self.peak_r == 0.0 and prev_r > 0.0) or abs(self.peak_l - prev_l) > 0.002 or abs(self.peak_r - prev_r) > 0.002:
             self.queue_draw()
 
     def set_sync_peaks(self, sync: bool):
@@ -140,9 +141,10 @@ class StereoSlider(Gtk.DrawingArea):
         return True
 
     def _on_click_released(self, gesture, n_press, x, y):
-        if n_press == 2:  # Double click to reset to 100% (unity gain)
-            if self.volume != 100:
-                self.volume = 100
+        if n_press == 2:  # Double click to reset to default volume (unity or channel default)
+            target = getattr(self, "default_volume", 100)
+            if self.volume != target:
+                self.volume = target
                 self.queue_draw()
                 if self.on_volume_changed:
                     self.on_volume_changed(self.volume)

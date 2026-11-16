@@ -9,6 +9,7 @@ from gi.repository import GLib
 from .config_manager import config_manager
 from wavecontroller.engine.graph.process_classifier import (
     KNOWN_AUDIO_BINARIES,
+    get_known_audio_applications,
     GENERIC_COMPATIBILITY_RUNNERS,
     DEDICATED_NON_GAME_BINARIES,
     _word_match,
@@ -120,6 +121,9 @@ class PipeWireManager:
         self._is_sleeping = False
         self._resume_mute_shield = False
         self.peak_monitor = None
+        self._pw_links_cache = {}
+        self._pw_links_cache_ts = 0.0
+        self._pw_links_lock = threading.Lock()
 
         # Dedicated Isolated Routing Sub-Managers
         self.source_manager = MicrophoneSourceManager(self, hardware_mgr=self.hardware_mgr)
@@ -832,7 +836,7 @@ class PipeWireManager:
                 # 2. Periodic real-time stream, guard & mix reconciliation
                 sync_tick = getattr(self, "_sync_loop_tick", 0) + 1
                 self._sync_loop_tick = sync_tick
-                if sync_tick % 4 == 0:
+                if sync_tick % 6 == 0:
                     self._reconcile_app_streams_fast()
                 if sync_tick % 20 == 0:
                     if not getattr(self, "_resume_mute_shield", False) and not getattr(self, "_is_sleeping", False):
@@ -917,6 +921,7 @@ class PipeWireManager:
             self._stream_watch_debounce_id = None
             try:
                 invalidate_port_metadata_cache()
+                self.invalidate_pw_links_cache()
                 self._reconcile_app_streams_fast()
             except Exception:
                 pass
@@ -1706,6 +1711,11 @@ class PipeWireManager:
         # 1. Active PipeWire Audio Streams
         try:
             data = safe_pw_dump()
+            clients = {
+                obj["id"]: (obj.get("info") or {}).get("props") or {}
+                for obj in data
+                if isinstance(obj, dict) and obj.get("type") == "PipeWire:Interface:Client"
+            }
             for obj in data:
                 if obj.get("type") != "PipeWire:Interface:Node":
                     continue
@@ -1718,23 +1728,58 @@ class PipeWireManager:
                 # Only include genuine client audio playback streams (not sinks, sources, DSP nodes, or internal loopbacks)
                 media_role = props.get("media.role", "")
                 if media_class == "Stream/Output/Audio" and media_role != "DSP":
+                    client_id = props.get("client.id")
+                    c_props = clients.get(client_id, {}) if client_id is not None else {}
+
                     name = props.get("application.name") or props.get("node.description") or props.get("media.name") or node_name
-                    binary = props.get("application.process.binary", "")
-                    icon = props.get("application.icon-name") or props.get("application.icon_name")
+                    binary = props.get("application.process.binary", "") or c_props.get("application.process.binary", "")
+                    icon = props.get("application.icon-name") or props.get("application.icon_name") or c_props.get("application.icon-name") or c_props.get("application.icon_name")
                     node_id = obj.get("id")
+
+                    if not portal_app_id:
+                        portal_app_id = c_props.get("pipewire.access.portal.app_id") or c_props.get("application.id") or ""
+                    if not app_id:
+                        app_id = c_props.get("application.id", "")
                     
                     if not name:
                         continue
+
+                    # Unwrap PipeWire ALSA and ALSA playback wrappers
+                    m_alsa = re.match(r"^(?:PipeWire\s+ALSA|ALSA\s+Playback)\s*\[(.*?)\]", name, re.IGNORECASE)
+                    if m_alsa:
+                        unwrapped = m_alsa.group(1).strip()
+                        if unwrapped:
+                            name = unwrapped
+                            if not binary:
+                                binary = unwrapped
+
+                    if name.lower() in ("alsa playback", "pipewire alsa") and node_name.startswith("alsa_playback."):
+                        extracted = node_name[len("alsa_playback."):].strip()
+                        if extracted:
+                            name = extracted
+                            if not binary:
+                                binary = extracted
+
+                    # Strip trailing [Playback] qualifier e.g. "feishin [Playback]" -> "feishin"
+                    name_stripped = re.sub(r"\s*\[Playback\]\s*$", "", name, flags=re.IGNORECASE).strip()
+                    if name_stripped:
+                        name = name_stripped
+
                     name_low = str(name).lower().strip()
                     bin_low = str(binary).lower().strip()
                     node_low = str(node_name).lower().strip()
                     app_id_low = str(app_id).lower().strip()
                     portal_low = str(portal_app_id).lower().strip()
+                    bin_file = bin_low.split("/")[-1].split("\\")[-1] if bin_low else ""
+
+                    # Exclude PipeWire daemon / internal processes without discarding PipeWire ALSA clients
+                    if bin_file in ("pipewire", "pipewire-pulse") or node_low in ("pipewire", "pipewire-pulse") or name_low in ("pipewire", "pipewire-pulse") or node_low.startswith("pipewire-"):
+                        continue
                     
                     # Exclude internal virtual submixes, loopbacks, meters, and system utilities
                     internal_keywords = [
                         "wavecontroller", "submix", "loopback", "wave_sink", "wave_mic",
-                        "vcp_monitor", "pw-record", "parecord", "pipewire", "wireplumber",
+                        "vcp_monitor", "pw-record", "parecord", "wireplumber",
                         "easyeffects", "wpctl", "system_capture", "system capture",
                         "speech-dispatcher", "null-sink", "pw-loopback", "monitor",
                         "pavucontrol", "org.pulseaudio.pavucontrol", "libremidi", "midi-bridge", "bluez_midi"
@@ -1743,19 +1788,21 @@ class PipeWireManager:
                         continue
 
                     # For Electron, Flatpak, WebRTC, and Steam/Proton streams, map process binary, app id, or PID metadata to human-readable application name
-                    bin_file = bin_low.split("/")[-1].split("\\")[-1] if bin_low else ""
-                    pid = props.get("application.process.id") or props.get("pipewire.sec.pid")
+                    known_apps = get_known_audio_applications()
+                    pid = props.get("application.process.id") or props.get("pipewire.sec.pid") or c_props.get("application.process.id") or c_props.get("pipewire.sec.pid")
                     pid_meta = resolve_pid_game_metadata(pid) if pid else {}
                     steam_game_name = pid_meta.get("steam_game_name", "")
                     exe_name = pid_meta.get("exe_name", "")
                     matched_entry = None
 
-                    if bin_file in KNOWN_AUDIO_BINARIES and not steam_game_name and not exe_name:
-                        matched_entry = KNOWN_AUDIO_BINARIES[bin_file]
-                    elif portal_low in KNOWN_AUDIO_BINARIES and not steam_game_name:
-                        matched_entry = KNOWN_AUDIO_BINARIES[portal_low]
-                    elif app_id_low in KNOWN_AUDIO_BINARIES and not steam_game_name:
-                        matched_entry = KNOWN_AUDIO_BINARIES[app_id_low]
+                    if bin_file in known_apps and not steam_game_name and not exe_name:
+                        matched_entry = known_apps[bin_file]
+                    elif portal_low in known_apps and not steam_game_name:
+                        matched_entry = known_apps[portal_low]
+                    elif app_id_low in known_apps and not steam_game_name:
+                        matched_entry = known_apps[app_id_low]
+                    elif name_low in known_apps and not steam_game_name:
+                        matched_entry = known_apps[name_low]
                     elif any(d in portal_low or d in bin_low or d in app_id_low for d in ("discord", "vesktop", "webcord")):
                         matched_entry = ("Discord", "discord")
                     elif any(s in portal_low or s in bin_low or s in app_id_low for s in ("spotify",)):
@@ -1770,7 +1817,7 @@ class PipeWireManager:
 
                     if matched_entry:
                         known_name, known_icon = matched_entry
-                        if name_low in generic_stream_names or not name or name_low == bin_file or name_low == portal_low:
+                        if name_low in generic_stream_names or not name or name_low == bin_file or name_low == portal_low or name_low in known_apps:
                             name = known_name
                         icon = known_icon
                     elif steam_game_name and (name_low in generic_stream_names or name_low.endswith(".exe") or name_low == bin_file):
@@ -1808,12 +1855,6 @@ class PipeWireManager:
                                 resolved_bin = self.resolve_icon_for_app(bin_file)
                                 if resolved_bin and resolved_bin not in ("audio-x-generic-symbolic", "audio-card-symbolic"):
                                     icon = resolved_bin
-
-                    if not icon:
-                        if portal_app_id:
-                            icon = self.resolve_icon_for_app(portal_app_id)
-                        if not icon or icon in ("audio-x-generic-symbolic", "audio-card-symbolic"):
-                            icon = self.resolve_icon_for_app(name)
 
                     if name not in seen and name.lower() not in seen:
                         seen.add(name)
@@ -1888,10 +1929,11 @@ class PipeWireManager:
                         continue
 
                     matched_key = None
-                    if comm in KNOWN_AUDIO_BINARIES:
+                    known_apps = get_known_audio_applications()
+                    if comm in known_apps:
                         matched_key = comm
                     else:
-                        for k in KNOWN_AUDIO_BINARIES:
+                        for k in known_apps:
                             if len(k) >= 4 and (
                                 f"/{k}" in cmdline or f"app/{k}" in cmdline or f"bin/{k}" in cmdline or
                                 k in comm or f" {k}" in cmdline or f"{k} " in cmdline
@@ -1902,15 +1944,25 @@ class PipeWireManager:
                     if matched_key is None:
                         continue
 
-                    app_title, app_icon = KNOWN_AUDIO_BINARIES[matched_key]
-                    if app_title.lower() in proc_seen or app_title.lower() == "signal":
+                    app_title, app_icon = known_apps[matched_key]
+                    title_low = app_title.lower()
+                    if title_low in proc_seen or title_low == "signal" or any(kw in title_low for kw in ("wavecontroller", "pavucontrol", "volume control", "qpwgraph", "easyeffects", "wireplumber")):
                         continue
 
                     proc_seen.add(app_title.lower())
+                    bin_name = matched_key
+                    if comm and comm not in ("bwrap", "flatpak-spawn"):
+                        bin_name = comm
+                    if cmdline:
+                        for token in cmdline.split():
+                            t_clean = token.split("/")[-1].split("\\")[-1]
+                            if t_clean in known_apps:
+                                bin_name = t_clean
+                                break
                     item = {
                         "id": None,
                         "name": app_title,
-                        "binary": comm or matched_key,
+                        "binary": bin_name,
                         "icon": app_icon or self.resolve_icon_for_app(app_title)
                     }
                     discovered_proc_apps.append(item)
@@ -2055,16 +2107,22 @@ class PipeWireManager:
                     break
             self._save_state_to_config(immediate=True)
 
-    def assign_app_to_channel(self, channel_id: str, app_name: str):
+    def assign_app_to_channel(self, channel_id: str, app_name: str, app_binary: str = ""):
         with self._lock:
             for ch, apps in self.assigned_apps.items():
                 if app_name in apps:
                     apps.remove(app_name)
+                if app_binary and app_binary in apps:
+                    apps.remove(app_binary)
             if channel_id in self.assigned_apps:
                 if app_name not in self.assigned_apps[channel_id]:
                     self.assigned_apps[channel_id].append(app_name)
+                if app_binary and app_binary.lower() != app_name.lower() and app_binary not in self.assigned_apps[channel_id]:
+                    self.assigned_apps[channel_id].append(app_binary)
             else:
                 self.assigned_apps[channel_id] = [app_name]
+                if app_binary and app_binary.lower() != app_name.lower():
+                    self.assigned_apps[channel_id].append(app_binary)
                 
             self._save_state_to_config(immediate=True)
             self._refresh_node_cache()
@@ -2076,8 +2134,12 @@ class PipeWireManager:
             with self._lock:
                 if hasattr(self, "_app_volume_overrides"):
                     self._app_volume_overrides.pop(canon_app, None)
+                    if app_binary:
+                        self._app_volume_overrides.pop(str(app_binary).lower().strip(), None)
             try:
                 tokens = self._get_match_tokens(app_name)
+                if app_binary:
+                    tokens.update(self._get_match_tokens(app_binary))
                 data = safe_pw_dump()
                 for obj in data:
                     if obj.get("type") == "PipeWire:Interface:Node":
@@ -2091,6 +2153,8 @@ class PipeWireManager:
             # Sever any existing links from this app to Fallback or direct mix sinks
             try:
                 tokens = self._get_match_tokens(app_name)
+                if app_binary:
+                    tokens.update(self._get_match_tokens(app_binary))
                 port_meta = self._get_active_port_metadata_map()
                 links_map = self._get_pw_links_map()
                 for src_p, dests in links_map.items():
@@ -2244,17 +2308,19 @@ class PipeWireManager:
                     app_name = meta.get("steam_game_name") or meta.get("app_name")
                     if not app_name:
                         bin_raw = meta.get("exe_name") or meta.get("binary", "")
+                        known_apps = get_known_audio_applications()
                         if bin_raw:
                             bin_file = bin_raw.split("/")[-1].split("\\")[-1]
-                            if bin_file in KNOWN_AUDIO_BINARIES:
-                                app_name = KNOWN_AUDIO_BINARIES[bin_file][0]
+                            if bin_file in known_apps:
+                                app_name = known_apps[bin_file][0]
                             else:
                                 app_name = bin_file
                     if not app_name:
                         node_raw = meta.get("node_name") or clean_src.rsplit(":", 1)[0]
                         node_clean = re.sub(r'^\d+\s+', '', node_raw.strip())
-                        if node_clean.lower() in KNOWN_AUDIO_BINARIES:
-                            app_name = KNOWN_AUDIO_BINARIES[node_clean.lower()][0]
+                        known_apps = get_known_audio_applications()
+                        if node_clean.lower() in known_apps:
+                            app_name = known_apps[node_clean.lower()][0]
                         else:
                             app_name = node_clean
 
@@ -3079,6 +3145,7 @@ class PipeWireManager:
                     cmd.extend([src_target, dst_target])
                     try:
                         subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                        self.invalidate_pw_links_cache()
                     except Exception:
                         pass
 
@@ -3532,8 +3599,24 @@ class PipeWireManager:
         except Exception:
             pass
 
-    def _get_pw_links_map(self) -> dict:
-        """Returns a dict mapping source_port -> set(destination_ports) from PipeWire with both string names and numeric port IDs."""
+    def invalidate_pw_links_cache(self):
+        """Forces immediate invalidation of cached pw-link map after graph links are modified."""
+        lock = getattr(self, "_pw_links_lock", None)
+        if lock:
+            with lock:
+                self._pw_links_cache_ts = 0.0
+
+    def _get_pw_links_map(self, force_refresh: bool = False, max_age_s: float = 0.4) -> dict:
+        """Returns a dict mapping source_port -> set(destination_ports) from PipeWire with both string names and numeric port IDs.
+        Employs a thread-safe 0.4s TTL cache to eliminate redundant pw-link subprocess forks."""
+        now = time.monotonic()
+        if not force_refresh:
+            lock = getattr(self, "_pw_links_lock", None)
+            if lock:
+                with lock:
+                    if getattr(self, "_pw_links_cache", None) and (now - getattr(self, "_pw_links_cache_ts", 0.0)) < max_age_s:
+                        return {k: set(v) for k, v in self._pw_links_cache.items()}
+
         try:
             try:
                 out = subprocess.check_output(["pw-link", "-I", "-l"], text=True, stderr=subprocess.DEVNULL)
@@ -3588,6 +3671,11 @@ class PipeWireManager:
                         src = line.replace("|<-", "").replace("<-", "").strip()
                         if curr_name:
                             links.setdefault(src, set()).add(curr_name)
+            lock = getattr(self, "_pw_links_lock", None)
+            if lock:
+                with lock:
+                    self._pw_links_cache = links
+                    self._pw_links_cache_ts = time.monotonic()
             return links
         except Exception:
             return {}
