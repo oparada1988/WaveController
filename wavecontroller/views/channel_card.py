@@ -545,8 +545,8 @@ class ChannelCard(Gtk.Box):
         ch_id = str(self.channel_info.get("id", "")).lower()
         ch_type = self.channel_info.get("type", "sink")
 
-        # Wave XLR primary hardware
-        if self.is_wave_channel:
+        # Wave XLR primary hardware or default mic channel
+        if self.is_wave_channel or ch_id in ("mic", "elgato_wave_xlr"):
             return not getattr(self.hardware_mgr, "is_connected", True)
 
         # If it's a physical source or hardware input channel

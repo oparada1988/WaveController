@@ -19,6 +19,7 @@ from wavecontroller.engine.graph.process_classifier import (
     invalidate_port_metadata_cache,
     is_game_app_or_channel,
     port_matches_tokens,
+    score_port_match,
     resolve_pid_game_metadata,
     resolve_steam_app_id,
     resolve_steam_game_icon,
@@ -424,6 +425,11 @@ class PipeWireManager:
                         if obj_id:
                             subprocess.run(["pw-cli", "destroy", str(obj_id)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                     elif (str(props.get("node.hidden", False)).lower() in ("true", "1")) != needed_nodes[n_name][2]:
+                        obj_id = obj.get("id")
+                        if obj_id:
+                            subprocess.run(["pw-cli", "destroy", str(obj_id)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    elif n_desc != needed_nodes[n_name][0]:
+                        # Description changed! Destroy stale node so it is recreated with updated description
                         obj_id = obj.get("id")
                         if obj_id:
                             subprocess.run(["pw-cli", "destroy", str(obj_id)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -1082,6 +1088,48 @@ class PipeWireManager:
         """Checks if a PipeWire port belongs to an application or device matching any token."""
         return port_matches_tokens(port_name, tokens, port_meta)
 
+    def _score_port_match(self, port_name: str, channel_assigned: list, channel_id: str = "", port_meta: dict = None) -> int:
+        """Calculates match confidence score (0-100) between a PipeWire port and a channel's assigned apps."""
+        return score_port_match(port_name, channel_assigned, channel_id, port_meta)
+
+    def _build_playback_port_owner_map(self, candidate_ports: list, channels: list, port_meta: dict = None) -> dict:
+        """
+        Builds an exclusive port ownership mapping (port identifier -> channel_id)
+        for application output ports based on specificity scoring to prevent audio bleed.
+        """
+        port_owner_map = {}
+        for p in candidate_ports:
+            p_clean = re.sub(r'^\s*\d+\s+', '', p).strip()
+            if p_clean.startswith(("output.WaveController_", "input.WaveController_", "WaveController_", "wave_", "v4l2_", "libcamera_")):
+                continue
+            if ":output_" not in p_clean:
+                continue
+            p_id_str = p.strip().split()[0] if p.strip() and p.strip().split()[0].isdigit() else None
+
+            best_ch_id = None
+            best_score = 0
+            for cand_ch in channels:
+                c_id = cand_ch.get("id")
+                c_type = cand_ch.get("type", "sink")
+                c_is_src = (c_type == "source") or (c_type not in ("app", "sink", "group", "virtual") and any(k in str(c_id).lower() for k in ("mic", "fefine", "fifine", "microphone", "elgato_wave_xlr", "input", "capture")))
+                if c_is_src:
+                    continue
+                cand_assigned = self.get_assigned_apps(c_id)
+                if not cand_assigned:
+                    continue
+                score = score_port_match(p, cand_assigned, c_id, port_meta)
+                if score > best_score:
+                    best_score = score
+                    best_ch_id = c_id
+
+            if best_ch_id and best_score > 0:
+                port_owner_map[p_clean] = best_ch_id
+                if p_id_str:
+                    port_owner_map[p_id_str] = best_ch_id
+                port_owner_map[p] = best_ch_id
+
+        return port_owner_map
+
     def _node_matches_tokens(self, props: dict, tokens: set) -> bool:
         """Checks if a PipeWire node's metadata matches target application tokens, prioritizing process binary."""
         if not props or not tokens:
@@ -1100,28 +1148,28 @@ class PipeWireManager:
 
         bin_file = n_bin.split("/")[-1].split("\\")[-1] if n_bin else ""
         if bin_file:
-            matches_binary = any(_word_match(t, bin_file) or _word_match(t, n_bin) or t in bin_file or bin_file == t for t in tokens if len(t) >= 3)
+            matches_binary = any(_word_match(t, bin_file) or _word_match(t, n_bin) for t in tokens if len(t) >= 3)
             if matches_binary:
                 return True
 
         if exe_name:
-            if any(_word_match(t, exe_name) or t in exe_name for t in tokens if len(t) >= 3):
+            if any(_word_match(t, exe_name) for t in tokens if len(t) >= 3):
                 return True
 
         if steam_game:
-            if any(_word_match(t, steam_game) or (t in steam_game and len(t) >= 4) for t in tokens if len(t) >= 3):
+            if any(_word_match(t, steam_game) for t in tokens if len(t) >= 3):
                 return True
 
         if bin_file and bin_file in DEDICATED_NON_GAME_BINARIES and not steam_game and not exe_name:
             return False
 
         if n_app and n_app not in ("chromium", "playback", "webrtc voiceengine", "webrtc_audio_sink"):
-            if any(_word_match(t, n_app) or (t in n_app and len(t) >= 4) for t in tokens if len(t) >= 3):
+            if any(_word_match(t, n_app) for t in tokens if len(t) >= 3):
                 return True
 
         for candidate in (n_name, n_desc, n_media, n_id):
             if candidate:
-                if any(_word_match(t, candidate) or (t in candidate and len(t) >= 4) for t in tokens if len(t) >= 3):
+                if any(_word_match(t, candidate) for t in tokens if len(t) >= 3):
                     return True
 
         return False
@@ -1537,6 +1585,7 @@ class PipeWireManager:
             in_ports = None  # fetched lazily below only if a channel actually needs a resync
 
             reconciled_any = False
+            port_owner_map = self._build_playback_port_owner_map(app_ports, channels_copy, port_meta)
             for ch in channels_copy:
                 if ch.get("type") == "source":
                     continue
@@ -1545,59 +1594,64 @@ class PipeWireManager:
                 if not assigned:
                     continue
 
-                for app in assigned:
-                    tokens = self._get_match_tokens(app)
-                    matched_ports = [p for p in app_ports if self._port_matches_tokens(p, tokens, port_meta) and ":output_" in p]
-                    if not matched_ports:
-                        continue
+                matched_ports = [
+                    p for p in app_ports
+                    if (port_owner_map.get(re.sub(r'^\s*\d+\s+', '', p).strip()) == ch_id
+                        or port_owner_map.get(p.strip().split()[0] if p.strip() and p.strip().split()[0].isdigit() else None) == ch_id
+                        or port_owner_map.get(p) == ch_id)
+                    and ":output_" in p
+                ]
+                if not matched_ports:
+                    continue
 
-                    need_sync = False
-                    channel_sink_prefix = f"WaveController_Channel_{ch_id}:"
-                    submix_prefix = f"input.WaveController_submix_{ch_id}_"
-                    has_active_sink_mix = any(m.get("type") == "sink" or m.get("id") in ("personal", "personal_mix") for m in self.mixes)
-                    has_enabled_submixes = any(self.is_channel_mix_enabled(ch_id, m["id"]) for m in self.mixes) or self.is_channel_sink_exposed(ch_id)
-                    for sp in matched_ports:
-                        clean_sp = re.sub(r'^\d+\s+', '', sp).strip()
-                        sp_id = sp.split()[0] if sp and sp.split()[0].isdigit() else None
-                        if sp_id:
-                            connected_dests = set(links_map.get(sp, set())) | set(links_map.get(sp_id, set()))
-                        else:
-                            connected_dests = set(links_map.get(sp, set())) | set(links_map.get(clean_sp, set()))
+                need_sync = False
+                channel_sink_prefix = f"WaveController_Channel_{ch_id}:"
+                submix_prefix = f"input.WaveController_submix_{ch_id}_"
+                has_active_sink_mix = any(m.get("type") == "sink" or m.get("id") in ("personal", "personal_mix") for m in self.mixes)
+                has_enabled_submixes = any(self.is_channel_mix_enabled(ch_id, m["id"]) for m in self.mixes) or self.is_channel_sink_exposed(ch_id)
+                for sp in matched_ports:
+                    clean_sp = re.sub(r'^\d+\s+', '', sp).strip()
+                    sp_id = sp.split()[0] if sp and sp.split()[0].isdigit() else None
+                    if sp_id:
+                        connected_dests = set(links_map.get(sp, set())) | set(links_map.get(sp_id, set()))
+                    else:
+                        connected_dests = set(links_map.get(sp, set())) | set(links_map.get(clean_sp, set()))
 
-                        sp_target = sp_id if sp_id else clean_sp
-                        # 1. Immediately sever direct leaks to physical hardware or unauthorized mix sinks
-                        for dp in connected_dests:
-                            dp_clean = re.sub(r'^\d+\s+', '', dp).strip()
-                            if not dp_clean or dp_clean.isdigit():
-                                continue
-                            is_auth = dp_clean.startswith(channel_sink_prefix) or dp_clean.startswith(submix_prefix) or dp_clean.startswith("wave_meter_") or dp_clean.startswith("WaveController_fx_") or dp_clean.startswith("input.WaveController_fx_") or (not has_active_sink_mix and dp_clean.startswith("alsa_output."))
-                            if not is_auth:
-                                dp_target = dp.split()[0] if dp and dp.split()[0].isdigit() else dp
-                                try:
-                                    subprocess.run(["pw-link", "-d", sp_target, dp_target], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                                except Exception:
-                                    pass
-                                need_sync = True
-
-                        # 2. Verify app is cleanly attached to its pre-fader channel ingestion sink or active submixes
-                        if has_enabled_submixes:
-                            is_attached = any(re.sub(r'^\d+\s+', '', dp).strip().startswith(channel_sink_prefix) or re.sub(r'^\d+\s+', '', dp).strip().startswith(submix_prefix) or re.sub(r'^\d+\s+', '', dp).strip().startswith("WaveController_fx_") or re.sub(r'^\d+\s+', '', dp).strip().startswith("input.WaveController_fx_") for dp in connected_dests)
-                            if not is_attached:
-                                need_sync = True
-
-                    if need_sync:
-                        if in_ports is None:
+                    sp_target = sp_id if sp_id else clean_sp
+                    # 1. Immediately sever direct leaks to physical hardware or unauthorized mix sinks
+                    for dp in connected_dests:
+                        dp_clean = re.sub(r'^\d+\s+', '', dp).strip()
+                        if not dp_clean or dp_clean.isdigit():
+                            continue
+                        is_auth = dp_clean.startswith(channel_sink_prefix) or dp_clean.startswith(submix_prefix) or dp_clean.startswith("wave_meter_") or dp_clean.startswith("WaveController_fx_") or dp_clean.startswith("input.WaveController_fx_") or (not has_active_sink_mix and dp_clean.startswith("alsa_output."))
+                        if not is_auth:
+                            dp_target = dp.split()[0] if dp and dp.split()[0].isdigit() else dp
                             try:
-                                try:
-                                    i_raw = subprocess.check_output(["pw-link", "-I", "-i"], text=True, stderr=subprocess.DEVNULL, timeout=3)
-                                except Exception:
-                                    i_raw = subprocess.check_output(["pw-link", "-i"], text=True, stderr=subprocess.DEVNULL, timeout=3)
-                                in_ports = [l.strip() for l in i_raw.splitlines() if l.strip()]
+                                subprocess.run(["pw-link", "-d", sp_target, dp_target], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                             except Exception:
-                                in_ports = []
-                        self._sync_channel_audio_routing(channel_id=ch_id, out_ports=out_ports, in_ports=in_ports, links_map=links_map, port_meta=port_meta)
+                                pass
+                            need_sync = True
+
+                    # 2. Verify app is cleanly attached to its pre-fader channel ingestion sink or active submixes
+                    if has_enabled_submixes:
+                        is_attached = any(re.sub(r'^\d+\s+', '', dp).strip().startswith(channel_sink_prefix) or re.sub(r'^\d+\s+', '', dp).strip().startswith(submix_prefix) or re.sub(r'^\d+\s+', '', dp).strip().startswith("WaveController_fx_") or re.sub(r'^\d+\s+', '', dp).strip().startswith("input.WaveController_fx_") for dp in connected_dests)
+                        if not is_attached:
+                            need_sync = True
+
+                if need_sync:
+                    if in_ports is None:
+                        try:
+                            try:
+                                i_raw = subprocess.check_output(["pw-link", "-I", "-i"], text=True, stderr=subprocess.DEVNULL, timeout=3)
+                            except Exception:
+                                i_raw = subprocess.check_output(["pw-link", "-i"], text=True, stderr=subprocess.DEVNULL, timeout=3)
+                            in_ports = [l.strip() for l in i_raw.splitlines() if l.strip()]
+                        except Exception:
+                            in_ports = []
+                    self._sync_channel_audio_routing(channel_id=ch_id, out_ports=out_ports, in_ports=in_ports, links_map=links_map, port_meta=port_meta)
+                    for app in assigned:
                         self._bind_app_to_wireplumber_target(app, ch_id)
-                        reconciled_any = True
+                    reconciled_any = True
 
             if reconciled_any:
                 self._notify_peak_monitor_refresh()
@@ -3215,6 +3269,9 @@ class PipeWireManager:
         except Exception:
             pass
 
+        # Build exclusive single-owner playback port ownership map to prevent audio bleed
+        port_owner_map = self._build_playback_port_owner_map(out_ports, channels_copy, port_meta)
+
         for ch in channels_to_sync:
             ch_id = ch["id"]
             is_linked = self.is_channel_linked(ch_id)
@@ -3269,18 +3326,14 @@ class PipeWireManager:
 
                 ch_out_ports = matched_ports
             else:
-                # Direct Submix Ingestion: Find actual application output ports
-                app_out_ports = []
-                assigned = self.get_assigned_apps(ch_id)
-                for app in assigned:
-                    tokens = self._get_match_tokens(app)
-                    for p in out_ports:
-                        p_clean = re.sub(r'^\s*\d+\s+', '', p).strip()
-                        if p_clean.startswith("output.WaveController_") or p_clean.startswith("WaveController_"):
-                            continue
-                        if ":output_" in p_clean and self._port_matches_tokens(p, tokens, port_meta):
-                            if p not in app_out_ports:
-                                app_out_ports.append(p)
+                # Direct Submix Ingestion: Find actual application output ports via exclusive ownership
+                app_out_ports = [
+                    p for p in out_ports
+                    if (port_owner_map.get(re.sub(r'^\s*\d+\s+', '', p).strip()) == ch_id
+                        or port_owner_map.get(p.strip().split()[0] if p.strip() and p.strip().split()[0].isdigit() else None) == ch_id
+                        or port_owner_map.get(p) == ch_id)
+                    and ":output_" in p
+                ]
 
                 sink_node = f"WaveController_Channel_{ch_id}"
                 sink_play_ports = [p for p in in_ports if re.sub(r'^\d+\s+', '', p).strip().startswith(f"{sink_node}:")]
@@ -4711,9 +4764,11 @@ class PipeWireManager:
                 self.default_input_device = device_key
                 mic_ch = next((c for c in self.channels if c.get("type") == "source" or c.get("id") in ("mic", "elgato_wave_xlr")), None)
                 if mic_ch:
-                    mic_ch["name"] = name
+                    if not mic_ch.get("name") or mic_ch.get("name") in ("Microphone", "Channel"):
+                        mic_ch["name"] = device_name or mic_ch.get("name") or "Microphone"
                     ch_id = mic_ch["id"]
-                    self.assigned_apps[ch_id] = [name, device_key]
+                    effective_name = mic_ch.get("name") or name
+                    self.assigned_apps[ch_id] = [effective_name, device_key]
                     if ch_id not in self.channel_states:
                         self.channel_states[ch_id] = {}
                     for mx in self.mixes:

@@ -307,7 +307,10 @@ class USBHardwareManager:
         info = self.get_elgato_device_info()
         if info and info.get("connected", False):
             return True
-        return bool(self.device_name)
+        prim_k = config_manager.get("primary_device_key")
+        if prim_k and prim_k in self.discovered_devices:
+            return bool(self.discovered_devices[prim_k].get("connected", True))
+        return False
 
     @property
     def is_elgato(self) -> bool:

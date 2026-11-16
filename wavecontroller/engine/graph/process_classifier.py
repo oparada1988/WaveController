@@ -423,7 +423,9 @@ def get_match_tokens(name_or_id: str) -> set:
         "stereo", "mono", "analog", "default", "system", "capture", "playback",
         "usb", "alsa", "pci", "card", "sink", "source", "device", "devices",
         "node", "nodes", "port", "ports", "mic", "mics", "microphone", "microphones",
-        "exe", "win64", "shipping", "x64", "x86", "bin", "linux"
+        "exe", "win64", "shipping", "x64", "x86", "bin", "linux",
+        "com", "org", "net", "io", "apps", "dev", "sys", "usr", "lib", "var", "etc",
+        "gitlab", "github", "package", "service", "daemon", "helper"
     }
     for src_str in (raw, camel_split):
         words = [w for w in re.split(r"[\s\-_.:/]+", src_str) if len(w) >= 3 and w not in stop_words]
@@ -562,14 +564,24 @@ def _word_match(token: str, text: str) -> bool:
         return True
 
     text_words_clean = " ".join(words)
-    t_phrase = " ".join([w for w in re.split(r'[\s\-_.:/]+', t_clean) if w])
-    if t_phrase and (t_phrase == text_words_clean or t_phrase in text_words_clean or text_words_clean in t_phrase):
-        return True
+    t_words = [w for w in re.split(r'[\s\-_.:/]+', t_clean) if w]
+    if len(t_words) > 1:
+        t_phrase = " ".join(t_words)
+        if re.search(r'\b' + re.escape(t_phrase) + r'\b', text_words_clean):
+            return True
+        if re.search(r'\b' + re.escape(text_words_clean) + r'\b', t_phrase):
+            return True
 
     # Strip trailing numeric suffix e.g. "chrome-1", "google-chrome-2" -> "chrome"
     clean_no_num = re.sub(r'[\-_]?\d+$', '', text_words_clean).strip()
-    if clean_no_num and (t_phrase == clean_no_num or clean_no_num in t_phrase or t_phrase in clean_no_num):
-        return True
+    if clean_no_num and clean_no_num != text_words_clean:
+        clean_words = clean_no_num.split()
+        if t_clean in clean_words:
+            return True
+        if len(t_words) > 1:
+            t_phrase = " ".join(t_words)
+            if re.search(r'\b' + re.escape(t_phrase) + r'\b', clean_no_num):
+                return True
 
     return False
 
@@ -647,6 +659,112 @@ def port_matches_tokens(port_name: str, tokens: set, port_meta: dict = None) -> 
             return True
 
     return False
+
+
+def score_port_match(port_name: str, channel_assigned: list, channel_id: str = "", port_meta: dict = None) -> int:
+    """
+    Calculates a match confidence score (0 to 100) between a PipeWire port and a channel's assigned apps/devices.
+    Returns 0 if no match or if the port is an internal WaveController/video port.
+    Higher scores indicate higher confidence/specificity:
+      - 100: Exact match on binary filename, full binary path, or app_id
+      - 80: Exact word/phrase match on steam_game_name, exe_name, or authoritative app_name
+      - 70: Token match on binary filename or app_id
+      - 60: Exact word match on node description, node name, or media name
+      - 50: Token match on node name, node description, or port name string
+      - 0: No match
+    """
+    if not port_name or not channel_assigned:
+        return 0
+
+    raw_stripped = port_name.strip()
+    port_id_str = raw_stripped.split()[0] if raw_stripped and raw_stripped.split()[0].isdigit() else None
+    clean_port = re.sub(r'^\d+\s+', '', raw_stripped)
+
+    # Exclude internal loopbacks, meters, virtual nodes, video/v4l2 ports
+    if clean_port.startswith(("output.WaveController_", "input.WaveController_", "WaveController_", "wave_", "v4l2_", "libcamera_")):
+        return 0
+
+    p_low = clean_port.lower()
+    node_part = p_low.rsplit(":", 1)[0] if ":" in p_low else p_low
+
+    meta = None
+    if port_meta:
+        meta = (
+            (port_meta.get(port_id_str) if port_id_str else None)
+            or port_meta.get(raw_stripped)
+            or port_meta.get(clean_port)
+            or port_meta.get(p_low)
+        )
+
+    assigned_cleaned = [str(a).strip().lower() for a in channel_assigned if a]
+    assigned_tokens = set()
+    for a in channel_assigned:
+        assigned_tokens |= get_match_tokens(a)
+
+    bin_raw = str(meta.get("binary", "")).strip().lower() if meta else ""
+    bin_file = bin_raw.split("/")[-1].split("\\")[-1] if bin_raw else ""
+    app_id = str(meta.get("app_id", "")).strip().lower() if meta else ""
+    app_name = str(meta.get("app_name", "")).strip().lower() if meta else ""
+    steam_game = str(meta.get("steam_game_name", "")).strip().lower() if meta else ""
+    exe_name = str(meta.get("exe_name", "")).strip().lower() if meta else ""
+    node_name = str(meta.get("node_name", "")).strip().lower() if meta else ""
+    node_desc = str(meta.get("node_description", "")).strip().lower() if meta else ""
+    media_name = str(meta.get("media_name", "")).strip().lower() if meta else ""
+
+    # Priority 1: Exact binary or app_id matches (Score 100)
+    for a in assigned_cleaned:
+        if bin_file and a == bin_file:
+            return 100
+        if bin_raw and a == bin_raw:
+            return 100
+        if app_id and a == app_id:
+            return 100
+
+    # Priority 2: Authoritative metadata matches (Score 80)
+    for a in assigned_cleaned:
+        if steam_game and _word_match(a, steam_game):
+            return 80
+        if exe_name and _word_match(a, exe_name):
+            return 80
+        if app_name and app_name not in ("chromium", "playback", "webrtc voiceengine", "webrtc_audio_sink"):
+            if _word_match(a, app_name):
+                return 80
+
+    # Priority 3: Token match on binary or app_id (Score 70)
+    matched_p3 = False
+    if bin_file:
+        for t in assigned_tokens:
+            if len(t) >= 3 and _word_match(t, bin_file):
+                matched_p3 = True
+                break
+    if not matched_p3 and app_id:
+        for t in assigned_tokens:
+            if len(t) >= 3 and _word_match(t, app_id):
+                matched_p3 = True
+                break
+    if matched_p3:
+        return 70
+
+    # If this is a known dedicated desktop app that failed binary/app_id/app_name matching,
+    # prevent it from matching generic fallback node descriptions of unrelated channels.
+    if bin_file in DEDICATED_NON_GAME_BINARIES and not steam_game and not exe_name:
+        return 0
+
+    # Priority 4: Exact word match on node description, node name, or media name (Score 60)
+    for candidate in (node_desc, node_name, media_name):
+        if candidate:
+            for a in assigned_cleaned:
+                if len(a) >= 3 and _word_match(a, candidate):
+                    return 60
+
+    # Priority 5: Fallback token match on node description, node name, or port string (Score 50)
+    for candidate in (node_desc, node_name, node_part):
+        if candidate:
+            for t in assigned_tokens:
+                if len(t) >= 3 and _word_match(t, candidate):
+                    return 50
+
+    return 0
 
 
 _STEAM_ICON_CACHE = {}

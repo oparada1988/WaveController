@@ -524,7 +524,9 @@ class WaveMainWindow(Adw.ApplicationWindow):
             row_box.append(lbl)
 
             dtype = dev.get("type", "duplex")
-            if dtype == "input":
+            if not is_connected:
+                badge_text = "Offline"
+            elif dtype == "input":
                 badge_text = "Input"
             elif dtype == "output":
                 badge_text = "Output"
